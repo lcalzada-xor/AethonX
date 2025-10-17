@@ -1,20 +1,32 @@
-# 🧠 AethonX
+<p align="center">
+  <img src="assets/logo_aethonx.png" alt="AethonX Logo" width="480"/>
+</p>
 
-**AethonX** es una herramienta de reconocimiento modular escrita en **Go**, diseñada para enumerar información de aplicaciones web de forma **pasiva** o **activa**, integrando múltiples fuentes en un flujo orquestado, concurrente y extensible.
+<h1 align="center">🧠 AethonX</h1>
 
-> Inspirada en el titán **Aethon**, símbolo de la vigilancia constante: AethonX observa, analiza y reporta.
+<p align="center">
+  <b>Engine modular de reconocimiento pasivo y activo</b><br>
+  <i>Inspirado en Aethon, el dragón solar que todo lo ve</i>
+</p>
+
+---
+
+**AethonX** es una herramienta de reconocimiento escrita en **Go**, diseñada para enumerar información de aplicaciones web de forma **pasiva** o **activa**, integrando múltiples fuentes en un flujo **orquestado**, **concurrente** y **extensible**.
+
+> ⚔️ Inspirada en el titán y dragón solar **Aethon**, símbolo de la vigilancia constante:  
+> AethonX ilumina los activos ocultos y expone la superficie de ataque.
 
 ---
 
 ## ✨ Características
 
-- 🔌 **Arquitectura modular**: cada fuente (`crt.sh`, `RDAP`, etc.) es un módulo independiente.
-- ⚙️ **Orquestador concurrente**: ejecuta fuentes en paralelo con control de *workers*.
-- 📚 **Interfaz común (`Source`)**: facilita añadir nuevas herramientas.
-- 🧩 **Dedupe + normalización** integrados.
-- 🧾 **Salidas personalizables**: tabla en terminal y JSON estructurado.
-- 🛠️ **Configuración flexible** vía *flags* o variables de entorno.
-- 🧠 Preparado para fases activas (HTTP probing, DNSx, etc.) y reporting avanzado.
+- 🔌 **Arquitectura modular**: cada fuente (`crt.sh`, `RDAP`, etc.) es un módulo independiente.  
+- ⚙️ **Orquestador concurrente**: ejecuta fuentes en paralelo con control de *workers*.  
+- 📚 **Interfaz común (`Source`)**: facilita añadir nuevas herramientas.  
+- 🧩 **Dedupe + normalización** integrados.  
+- 🧾 **Salidas personalizables**: tabla en terminal y JSON estructurado.  
+- 🛠️ **Configuración flexible** vía *flags* o variables de entorno.  
+- ⚡ **Preparado para fases activas** (DNSx, HTTPx, etc.) y reporting avanzado.  
 
 ---
 
@@ -34,6 +46,7 @@ AethonX/
 │  ├─ adapters/
 │  │  └─ output/                # Salidas (tabla, JSON, futuros formatos)
 │  └─ platform/                 # Infraestructura común (config, logx, httpx, ...)
+├─ assets/                      # Imágenes, banners, logos
 ├─ go.mod
 ├─ go.sum
 └─ README.md
@@ -84,7 +97,9 @@ go build -o aethonx ./cmd/aethonx
 ./aethonx -target example.com -workers 8 -timeout 60
 ```
 
-### Variables de entorno disponibles
+---
+
+## ⚙️ Variables de entorno
 
 | Variable | Descripción | Ejemplo |
 |-----------|--------------|----------|
@@ -161,7 +176,3 @@ Luego regístrala en `buildSources()` dentro de `cmd/aethonx/main.go`.
 
 Este proyecto se distribuye bajo licencia **MIT**.  
 Consulta el archivo [LICENSE](LICENSE) para más detalles.
-
-
-Estamos implantando las bases de mi proyecto de reconocimiento web pasivo/activo  altamente modular y escalable, preparame un plan para establecer la base del proyecto y que sea lo mas robusta
- posible para en un futuro no tener que cambiar mucho codigo en las partes raiz/base del proyecto. 
