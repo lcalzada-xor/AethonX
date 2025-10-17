@@ -1,17 +1,18 @@
 <p align="center">
-  <img src="assets/logo_aethonx.png" alt="AethonX Logo" width="480"/>
+  <img src="https://github.com/user-attachments/assets/a97c4c9b-f850-461f-bb53-35c5e660327e" alt="AethonX Logo" width="480"/>
 </p>
 
 <h1 align="center">🧠 AethonX</h1>
 
 <p align="center">
   <b>Engine modular de reconocimiento pasivo y activo</b><br>
-  <i>Inspirado en Aethon, el dragón solar que todo lo ve</i>
+  <i>Inspirado en Aethon, el caballo de Helios</i>
 </p>
 
 ---
 
 **AethonX** es una herramienta de reconocimiento escrita en **Go**, diseñada para enumerar información de aplicaciones web de forma **pasiva** o **activa**, integrando múltiples fuentes en un flujo **orquestado**, **concurrente** y **extensible**.
+
 
 > ⚔️ Inspirada en el titán y dragón solar **Aethon**, símbolo de la vigilancia constante:  
 > AethonX ilumina los activos ocultos y expone la superficie de ataque.
