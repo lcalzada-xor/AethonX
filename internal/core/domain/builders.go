@@ -94,3 +94,185 @@ func (a *Artifact) GetIPMetadata() *metadata.IPMetadata {
 	}
 	return nil
 }
+
+// NewServiceArtifact crea un artifact de servicio con metadata tipado.
+func NewServiceArtifact(name string, port int, source string) *Artifact {
+	meta := metadata.NewServiceMetadata(name, port)
+
+	return NewArtifactWithMetadata(
+		ArtifactTypeService,
+		name,
+		source,
+		meta,
+	)
+}
+
+// NewWAFArtifact crea un artifact de WAF con metadata tipado.
+func NewWAFArtifact(name, source string) *Artifact {
+	meta := metadata.NewWAFMetadata(name)
+
+	return NewArtifactWithMetadata(
+		ArtifactTypeWAF,
+		name,
+		source,
+		meta,
+	)
+}
+
+// NewAPIArtifact crea un artifact de API con metadata tipado.
+func NewAPIArtifact(apiType, baseURL, source string) *Artifact {
+	meta := metadata.NewAPIMetadata(apiType, baseURL)
+
+	return NewArtifactWithMetadata(
+		ArtifactTypeAPI,
+		baseURL,
+		source,
+		meta,
+	)
+}
+
+// NewRepositoryArtifact crea un artifact de repositorio con metadata tipado.
+func NewRepositoryArtifact(repoType, url, source string) *Artifact {
+	meta := metadata.NewRepositoryMetadata(repoType)
+
+	return NewArtifactWithMetadata(
+		ArtifactTypeRepository,
+		url,
+		source,
+		meta,
+	)
+}
+
+// NewBackupFileArtifact crea un artifact de backup file con metadata tipado.
+func NewBackupFileArtifact(filename, source string) *Artifact {
+	meta := metadata.NewBackupFileMetadata(filename)
+
+	return NewArtifactWithMetadata(
+		ArtifactTypeBackupFile,
+		filename,
+		source,
+		meta,
+	)
+}
+
+// NewStorageBucketArtifact crea un artifact de storage bucket con metadata tipado.
+func NewStorageBucketArtifact(provider, bucketName, source string) *Artifact {
+	meta := metadata.NewStorageBucketMetadata(provider, bucketName)
+
+	return NewArtifactWithMetadata(
+		ArtifactTypeStorageBucket,
+		bucketName,
+		source,
+		meta,
+	)
+}
+
+// NewWebshellArtifact crea un artifact de webshell con metadata tipado.
+func NewWebshellArtifact(name, shellType, source string) *Artifact {
+	meta := metadata.NewWebshellMetadata(name, shellType)
+
+	return NewArtifactWithMetadata(
+		ArtifactTypeWebshell,
+		name,
+		source,
+		meta,
+	)
+}
+
+// GetServiceMetadata retorna el metadata de servicio si existe.
+func (a *Artifact) GetServiceMetadata() *metadata.ServiceMetadata {
+	if meta, ok := a.TypedMetadata.(*metadata.ServiceMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
+// GetWAFMetadata retorna el metadata de WAF si existe.
+func (a *Artifact) GetWAFMetadata() *metadata.WAFMetadata {
+	if meta, ok := a.TypedMetadata.(*metadata.WAFMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
+// GetAPIMetadata retorna el metadata de API si existe.
+func (a *Artifact) GetAPIMetadata() *metadata.APIMetadata {
+	if meta, ok := a.TypedMetadata.(*metadata.APIMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
+// GetRepositoryMetadata retorna el metadata de repositorio si existe.
+func (a *Artifact) GetRepositoryMetadata() *metadata.RepositoryMetadata {
+	if meta, ok := a.TypedMetadata.(*metadata.RepositoryMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
+// GetBackupFileMetadata retorna el metadata de backup file si existe.
+func (a *Artifact) GetBackupFileMetadata() *metadata.BackupFileMetadata {
+	if meta, ok := a.TypedMetadata.(*metadata.BackupFileMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
+// GetStorageBucketMetadata retorna el metadata de storage bucket si existe.
+func (a *Artifact) GetStorageBucketMetadata() *metadata.StorageBucketMetadata {
+	if meta, ok := a.TypedMetadata.(*metadata.StorageBucketMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
+// GetWebshellMetadata retorna el metadata de webshell si existe.
+func (a *Artifact) GetWebshellMetadata() *metadata.WebshellMetadata {
+	if meta, ok := a.TypedMetadata.(*metadata.WebshellMetadata); ok {
+		return meta
+	}
+	return nil
+}
+
+// SetServiceMetadata establece metadata de servicio en un artifact existente.
+func (a *Artifact) SetServiceMetadata(meta *metadata.ServiceMetadata) {
+	a.TypedMetadata = meta
+	a.SyncMetadata()
+}
+
+// SetWAFMetadata establece metadata de WAF en un artifact existente.
+func (a *Artifact) SetWAFMetadata(meta *metadata.WAFMetadata) {
+	a.TypedMetadata = meta
+	a.SyncMetadata()
+}
+
+// SetAPIMetadata establece metadata de API en un artifact existente.
+func (a *Artifact) SetAPIMetadata(meta *metadata.APIMetadata) {
+	a.TypedMetadata = meta
+	a.SyncMetadata()
+}
+
+// SetRepositoryMetadata establece metadata de repositorio en un artifact existente.
+func (a *Artifact) SetRepositoryMetadata(meta *metadata.RepositoryMetadata) {
+	a.TypedMetadata = meta
+	a.SyncMetadata()
+}
+
+// SetBackupFileMetadata establece metadata de backup file en un artifact existente.
+func (a *Artifact) SetBackupFileMetadata(meta *metadata.BackupFileMetadata) {
+	a.TypedMetadata = meta
+	a.SyncMetadata()
+}
+
+// SetStorageBucketMetadata establece metadata de storage bucket en un artifact existente.
+func (a *Artifact) SetStorageBucketMetadata(meta *metadata.StorageBucketMetadata) {
+	a.TypedMetadata = meta
+	a.SyncMetadata()
+}
+
+// SetWebshellMetadata establece metadata de webshell en un artifact existente.
+func (a *Artifact) SetWebshellMetadata(meta *metadata.WebshellMetadata) {
+	a.TypedMetadata = meta
+	a.SyncMetadata()
+}

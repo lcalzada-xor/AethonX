@@ -1,6 +1,17 @@
 // internal/core/domain/metadata/ip.go
 package metadata
 
+// ServiceSummary representa un resumen de un servicio detectado en una IP.
+// Se usa para referencia rápida en IPMetadata, mientras que el servicio completo
+// se almacena como un artifact separado con ServiceMetadata.
+type ServiceSummary struct {
+	Port     int
+	Protocol string
+	Name     string
+	Product  string
+	Version  string
+}
+
 // IPMetadata contiene información detallada sobre una dirección IP.
 type IPMetadata struct {
 	// Geolocalización
@@ -27,9 +38,10 @@ type IPMetadata struct {
 	PTRRecord  string // Reverse DNS
 	ReverseDNS string // Hostname
 
-	// Puertos
-	OpenPorts []int
-	Services  []string
+	// Puertos y servicios
+	OpenPorts       []int            // Lista simple de puertos abiertos
+	Services        []string         // Lista simple de nombres de servicios (legacy)
+	ServicesSummary []ServiceSummary // Resumen estructurado de servicios detectados
 
 	// Reputación
 	Reputation      string // clean, suspicious, malicious
@@ -151,7 +163,8 @@ func (i *IPMetadata) Type() string {
 // NewIPMetadata crea un nuevo IPMetadata vacío.
 func NewIPMetadata() *IPMetadata {
 	return &IPMetadata{
-		OpenPorts: []int{},
-		Services:  []string{},
+		OpenPorts:       []int{},
+		Services:        []string{},
+		ServicesSummary: []ServiceSummary{},
 	}
 }

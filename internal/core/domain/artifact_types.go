@@ -27,6 +27,9 @@ const (
 	// ArtifactTypePort representa un puerto abierto
 	ArtifactTypePort ArtifactType = "port"
 
+	// ArtifactTypeService representa un servicio de red en un puerto (Nmap/Masscan)
+	ArtifactTypeService ArtifactType = "service"
+
 	// ArtifactTypeDNSRecord representa un registro DNS
 	ArtifactTypeDNSRecord ArtifactType = "dns_record"
 
@@ -44,6 +47,9 @@ const (
 
 	// ArtifactTypeEndpoint representa un API endpoint o ruta HTTP
 	ArtifactTypeEndpoint ArtifactType = "endpoint"
+
+	// ArtifactTypeAPI representa una API REST/GraphQL/SOAP con schema
+	ArtifactTypeAPI ArtifactType = "api"
 
 	// ArtifactTypeTechnology representa una tecnología detectada
 	ArtifactTypeTechnology ArtifactType = "technology"
@@ -65,6 +71,9 @@ const (
 
 	// ArtifactTypeRedirect representa una redirección detectada
 	ArtifactTypeRedirect ArtifactType = "redirect"
+
+	// ArtifactTypeWAF representa un Web Application Firewall detectado
+	ArtifactTypeWAF ArtifactType = "waf"
 )
 
 // Tipos de artefactos - Certificados y Seguridad
@@ -95,6 +104,9 @@ const (
 
 	// ArtifactTypeContainer representa un contenedor Docker expuesto
 	ArtifactTypeContainer ArtifactType = "container"
+
+	// ArtifactTypeStorageBucket representa un bucket de almacenamiento (S3, Azure, GCP)
+	ArtifactTypeStorageBucket ArtifactType = "storage_bucket"
 )
 
 // Tipos de artefactos - Datos y Contenido
@@ -104,6 +116,15 @@ const (
 
 	// ArtifactTypeSensitiveFile representa archivos sensibles
 	ArtifactTypeSensitiveFile ArtifactType = "sensitive_file"
+
+	// ArtifactTypeBackupFile representa archivos de backup expuestos (.bak, .old, .sql, etc.)
+	ArtifactTypeBackupFile ArtifactType = "backup_file"
+
+	// ArtifactTypeRepository representa repositorios de código expuestos (.git, .svn)
+	ArtifactTypeRepository ArtifactType = "repository"
+
+	// ArtifactTypeWebshell representa webshells detectadas
+	ArtifactTypeWebshell ArtifactType = "webshell"
 
 	// ArtifactTypeMetadata representa metadatos extraídos
 	ArtifactTypeMetadata ArtifactType = "metadata"
@@ -128,13 +149,14 @@ const (
 func (t ArtifactType) IsValid() bool {
 	switch t {
 	case ArtifactTypeDomain, ArtifactTypeSubdomain, ArtifactTypeIP, ArtifactTypeIPv6,
-		ArtifactTypeCIDR, ArtifactTypeASN, ArtifactTypePort, ArtifactTypeDNSRecord,
-		ArtifactTypeNameserver, ArtifactTypeMXRecord, ArtifactTypeURL, ArtifactTypeEndpoint,
+		ArtifactTypeCIDR, ArtifactTypeASN, ArtifactTypePort, ArtifactTypeService, ArtifactTypeDNSRecord,
+		ArtifactTypeNameserver, ArtifactTypeMXRecord, ArtifactTypeURL, ArtifactTypeEndpoint, ArtifactTypeAPI,
 		ArtifactTypeTechnology, ArtifactTypeHTTPHeader, ArtifactTypeCookie, ArtifactTypeForm,
-		ArtifactTypeParameter, ArtifactTypeJavaScript, ArtifactTypeRedirect, ArtifactTypeCertificate,
-		ArtifactTypeVulnerability, ArtifactTypeSecurityHeader, ArtifactTypeTLSConfig, ArtifactTypeSSHKey,
-		ArtifactTypeCloudResource, ArtifactTypeCDNEndpoint, ArtifactTypeContainer, ArtifactTypeCredential,
-		ArtifactTypeSensitiveFile, ArtifactTypeMetadata, ArtifactTypeEmail, ArtifactTypePhone,
+		ArtifactTypeParameter, ArtifactTypeJavaScript, ArtifactTypeRedirect, ArtifactTypeWAF,
+		ArtifactTypeCertificate, ArtifactTypeVulnerability, ArtifactTypeSecurityHeader, ArtifactTypeTLSConfig,
+		ArtifactTypeSSHKey, ArtifactTypeCloudResource, ArtifactTypeCDNEndpoint, ArtifactTypeContainer,
+		ArtifactTypeStorageBucket, ArtifactTypeCredential, ArtifactTypeSensitiveFile, ArtifactTypeBackupFile,
+		ArtifactTypeRepository, ArtifactTypeWebshell, ArtifactTypeMetadata, ArtifactTypeEmail, ArtifactTypePhone,
 		ArtifactTypeSocialMedia, ArtifactTypeWhoisContact:
 		return true
 	default:
@@ -146,23 +168,24 @@ func (t ArtifactType) IsValid() bool {
 func (t ArtifactType) Category() string {
 	switch t {
 	case ArtifactTypeDomain, ArtifactTypeSubdomain, ArtifactTypeIP, ArtifactTypeIPv6,
-		ArtifactTypeCIDR, ArtifactTypeASN, ArtifactTypePort, ArtifactTypeDNSRecord,
+		ArtifactTypeCIDR, ArtifactTypeASN, ArtifactTypePort, ArtifactTypeService, ArtifactTypeDNSRecord,
 		ArtifactTypeNameserver, ArtifactTypeMXRecord:
 		return "infrastructure"
 
-	case ArtifactTypeURL, ArtifactTypeEndpoint, ArtifactTypeTechnology, ArtifactTypeHTTPHeader,
+	case ArtifactTypeURL, ArtifactTypeEndpoint, ArtifactTypeAPI, ArtifactTypeTechnology, ArtifactTypeHTTPHeader,
 		ArtifactTypeCookie, ArtifactTypeForm, ArtifactTypeParameter, ArtifactTypeJavaScript,
-		ArtifactTypeRedirect:
+		ArtifactTypeRedirect, ArtifactTypeWAF:
 		return "web"
 
 	case ArtifactTypeCertificate, ArtifactTypeVulnerability, ArtifactTypeSecurityHeader,
 		ArtifactTypeTLSConfig, ArtifactTypeSSHKey:
 		return "security"
 
-	case ArtifactTypeCloudResource, ArtifactTypeCDNEndpoint, ArtifactTypeContainer:
+	case ArtifactTypeCloudResource, ArtifactTypeCDNEndpoint, ArtifactTypeContainer, ArtifactTypeStorageBucket:
 		return "cloud"
 
-	case ArtifactTypeCredential, ArtifactTypeSensitiveFile, ArtifactTypeMetadata:
+	case ArtifactTypeCredential, ArtifactTypeSensitiveFile, ArtifactTypeBackupFile, ArtifactTypeRepository,
+		ArtifactTypeWebshell, ArtifactTypeMetadata:
 		return "data"
 
 	case ArtifactTypeEmail, ArtifactTypePhone, ArtifactTypeSocialMedia, ArtifactTypeWhoisContact:

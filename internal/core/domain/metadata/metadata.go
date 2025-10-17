@@ -116,6 +116,16 @@ func GetBool(m map[string]string, key string, defaultValue bool) bool {
 	return defaultValue
 }
 
+// GetInt64 obtiene un valor int64 del mapa, con valor por defecto
+func GetInt64(m map[string]string, key string, defaultValue int64) int64 {
+	if v, ok := m[key]; ok && v != "" {
+		if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return i
+		}
+	}
+	return defaultValue
+}
+
 // SetIfNotEmpty añade una clave al mapa solo si el valor no está vacío
 func SetIfNotEmpty(m map[string]string, key, value string) {
 	if value != "" {
@@ -136,4 +146,9 @@ func SetFloat(m map[string]string, key string, value float64) {
 // SetBool añade un bool al mapa
 func SetBool(m map[string]string, key string, value bool) {
 	m[key] = BoolToString(value)
+}
+
+// SetInt64 añade un int64 al mapa
+func SetInt64(m map[string]string, key string, value int64) {
+	m[key] = strconv.FormatInt(value, 10)
 }
