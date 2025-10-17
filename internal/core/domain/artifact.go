@@ -6,23 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
-)
 
-// ArtifactType representa los diferentes tipos de artefactos que pueden ser descubiertos.
-type ArtifactType string
-
-const (
-	ArtifactTypeDomain      ArtifactType = "domain"
-	ArtifactTypeSubdomain   ArtifactType = "subdomain"
-	ArtifactTypeIP          ArtifactType = "ip"
-	ArtifactTypeIPv6        ArtifactType = "ipv6"
-	ArtifactTypeEmail       ArtifactType = "email"
-	ArtifactTypeCertificate ArtifactType = "certificate"
-	ArtifactTypeURL         ArtifactType = "url"
-	ArtifactTypePort        ArtifactType = "port"
-	ArtifactTypeTechnology  ArtifactType = "technology"
-	ArtifactTypeCIDR        ArtifactType = "cidr"
-	ArtifactTypeASN         ArtifactType = "asn"
+	"aethonx/internal/core/domain/metadata"
 )
 
 // Artifact representa un dato descubierto durante el reconocimiento.
@@ -40,7 +25,10 @@ type Artifact struct {
 	// Sources lista las fuentes que descubrieron este artefacto
 	Sources []string
 
-	// Metadata contiene información adicional específica del tipo
+	// TypedMetadata contiene metadata estructurado y tipado (nuevo approach)
+	TypedMetadata metadata.ArtifactMetadata
+
+	// Metadata contiene información adicional en formato string (backward compatible)
 	Metadata map[string]string
 
 	// Confidence indica la confianza del descubrimiento [0.0-1.0]
@@ -66,6 +54,19 @@ func NewArtifact(artifactType ArtifactType, value, source string) *Artifact {
 	}
 	a.Normalize()
 	a.ID = a.GenerateID()
+	return a
+}
+
+// NewArtifactWithMetadata crea un artifact con metadata tipado.
+func NewArtifactWithMetadata(artifactType ArtifactType, value, source string, typedMeta metadata.ArtifactMetadata) *Artifact {
+	a := NewArtifact(artifactType, value, source)
+	a.TypedMetadata = typedMeta
+
+	// Sincronizar metadata tipado con mapa string
+	if typedMeta != nil {
+		a.Metadata = typedMeta.ToMap()
+	}
+
 	return a
 }
 
@@ -143,10 +144,25 @@ func (a *Artifact) Merge(other *Artifact) error {
 		a.AddTag(t)
 	}
 
-	// Merge metadata (no sobreescribir valores existentes)
+	// Merge metadata string (no sobreescribir valores existentes)
 	for k, v := range other.Metadata {
 		if _, exists := a.Metadata[k]; !exists {
 			a.Metadata[k] = v
+		}
+	}
+
+	// Merge TypedMetadata si existe
+	if other.TypedMetadata != nil {
+		if a.TypedMetadata == nil {
+			a.TypedMetadata = other.TypedMetadata
+		} else {
+			// Merge metadata map del otro
+			otherMap := other.TypedMetadata.ToMap()
+			for k, v := range otherMap {
+				if _, exists := a.Metadata[k]; !exists {
+					a.Metadata[k] = v
+				}
+			}
 		}
 	}
 
@@ -168,6 +184,9 @@ func (a *Artifact) IsValid() bool {
 	if a.Type == "" || a.Value == "" {
 		return false
 	}
+	if !a.Type.IsValid() {
+		return false
+	}
 	if a.Confidence < 0.0 || a.Confidence > 1.0 {
 		return false
 	}
@@ -178,6 +197,13 @@ func (a *Artifact) IsValid() bool {
 func (a *Artifact) String() string {
 	return fmt.Sprintf("[%s] %s (sources: %d, confidence: %.2f)",
 		a.Type, a.Value, len(a.Sources), a.Confidence)
+}
+
+// SyncMetadata sincroniza TypedMetadata con el mapa Metadata.
+func (a *Artifact) SyncMetadata() {
+	if a.TypedMetadata != nil {
+		a.Metadata = a.TypedMetadata.ToMap()
+	}
 }
 
 // Funciones de normalización privadas

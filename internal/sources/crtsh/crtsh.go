@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"aethonx/internal/core/domain"
+	"aethonx/internal/core/domain/metadata"
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
 )
@@ -131,22 +132,56 @@ func (c *CRT) processRecords(records []certRecord, target domain.Target) []*doma
 				continue
 			}
 
-			// Crear artifact
-			artifact := domain.NewArtifact(
+			// Crear metadata de certificado
+			certMeta := &metadata.CertificateMetadata{
+				IssuerCN:    record.IssuerName,
+				ValidUntil:  record.NotAfter,
+				ValidFrom:   record.NotBefore,
+				SerialNumber: record.SerialNumber,
+			}
+
+			// Crear metadata de dominio con información del certificado
+			domainMeta := metadata.NewDomainMetadata()
+			domainMeta.HasSSL = true
+			domainMeta.SSLIssuer = record.IssuerName
+			domainMeta.SSLValidUntil = record.NotAfter
+			domainMeta.SSLValidFrom = record.NotBefore
+			domainMeta.SSLWildcard = strings.HasPrefix(host, "*.")
+
+			// Crear artifact con metadata tipado
+			artifact := domain.NewArtifactWithMetadata(
 				domain.ArtifactTypeSubdomain,
 				host,
 				c.Name(),
+				domainMeta,
 			)
 
-			// Añadir metadata del certificado
-			artifact.Metadata["issuer"] = record.IssuerName
-			artifact.Metadata["not_after"] = record.NotAfter
+			// Añadir metadata adicional del certificado en el mapa string
+			artifact.Metadata["cert_issuer"] = record.IssuerName
+			artifact.Metadata["cert_not_after"] = record.NotAfter
 			artifact.Metadata["cert_serial"] = record.SerialNumber
 
 			// Confianza alta para crt.sh (datos públicos oficiales)
 			artifact.Confidence = 0.95
 
+			// Tag automático si es wildcard
+			if strings.HasPrefix(host, "*.") {
+				artifact.AddTag("wildcard")
+			}
+
 			artifacts = append(artifacts, artifact)
+
+			// También guardamos el certificado como artifact separado (opcional)
+			certArtifact := domain.NewArtifactWithMetadata(
+				domain.ArtifactTypeCertificate,
+				record.SerialNumber,
+				c.Name(),
+				certMeta,
+			)
+			certArtifact.Confidence = 0.95
+			certArtifact.Metadata["subject_domain"] = host
+
+			artifacts = append(artifacts, certArtifact)
 		}
 	}
 
