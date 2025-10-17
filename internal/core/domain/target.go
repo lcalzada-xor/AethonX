@@ -1,0 +1,148 @@
+// internal/core/domain/target.go
+package domain
+
+import (
+	"fmt"
+	"net"
+	"regexp"
+	"strings"
+)
+
+// Target representa el objetivo del reconocimiento.
+type Target struct {
+	// Root es el dominio raíz objetivo
+	Root string
+
+	// Mode define el tipo de escaneo (pasivo, activo, híbrido)
+	Mode ScanMode
+
+	// Scope define qué incluir/excluir del reconocimiento
+	Scope ScopeConfig
+
+	// Tags adicionales para el target
+	Tags []string
+
+	// Metadata adicional
+	Metadata map[string]string
+}
+
+// ScopeConfig define el alcance del reconocimiento.
+type ScopeConfig struct {
+	// IncludeSubdomains indica si se deben incluir subdominios
+	IncludeSubdomains bool
+
+	// ExcludeDomains lista de dominios a excluir
+	ExcludeDomains []string
+
+	// MaxDepth profundidad máxima para subdominios recursivos (0 = sin límite)
+	MaxDepth int
+
+	// OnlyInScope si es true, solo incluye dominios que hagan match con Root
+	OnlyInScope bool
+}
+
+// NewTarget crea un nuevo target con valores por defecto.
+func NewTarget(root string, mode ScanMode) *Target {
+	return &Target{
+		Root: root,
+		Mode: mode,
+		Scope: ScopeConfig{
+			IncludeSubdomains: true,
+			ExcludeDomains:    []string{},
+			MaxDepth:          0,
+			OnlyInScope:       true,
+		},
+		Tags:     []string{},
+		Metadata: make(map[string]string),
+	}
+}
+
+// Validate verifica que el target sea válido.
+func (t *Target) Validate() error {
+	if t.Root == "" {
+		return ErrEmptyTarget
+	}
+
+	// Normalizar
+	t.Root = strings.ToLower(strings.TrimSpace(t.Root))
+	t.Root = strings.TrimSuffix(t.Root, ".")
+
+	// Validar formato de dominio
+	if !isValidDomain(t.Root) {
+		return fmt.Errorf("%w: %s", ErrInvalidDomain, t.Root)
+	}
+
+	// Validar modo
+	if !t.Mode.IsValid() {
+		return fmt.Errorf("%w: %s", ErrInvalidScanMode, t.Mode)
+	}
+
+	// Validar scope
+	if t.Scope.MaxDepth < 0 {
+		return ErrInvalidScope
+	}
+
+	return nil
+}
+
+// IsInScope verifica si un dominio está dentro del alcance del target.
+func (t *Target) IsInScope(domain string) bool {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+
+	// Verificar si está en la lista de exclusión
+	for _, excluded := range t.Scope.ExcludeDomains {
+		if domain == excluded || strings.HasSuffix(domain, "."+excluded) {
+			return false
+		}
+	}
+
+	// Si OnlyInScope está activado, verificar que pertenece al root
+	if t.Scope.OnlyInScope {
+		if domain == t.Root {
+			return true
+		}
+		if t.Scope.IncludeSubdomains && strings.HasSuffix(domain, "."+t.Root) {
+			return true
+		}
+		return false
+	}
+
+	return true
+}
+
+// AddExclusion añade un dominio a la lista de exclusión.
+func (t *Target) AddExclusion(domain string) {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	for _, ex := range t.Scope.ExcludeDomains {
+		if ex == domain {
+			return
+		}
+	}
+	t.Scope.ExcludeDomains = append(t.Scope.ExcludeDomains, domain)
+}
+
+// String retorna una representación legible del target.
+func (t *Target) String() string {
+	return fmt.Sprintf("Target{root=%s, mode=%s, scope=%v}", t.Root, t.Mode, t.Scope.IncludeSubdomains)
+}
+
+// isValidDomain verifica si un string es un dominio válido.
+func isValidDomain(domain string) bool {
+	if len(domain) == 0 || len(domain) > 253 {
+		return false
+	}
+
+	// Regex básica para validar dominios
+	// Permite dominios internacionales (IDN) y punycode
+	domainRegex := regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$`)
+	if !domainRegex.MatchString(domain) {
+		return false
+	}
+
+	// Verificar que no sea solo números (podría ser IP)
+	if net.ParseIP(domain) != nil {
+		return false
+	}
+
+	return true
+}

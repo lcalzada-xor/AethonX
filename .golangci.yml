@@ -1,0 +1,90 @@
+# golangci-lint configuration for AethonX
+# https://golangci-lint.run/usage/configuration/
+
+run:
+  timeout: 5m
+  tests: true
+  skip-dirs:
+    - vendor
+    - testdata
+  modules-download-mode: readonly
+
+output:
+  format: colored-line-number
+  print-issued-lines: true
+  print-linter-name: true
+
+linters:
+  enable:
+    - errcheck      # Check for unchecked errors
+    - gosimple      # Simplify code
+    - govet         # Reports suspicious constructs
+    - ineffassign   # Detect ineffectual assignments
+    - staticcheck   # Static analysis
+    - unused        # Check for unused code
+    - gofmt         # Check code is gofmt-ed
+    - goimports     # Check import statements
+    - misspell      # Finds commonly misspelled words
+    - revive        # Fast, configurable, extensible linter
+    - stylecheck    # Replacement for golint
+    - gosec         # Security checks
+    - gocritic      # Most opinionated linter
+  disable:
+    - typecheck     # Sometimes fails with build tags
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+
+  govet:
+    check-shadowing: true
+
+  gofmt:
+    simplify: true
+
+  revive:
+    severity: warning
+    rules:
+      - name: exported
+        severity: warning
+        disabled: false
+      - name: blank-imports
+      - name: context-as-argument
+      - name: dot-imports
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: increment-decrement
+      - name: var-naming
+      - name: package-comments
+        disabled: true  # We'll add these gradually
+      - name: range
+      - name: receiver-naming
+      - name: time-naming
+      - name: indent-error-flow
+      - name: if-return
+
+  gosec:
+    excludes:
+      - G104  # Audit errors not checked (covered by errcheck)
+
+  misspell:
+    locale: US
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # Exclude some linters from running on tests files
+    - path: _test\.go
+      linters:
+        - gosec
+        - gocritic
+
+    # Exclude specific warnings
+    - linters:
+        - stylecheck
+      text: "ST1000"  # Package comments
