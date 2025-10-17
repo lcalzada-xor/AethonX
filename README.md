@@ -6,28 +6,28 @@
 
 <p align="center">
   <b>Engine modular de reconocimiento pasivo y activo</b><br>
-  <i>Inspirado en Aethon, el caballo de Helios</i>
+  <i>Inspirado en Aethon, uno de los caballos de Helios</i>
 </p>
 
 ---
 
-**AethonX** es una herramienta de reconocimiento escrita en **Go**, diseñada para enumerar información de aplicaciones web de forma **pasiva** o **activa**, integrando múltiples fuentes en un flujo **orquestado**, **concurrente** y **extensible**.
+**AethonX** es una herramienta profesional de **reconocimiento web** escrita en **Go**, diseñada para automatizar la enumeración de activos y la recopilación de información de forma **pasiva** o **activa**.  
+Integra múltiples fuentes en un flujo **orquestado**, **concurrente** y **modular**, permitiendo extender fácilmente nuevas herramientas y fuentes de datos.
 
-
-> ⚔️ Inspirada en el titán y dragón solar **Aethon**, símbolo de la vigilancia constante:  
-> AethonX ilumina los activos ocultos y expone la superficie de ataque.
+> 🐎 El nombre *Aethon* proviene de la mitología griega: uno de los caballos de Helios, el dios del Sol.  
+> Al igual que Aethon iluminaba el mundo en su recorrido diario por el cielo, **AethonX** busca arrojar luz sobre los activos expuestos en la superficie digital.
 
 ---
 
-## ✨ Características
+## ✨ Características principales
 
-- 🔌 **Arquitectura modular**: cada fuente (`crt.sh`, `RDAP`, etc.) es un módulo independiente.  
-- ⚙️ **Orquestador concurrente**: ejecuta fuentes en paralelo con control de *workers*.  
-- 📚 **Interfaz común (`Source`)**: facilita añadir nuevas herramientas.  
-- 🧩 **Dedupe + normalización** integrados.  
-- 🧾 **Salidas personalizables**: tabla en terminal y JSON estructurado.  
-- 🛠️ **Configuración flexible** vía *flags* o variables de entorno.  
-- ⚡ **Preparado para fases activas** (DNSx, HTTPx, etc.) y reporting avanzado.  
+- 🔌 **Arquitectura modular**: cada fuente (`crt.sh`, `RDAP`, etc.) se implementa como módulo independiente.  
+- ⚙️ **Orquestador concurrente**: ejecución en paralelo con control de *workers* y manejo de contexto.  
+- 📚 **Interfaz unificada (`Source`)**: permite integrar nuevas herramientas fácilmente.  
+- 🧩 **Normalización y deduplicación** integradas para datos limpios y consolidados.  
+- 🧾 **Salidas flexibles**: tabla en terminal o formato JSON estructurado.  
+- 🛠️ **Configuración adaptable**: compatible con *flags*, variables de entorno y perfiles.  
+- ⚡ **Diseñada para extensibilidad**: preparada para fases activas (DNSx, HTTPx, etc.) y análisis avanzados.  
 
 ---
 
@@ -64,7 +64,7 @@ git clone https://github.com/lcalzada-xor/AethonX.git
 cd AethonX
 ```
 
-### 2️⃣ Inicializar y descargar dependencias
+### 2️⃣ Descargar dependencias
 
 ```bash
 go mod tidy
@@ -92,7 +92,7 @@ go build -o aethonx ./cmd/aethonx
 ./aethonx -target example.com -out.json -out results/
 ```
 
-### Ejecutar con más concurrencia y tiempo de espera personalizado
+### Control de concurrencia y timeout
 
 ```bash
 ./aethonx -target example.com -workers 8 -timeout 60
