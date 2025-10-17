@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/39d0c4ab-e12e-41a4-b885-7ed0c2f54073" alt="AethonX Logo" width="480"/>
+  <img src="https://github.com/user-attachments/assets/048eaff9-61c1-4429-aa0a-64d0c18be00f" alt="AethonX Logo" width="480"/>
 </p>
 
 <h1 align="center">🧠 AethonX</h1>
