@@ -102,12 +102,42 @@ func (t *Target) IsInScope(domain string) bool {
 			return true
 		}
 		if t.Scope.IncludeSubdomains && strings.HasSuffix(domain, "."+t.Root) {
+			// Verificar profundidad máxima si está configurada
+			if t.Scope.MaxDepth > 0 {
+				depth := t.calculateSubdomainDepth(domain)
+				if depth > t.Scope.MaxDepth {
+					return false
+				}
+			}
 			return true
 		}
 		return false
 	}
 
 	return true
+}
+
+// calculateSubdomainDepth calcula la profundidad de un subdominio relativo al root.
+// Ejemplo: para root="example.com"
+//   - "example.com" = 0
+//   - "test.example.com" = 1
+//   - "api.test.example.com" = 2
+func (t *Target) calculateSubdomainDepth(domain string) int {
+	if domain == t.Root {
+		return 0
+	}
+
+	// Contar cuántos niveles adicionales hay
+	// Remover el root del final
+	if !strings.HasSuffix(domain, "."+t.Root) {
+		return 0
+	}
+
+	// Extraer la parte del subdominio
+	subdomain := strings.TrimSuffix(domain, "."+t.Root)
+
+	// Contar los puntos en la parte del subdominio
+	return strings.Count(subdomain, ".") + 1
 }
 
 // AddExclusion añade un dominio a la lista de exclusión.
