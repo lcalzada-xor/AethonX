@@ -15,8 +15,12 @@ import (
 	"aethonx/internal/core/usecases"
 	"aethonx/internal/platform/config"
 	"aethonx/internal/platform/logx"
-	"aethonx/internal/sources/crtsh"
-	"aethonx/internal/sources/rdap"
+	"aethonx/internal/platform/registry"
+	"aethonx/internal/platform/resilience"
+
+	// Import sources for auto-registration via init()
+	_ "aethonx/internal/sources/crtsh"
+	_ "aethonx/internal/sources/rdap"
 )
 
 var (
@@ -76,26 +80,56 @@ func main() {
 		os.Exit(2)
 	}
 
-	// 5. Registrar fuentes según config
-	sources := buildSources(logger, cfg)
+	// 5. Build sources from registry with resilience wrappers
+	sources, err := buildSourcesWithResilience(logger, cfg)
+	if err != nil {
+		logger.Err(err, "phase", "source-build")
+		os.Exit(2)
+	}
 
 	if len(sources) == 0 {
 		logger.Err(fmt.Errorf("no sources enabled"))
 		os.Exit(2)
 	}
 
-	logger.Info("sources registered", "count", len(sources))
+	// Asegurar cleanup de sources al finalizar
+	defer func() {
+		for _, src := range sources {
+			if err := src.Close(); err != nil {
+				logger.Warn("failed to close source",
+					"source", src.Name(),
+					"error", err.Error(),
+				)
+			}
+		}
+	}()
 
-	// 6. Crear orquestador
+	logger.Info("sources built", "count", len(sources))
+
+	// 6. Crear streaming writer
+	scanID := fmt.Sprintf("scan-%d", time.Now().Unix())
+	streamingWriter := output.NewStreamingWriter(cfg.OutputDir, scanID, cfg.Target, logger)
+
+	logger.Info("streaming configured",
+		"threshold", cfg.Streaming.ArtifactThreshold,
+		"output_dir", cfg.OutputDir,
+	)
+
+	// 7. Crear orquestador
 	orch := usecases.NewOrchestrator(usecases.OrchestratorOptions{
-		Sources:    sources,
-		Logger:     logger,
-		Observers:  []ports.Notifier{}, // Futuro: webhooks, metrics, etc.
-		MaxWorkers: max(1, cfg.Workers),
-		FailFast:   false,
+		Sources:         sources,
+		Logger:          logger,
+		Observers:       []ports.Notifier{}, // Futuro: webhooks, metrics, etc.
+		MaxWorkers:      max(1, cfg.Workers),
+		FailFast:        false,
+		StreamingWriter: streamingWriter,
+		StreamingConfig: usecases.StreamingConfig{
+			ArtifactThreshold: cfg.Streaming.ArtifactThreshold,
+			OutputDir:         cfg.OutputDir,
+		},
 	})
 
-	// 7. Ejecutar flujo
+	// 8. Ejecutar flujo
 	start := time.Now()
 	result, runErr := orch.Run(ctx, *target)
 	elapsed := time.Since(start)
@@ -109,13 +143,13 @@ func main() {
 		}
 	}
 
-	// 8. Manejo de error de ejecución
+	// 9. Manejo de error de ejecución
 	if runErr != nil {
 		logger.Err(runErr, "phase", "run", "elapsed_ms", elapsed.Milliseconds())
 		// Continuamos para emitir lo que haya, útil en pipelines
 	}
 
-	// 9. Salidas
+	// 10. Salidas
 	if result != nil {
 		outErr := writeOutputs(cfg, result)
 		if outErr != nil {
@@ -124,7 +158,7 @@ func main() {
 		}
 	}
 
-	// 10. Resumen
+	// 11. Resumen
 	if result != nil {
 		logger.Info("aethonx finished",
 			"elapsed_ms", elapsed.Milliseconds(),
@@ -139,42 +173,60 @@ func main() {
 	}
 }
 
-// buildSources registra las fuentes disponibles respetando toggles de config.
-// Mantén esta función como único punto de ensamblaje para nuevas herramientas.
-func buildSources(logger logx.Logger, cfg config.Config) []ports.Source {
-	var sources []ports.Source
-
-	// Registrar crt.sh si está habilitada
-	if cfg.Sources.CRTSHEnabled {
-		sources = append(sources, crtsh.New(logger))
-		logger.Debug("registered source", "name", "crtsh")
+// buildSourcesWithResilience construye sources desde el registry con resilience wrappers.
+func buildSourcesWithResilience(logger logx.Logger, cfg config.Config) ([]ports.Source, error) {
+	// Build sources from registry
+	sources, err := registry.Global().Build(cfg.Sources, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build sources: %w", err)
 	}
 
-	// Registrar RDAP si está habilitada
-	if cfg.Sources.RDAPEnabled {
-		sources = append(sources, rdap.New(logger))
-		logger.Debug("registered source", "name", "rdap")
+	// Wrap sources con resilience (retry + circuit breaker) si está habilitado
+	if cfg.Resilience.CircuitBreakerEnabled {
+		resilientSources := make([]ports.Source, 0, len(sources))
+
+		for _, src := range sources {
+			// Crear circuit breaker específico para esta source
+			cb := resilience.NewCircuitBreaker(
+				cfg.Resilience.CircuitBreakerThreshold,
+				cfg.Resilience.CircuitBreakerTimeout,
+				cfg.Resilience.CircuitBreakerHalfOpenMax,
+			)
+
+			// Wrap con RetryableSource
+			retryable := resilience.NewRetryableSource(
+				src,
+				cfg.Resilience.MaxRetries,
+				cfg.Resilience.BackoffBase,
+				cfg.Resilience.BackoffMultiplier,
+				cb,
+				logger,
+			)
+
+			resilientSources = append(resilientSources, retryable)
+
+			logger.Debug("wrapped source with resilience",
+				"source", src.Name(),
+				"max_retries", cfg.Resilience.MaxRetries,
+				"circuit_breaker", "enabled",
+			)
+		}
+
+		return resilientSources, nil
 	}
 
-	// Futuras fuentes:
-	// if cfg.Sources.SubfinderEnabled {
-	//     sources = append(sources, subfinder.New(logger, cfg.Platform))
-	// }
-	// if cfg.Sources.AmassEnabled {
-	//     sources = append(sources, amass.New(logger, cfg.Platform, cfg.Active))
-	// }
-
-	return sources
+	// Resilience deshabilitada, retornar sources sin wrapper
+	logger.Debug("resilience disabled, using sources directly")
+	return sources, nil
 }
 
 // writeOutputs decide y ejecuta las salidas según config.
 // Mantener aislado del main facilita añadir nuevos formatos sin tocar el flujo.
 func writeOutputs(cfg config.Config, result *domain.ScanResult) error {
-	// Prioridad a JSON si se pide explícitamente
-	if cfg.Outputs.JSONEnabled {
-		if err := output.OutputJSON(cfg.OutputDir, result); err != nil {
-			return fmt.Errorf("json output: %w", err)
-		}
+	// SIEMPRE generar JSON consolidado (requerido para streaming)
+	// Este archivo contiene el resultado final después de deduplicación y construcción del grafo
+	if err := output.OutputJSON(cfg.OutputDir, result); err != nil {
+		return fmt.Errorf("json output: %w", err)
 	}
 
 	// Tabla legible por terminal si no se desactiva
@@ -184,33 +236,46 @@ func writeOutputs(cfg config.Config, result *domain.ScanResult) error {
 		}
 	}
 
-	// Aquí puedes encadenar otros adaptadores: NDJSON, Markdown, SARIF, etc.
-	// if cfg.Outputs.NDJSONEnabled { ... }
-	// if cfg.Outputs.MarkdownEnabled { ... }
-
 	return nil
 }
 
 // rootContextWithSignals crea un contexto raíz con timeout opcional y cancelación por señal.
+// Retorna un contexto y una función cancel que limpia todos los recursos (señales, goroutines).
 func rootContextWithSignals(timeoutSeconds int) (context.Context, context.CancelFunc) {
 	var base context.Context
-	var cancel context.CancelFunc
+	var baseCancel context.CancelFunc
 
 	if timeoutSeconds > 0 {
-		base, cancel = context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+		base, baseCancel = context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	} else {
-		base, cancel = context.WithCancel(context.Background())
+		base, baseCancel = context.WithCancel(context.Background())
 	}
 
-	// Cancelación por SIGINT/SIGTERM
+	// Canal para señales del sistema
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+
+	// Goroutine que espera señales O cancelación del contexto
 	go func() {
-		<-ch
-		cancel()
+		select {
+		case <-ch:
+			// Señal recibida, cancelar contexto
+			baseCancel()
+		case <-base.Done():
+			// Contexto cancelado por timeout u otra razón
+			// La goroutine puede terminar
+			return
+		}
 	}()
 
-	return base, cancel
+	// Función de cancelación que limpia TODO
+	cleanupCancel := func() {
+		signal.Stop(ch) // Detener el handler de señales
+		close(ch)       // Cerrar el canal
+		baseCancel()    // Cancelar el contexto base
+	}
+
+	return base, cleanupCancel
 }
 
 func max(a, b int) int {

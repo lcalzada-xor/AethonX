@@ -72,6 +72,23 @@ type Warning struct {
 	Context map[string]string
 }
 
+// ErrorSeverity define la severidad de un error.
+type ErrorSeverity string
+
+const (
+	// ErrorInfo error informativo, no afecta operación
+	ErrorInfo ErrorSeverity = "info"
+
+	// ErrorWarning advertencia, operación degradada pero continúa
+	ErrorWarning ErrorSeverity = "warning"
+
+	// ErrorCritical error crítico, source fallido pero scan continúa
+	ErrorCritical ErrorSeverity = "critical"
+
+	// ErrorFatal error fatal, detiene todo el escaneo
+	ErrorFatal ErrorSeverity = "fatal"
+)
+
 // Error representa un error ocurrido durante el escaneo.
 type Error struct {
 	// Source fuente que generó el error
@@ -80,7 +97,11 @@ type Error struct {
 	// Message descripción del error
 	Message string
 
+	// Severity severidad del error
+	Severity ErrorSeverity
+
 	// Fatal indica si el error es fatal (detiene el escaneo)
+	// Deprecated: usar Severity == ErrorFatal
 	Fatal bool
 
 	// Timestamp momento del error
@@ -88,6 +109,9 @@ type Error struct {
 
 	// Context contexto adicional
 	Context map[string]string
+
+	// Retryable indica si el error es recuperable con retry
+	Retryable bool
 }
 
 // NewScanResult crea un nuevo resultado de escaneo.
@@ -129,14 +153,25 @@ func (r *ScanResult) AddWarning(source, message string) {
 	})
 }
 
-// AddError añade un error al resultado.
+// AddError añade un error al resultado (deprecated, usar AddErrorWithSeverity).
 func (r *ScanResult) AddError(source, message string, fatal bool) {
+	severity := ErrorCritical
+	if fatal {
+		severity = ErrorFatal
+	}
+	r.AddErrorWithSeverity(source, message, severity, true)
+}
+
+// AddErrorWithSeverity añade un error con severidad específica.
+func (r *ScanResult) AddErrorWithSeverity(source, message string, severity ErrorSeverity, retryable bool) {
 	r.Errors = append(r.Errors, Error{
 		Source:    source,
 		Message:   message,
-		Fatal:     fatal,
+		Severity:  severity,
+		Fatal:     severity == ErrorFatal,
 		Timestamp: time.Now(),
 		Context:   make(map[string]string),
+		Retryable: retryable,
 	})
 }
 

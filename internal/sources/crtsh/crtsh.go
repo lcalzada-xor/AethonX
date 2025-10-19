@@ -14,7 +14,28 @@ import (
 	"aethonx/internal/core/domain/metadata"
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
+	"aethonx/internal/platform/registry"
 )
+
+// Auto-registro de la source al importar el package
+func init() {
+	registry.Global().MustRegister(
+		"crtsh",
+		func(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
+			return New(logger), nil
+		},
+		ports.SourceMetadata{
+			Name:        "crtsh",
+			Description: "Certificate Transparency log search via crt.sh",
+			Version:     "1.0.0",
+			Author:      "AethonX",
+			Mode:        domain.SourceModePassive,
+			Type:        domain.SourceTypeAPI,
+			RequiresAuth: false,
+			RateLimit:   0, // No documented rate limit
+		},
+	)
+}
 
 // CRT implementa una fuente que consulta la base de datos crt.sh
 // para descubrir certificados SSL/TLS y subdominios asociados.
@@ -182,6 +203,15 @@ func (c *CRT) processRecords(records []certRecord, target domain.Target) []*doma
 	}
 
 	return artifacts
+}
+
+// Close implements ports.Source
+// No hay recursos que liberar actualmente, pero implementamos el método
+// para cumplir con la interfaz ports.Source.
+func (c *CRT) Close() error {
+	c.logger.Debug("closing crtsh source")
+	// http.Client no requiere Close() explícito
+	return nil
 }
 
 // certRecord representa un registro de certificado de crt.sh.

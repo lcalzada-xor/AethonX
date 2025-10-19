@@ -22,6 +22,9 @@ type Source interface {
 
 	// Run ejecuta la fuente contra el target y retorna los resultados
 	Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error)
+
+	// Close libera recursos utilizados por la fuente (goroutines, conexiones, etc.)
+	Close() error
 }
 
 // AdvancedSource extiende Source con capacidades adicionales opcionales.
@@ -34,9 +37,6 @@ type AdvancedSource interface {
 
 	// Validate verifica que la fuente esté correctamente configurada
 	Validate() error
-
-	// Close libera recursos utilizados por la fuente
-	Close() error
 
 	// HealthCheck verifica que la fuente esté operativa
 	HealthCheck(ctx context.Context) error

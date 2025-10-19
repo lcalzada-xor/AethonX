@@ -3,6 +3,7 @@ package domain
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -30,7 +31,8 @@ type Artifact struct {
 	Sources []string
 
 	// TypedMetadata contiene metadata estructurado y tipado
-	TypedMetadata metadata.ArtifactMetadata
+	// Usa custom serialization via MarshalJSON/UnmarshalJSON
+	TypedMetadata metadata.ArtifactMetadata `json:"-"`
 
 	// Relations contiene las relaciones con otros artifacts
 	Relations []ArtifactRelation
@@ -476,4 +478,77 @@ func isValidCertSerial(serial string) bool {
 	}
 
 	return true
+}
+
+// artifactJSON es una estructura auxiliar para serialización custom.
+type artifactJSON struct {
+	ID            string                      `json:"id"`
+	Type          ArtifactType                `json:"type"`
+	Value         string                      `json:"value"`
+	Sources       []string                    `json:"sources"`
+	Metadata      *metadata.MetadataEnvelope  `json:"metadata,omitempty"`
+	Relations     []ArtifactRelation          `json:"relations"`
+	Confidence    float64                     `json:"confidence"`
+	DiscoveredAt  time.Time                   `json:"discovered_at"`
+	Tags          []string                    `json:"tags"`
+}
+
+// MarshalJSON implementa custom JSON marshaling para Artifact.
+// Serializa TypedMetadata usando MetadataEnvelope.
+func (a *Artifact) MarshalJSON() ([]byte, error) {
+	// Serializar metadata tipado
+	var metaEnvelope *metadata.MetadataEnvelope
+	if a.TypedMetadata != nil {
+		var err error
+		metaEnvelope, err = metadata.MarshalMetadata(a.TypedMetadata)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal typed metadata: %w", err)
+		}
+	}
+
+	// Crear estructura auxiliar
+	aux := artifactJSON{
+		ID:           a.ID,
+		Type:         a.Type,
+		Value:        a.Value,
+		Sources:      a.Sources,
+		Metadata:     metaEnvelope,
+		Relations:    a.Relations,
+		Confidence:   a.Confidence,
+		DiscoveredAt: a.DiscoveredAt,
+		Tags:         a.Tags,
+	}
+
+	return json.Marshal(aux)
+}
+
+// UnmarshalJSON implementa custom JSON unmarshaling para Artifact.
+// Deserializa MetadataEnvelope a TypedMetadata concreto.
+func (a *Artifact) UnmarshalJSON(data []byte) error {
+	// Deserializar a estructura auxiliar
+	var aux artifactJSON
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Asignar campos simples
+	a.ID = aux.ID
+	a.Type = aux.Type
+	a.Value = aux.Value
+	a.Sources = aux.Sources
+	a.Relations = aux.Relations
+	a.Confidence = aux.Confidence
+	a.DiscoveredAt = aux.DiscoveredAt
+	a.Tags = aux.Tags
+
+	// Deserializar metadata tipado
+	if aux.Metadata != nil {
+		var err error
+		a.TypedMetadata, err = metadata.UnmarshalMetadata(aux.Metadata)
+		if err != nil {
+			return fmt.Errorf("failed to unmarshal typed metadata: %w", err)
+		}
+	}
+
+	return nil
 }

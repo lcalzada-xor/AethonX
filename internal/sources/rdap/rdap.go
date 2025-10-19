@@ -17,7 +17,28 @@ import (
 	"aethonx/internal/platform/errors"
 	"aethonx/internal/platform/httpx"
 	"aethonx/internal/platform/logx"
+	"aethonx/internal/platform/registry"
 )
+
+// Auto-registro de la source al importar el package
+func init() {
+	registry.Global().MustRegister(
+		"rdap",
+		func(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
+			return New(logger), nil
+		},
+		ports.SourceMetadata{
+			Name:         "rdap",
+			Description:  "RDAP (Registration Data Access Protocol) domain WHOIS data retrieval",
+			Version:      "1.0.0",
+			Author:       "AethonX",
+			Mode:         domain.SourceModePassive,
+			Type:         domain.SourceTypeAPI,
+			RequiresAuth: false,
+			RateLimit:    0, // Varies by RDAP server
+		},
+	)
+}
 
 const (
 	// RDAP bootstrap service for automatic server discovery
@@ -32,9 +53,10 @@ const (
 
 // RDAP implements the ports.Source interface for RDAP queries
 type RDAP struct {
-	client httpx.Client
-	cache  cache.Cache
-	logger logx.Logger
+	client      httpx.Client
+	cache       cache.Cache
+	logger      logx.Logger
+	stopCleanup func() // Función para detener el cache cleanup worker
 }
 
 // rdapResponse representa la respuesta de RDAP (simplificada)
@@ -110,15 +132,25 @@ func New(logger logx.Logger) ports.Source {
 		RetryBackoff:    1 * time.Second,
 		MaxRetryBackoff: 10 * time.Second,
 		UserAgent:       "AethonX/1.0 RDAP Client",
-		RateLimit:       5,  // 5 requests per second
+		RateLimit:       5, // 5 requests per second
 		RateLimitBurst:  2,
 	}
 
-	return &RDAP{
+	// Create cache
+	rdapCache := cache.NewMemoryCache(1000) // Cache up to 1000 domains
+
+	// Create RDAP instance
+	r := &RDAP{
 		client: *httpx.New(httpConfig, logger),
-		cache:  cache.NewMemoryCache(1000), // Cache up to 1000 domains
+		cache:  rdapCache,
 		logger: logger.With("source", sourceName),
 	}
+
+	// Iniciar cleanup worker (limpieza cada 1 hora)
+	r.stopCleanup = rdapCache.StartCleanupWorker(1 * time.Hour)
+	r.logger.Debug("cache cleanup worker started", "interval", "1h")
+
+	return r
 }
 
 // Name implements ports.Source
@@ -491,6 +523,19 @@ func (r *RDAP) hasRole(roles []string, role string) bool {
 		}
 	}
 	return false
+}
+
+// Close implements ports.Source
+// Detiene el cache cleanup worker y libera recursos.
+func (r *RDAP) Close() error {
+	r.logger.Debug("closing RDAP source")
+
+	if r.stopCleanup != nil {
+		r.stopCleanup()
+		r.logger.Debug("cache cleanup worker stopped")
+	}
+
+	return nil
 }
 
 // extractBaseDomain extracts the base domain from a target value

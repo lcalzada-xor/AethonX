@@ -71,15 +71,40 @@ func AssertFalse(t *testing.T, condition bool, msg string) {
 	}
 }
 
-// AssertContains verifica que un slice contenga un elemento.
-func AssertContains(t *testing.T, slice []string, element string, msg string) {
+// AssertContains verifica que un slice contenga un elemento O que un string contenga un substring.
+func AssertContains(t *testing.T, container interface{}, element string, msg string) {
 	t.Helper()
-	for _, item := range slice {
-		if item == element {
-			return
+
+	switch v := container.(type) {
+	case []string:
+		for _, item := range v {
+			if item == element {
+				return
+			}
+		}
+		t.Errorf("%s: slice %v does not contain %s", msg, v, element)
+	case string:
+		if !ContainsStr(v, element) {
+			t.Errorf("%s: string %q does not contain %q", msg, v, element)
+		}
+	default:
+		t.Errorf("%s: unsupported type for AssertContains", msg)
+	}
+}
+
+// ContainsStr verifica si un string contiene un substring.
+func ContainsStr(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexStr(s, substr) >= 0)
+}
+
+// indexStr encuentra la primera ocurrencia de substr en s.
+func indexStr(s, substr string) int {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
 		}
 	}
-	t.Errorf("%s: slice %v does not contain %s", msg, slice, element)
+	return -1
 }
 
 // AssertLen verifica la longitud de un slice.

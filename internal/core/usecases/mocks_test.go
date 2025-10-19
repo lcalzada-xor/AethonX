@@ -49,6 +49,11 @@ func (m *mockSource) Run(ctx context.Context, target domain.Target) (*domain.Sca
 	return result, nil
 }
 
+func (m *mockSource) Close() error {
+	// Mock source no tiene recursos que liberar
+	return nil
+}
+
 // mockSourceWithArtifacts creates a mock that returns specific artifacts
 func mockSourceWithArtifacts(name string, artifacts []*domain.Artifact) *mockSource {
 	mock := newMockSource(name, domain.SourceModePassive, domain.SourceTypeAPI)

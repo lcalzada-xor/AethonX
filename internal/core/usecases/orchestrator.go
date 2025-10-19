@@ -3,7 +3,9 @@ package usecases
 
 import (
 	"context"
+	"fmt"
 	"sync"
+	"time"
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/ports"
@@ -18,17 +20,37 @@ type Orchestrator struct {
 	observers []ports.Notifier
 
 	// Configuración
-	maxWorkers int
-	failFast   bool
+	maxWorkers      int
+	failFast        bool
+	streamingWriter StreamingWriter
+	streamingConfig StreamingConfig
+
+	// Control de goroutines
+	notifyWg sync.WaitGroup
 }
 
 // OrchestratorOptions configura el orchestrator.
 type OrchestratorOptions struct {
-	Sources    []ports.Source
-	Logger     logx.Logger
-	Observers  []ports.Notifier
-	MaxWorkers int
-	FailFast   bool
+	Sources         []ports.Source
+	Logger          logx.Logger
+	Observers       []ports.Notifier
+	MaxWorkers      int
+	FailFast        bool
+	StreamingWriter StreamingWriter
+	StreamingConfig StreamingConfig
+}
+
+// StreamingWriter es la interfaz para escribir resultados parciales.
+type StreamingWriter interface {
+	WritePartial(sourceName string, result *domain.ScanResult) (string, error)
+	GetPattern() string
+	GetFinalFilename() string
+}
+
+// StreamingConfig configura el comportamiento de streaming.
+type StreamingConfig struct {
+	ArtifactThreshold int
+	OutputDir         string
 }
 
 // NewOrchestrator crea una nueva instancia del orchestrator.
@@ -39,14 +61,19 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 	if opts.Logger == nil {
 		opts.Logger = logx.New()
 	}
+	if opts.StreamingConfig.ArtifactThreshold <= 0 {
+		opts.StreamingConfig.ArtifactThreshold = 1000 // default
+	}
 
 	return &Orchestrator{
-		sources:    opts.Sources,
-		dedupe:     NewDedupeService(),
-		logger:     opts.Logger.With("component", "orchestrator"),
-		observers:  opts.Observers,
-		maxWorkers: opts.MaxWorkers,
-		failFast:   opts.FailFast,
+		sources:         opts.Sources,
+		dedupe:          NewDedupeService(),
+		logger:          opts.Logger.With("component", "orchestrator"),
+		observers:       opts.Observers,
+		maxWorkers:      opts.MaxWorkers,
+		failFast:        opts.FailFast,
+		streamingWriter: opts.StreamingWriter,
+		streamingConfig: opts.StreamingConfig,
 	}
 }
 
@@ -87,13 +114,32 @@ func (o *Orchestrator) Run(ctx context.Context, target domain.Target) (*domain.S
 	// Ejecutar fuentes en paralelo
 	sourceResults := o.executeSources(ctx, sources, target)
 
-	// Consolidar resultados
+	// Consolidar resultados en memoria
 	o.consolidateResults(result, sourceResults)
 
-	// Deduplicar y normalizar artifacts
+	// Si hay streaming writer, cargar archivos parciales
+	if o.streamingWriter != nil {
+		o.logger.Info("loading partial results from disk")
+		merger := NewMergeService(o.logger)
+		pattern := o.streamingWriter.GetPattern()
+
+		partialResults, err := merger.LoadPartialResults(o.streamingConfig.OutputDir, pattern)
+		if err != nil {
+			o.logger.Warn("failed to load partial results", "error", err.Error())
+		} else if len(partialResults) > 0 {
+			// Consolidar artifacts de archivos parciales
+			merger.ConsolidateIntoResult(result, partialResults)
+			o.logger.Info("partial results consolidated",
+				"sources", len(partialResults),
+				"total_artifacts", len(result.Artifacts),
+			)
+		}
+	}
+
+	// Deduplicar y normalizar artifacts (ahora con todos los artifacts)
 	result.Artifacts = o.dedupe.Deduplicate(result.Artifacts)
 
-	// Construir grafo y agregar estadísticas
+	// Construir grafo y agregar estadísticas (requiere todos los artifacts deduplicados)
 	graph := NewGraphService(result.Artifacts, o.logger)
 	graphStats := graph.GetStats()
 
@@ -113,6 +159,15 @@ func (o *Orchestrator) Run(ctx context.Context, target domain.Target) (*domain.S
 		"duration_ms", result.Metadata.Duration.Milliseconds(),
 	)
 
+	// Limpiar archivos parciales después de consolidación exitosa
+	if o.streamingWriter != nil {
+		merger := NewMergeService(o.logger)
+		pattern := o.streamingWriter.GetPattern()
+		if err := merger.ClearPartialFiles(o.streamingConfig.OutputDir, pattern); err != nil {
+			o.logger.Warn("failed to clear partial files", "error", err.Error())
+		}
+	}
+
 	// Notificar finalización
 	o.notify(ctx, ports.NewEvent(
 		ports.EventTypeScanCompleted,
@@ -124,6 +179,11 @@ func (o *Orchestrator) Run(ctx context.Context, target domain.Target) (*domain.S
 			Duration:       result.Metadata.Duration,
 		},
 	))
+
+	// Esperar a que todas las notificaciones terminen antes de retornar
+	o.logger.Debug("waiting for all notifications to complete")
+	o.notifyWg.Wait()
+	o.logger.Debug("all notifications completed")
 
 	return result, nil
 }
@@ -205,16 +265,43 @@ func (o *Orchestrator) executeSource(
 		}
 	}
 
+	artifactCount := len(scanResult.Artifacts)
 	o.logger.Debug("source completed",
 		"source", sourceName,
-		"artifacts", len(scanResult.Artifacts),
+		"artifacts", artifactCount,
 	)
+
+	// Si streaming está habilitado Y se supera el threshold, escribir parcial
+	if o.streamingWriter != nil && artifactCount >= o.streamingConfig.ArtifactThreshold {
+		o.logger.Info("writing partial result to disk",
+			"source", sourceName,
+			"artifacts", artifactCount,
+			"threshold", o.streamingConfig.ArtifactThreshold,
+		)
+
+		filepath, writeErr := o.streamingWriter.WritePartial(sourceName, scanResult)
+		if writeErr != nil {
+			o.logger.Warn("failed to write partial result", "source", sourceName, "error", writeErr.Error())
+		} else {
+			o.logger.Info("partial result written",
+				"source", sourceName,
+				"file", filepath,
+			)
+
+			// Liberar artifacts de memoria, mantener solo metadata y contadores
+			// El GC podrá liberar la memoria ahora
+			scanResult.Artifacts = nil
+
+			// Marcar que este resultado fue escrito a disco
+			scanResult.AddWarning(sourceName, fmt.Sprintf("artifacts written to disk (%d artifacts)", artifactCount))
+		}
+	}
 
 	// Notificar finalización de fuente
 	o.notify(ctx, ports.NewEvent(
 		ports.EventTypeSourceCompleted,
 		sourceName,
-		len(scanResult.Artifacts),
+		artifactCount,
 	))
 
 	return sourceResult{
@@ -254,12 +341,40 @@ func (o *Orchestrator) consolidateResults(
 }
 
 // notify envía una notificación a todos los observers.
+// Usa goroutines con WaitGroup y timeout para evitar leaks y bloqueos.
 func (o *Orchestrator) notify(ctx context.Context, event ports.Event) {
+	const notificationTimeout = 5 * time.Second
+
 	for _, observer := range o.observers {
-		// Ejecutar de forma asíncrona para no bloquear
+		o.notifyWg.Add(1)
 		go func(notifier ports.Notifier) {
-			if err := notifier.Notify(ctx, event); err != nil {
-				o.logger.Warn("notification failed", "error", err.Error())
+			defer o.notifyWg.Done()
+
+			// Crear contexto con timeout para esta notificación
+			notifyCtx, cancel := context.WithTimeout(ctx, notificationTimeout)
+			defer cancel()
+
+			// Canal para capturar el resultado
+			done := make(chan error, 1)
+
+			// Ejecutar notificación en goroutine separada
+			go func() {
+				done <- notifier.Notify(notifyCtx, event)
+			}()
+
+			// Esperar resultado o timeout
+			select {
+			case err := <-done:
+				if err != nil {
+					o.logger.Warn("notification failed", "error", err.Error())
+				}
+			case <-notifyCtx.Done():
+				if notifyCtx.Err() == context.DeadlineExceeded {
+					o.logger.Warn("notification timeout exceeded",
+						"timeout", notificationTimeout,
+						"event_type", event.Type,
+					)
+				}
 			}
 		}(observer)
 	}

@@ -341,7 +341,6 @@ func TestLoad_FromEnv(t *testing.T) {
 	os.Setenv("AETHONX_OUTPUT_DIR", "custom_out")
 	os.Setenv("AETHONX_SOURCES_CRTSH", "false")
 	os.Setenv("AETHONX_SOURCES_RDAP", "true")
-	os.Setenv("AETHONX_OUTPUTS_JSON", "true")
 	os.Setenv("AETHONX_OUTPUTS_TABLE_DISABLED", "false")
 	os.Setenv("AETHONX_PROXY_URL", "http://proxy.example.com:8080")
 
@@ -353,7 +352,6 @@ func TestLoad_FromEnv(t *testing.T) {
 		os.Unsetenv("AETHONX_OUTPUT_DIR")
 		os.Unsetenv("AETHONX_SOURCES_CRTSH")
 		os.Unsetenv("AETHONX_SOURCES_RDAP")
-		os.Unsetenv("AETHONX_OUTPUTS_JSON")
 		os.Unsetenv("AETHONX_OUTPUTS_TABLE_DISABLED")
 		os.Unsetenv("AETHONX_PROXY_URL")
 	}()
@@ -388,9 +386,6 @@ func TestLoad_FromEnv(t *testing.T) {
 	if cfg.Sources.RDAPEnabled != true {
 		t.Errorf("Sources.RDAPEnabled: expected true, got %v", cfg.Sources.RDAPEnabled)
 	}
-	if cfg.Outputs.JSONEnabled != true {
-		t.Errorf("Outputs.JSONEnabled: expected true, got %v", cfg.Outputs.JSONEnabled)
-	}
 	if cfg.Outputs.TableDisabled != false {
 		t.Errorf("Outputs.TableDisabled: expected false, got %v", cfg.Outputs.TableDisabled)
 	}
@@ -416,7 +411,6 @@ func TestLoad_Defaults(t *testing.T) {
 		"AETHONX_OUTPUT_DIR",
 		"AETHONX_SOURCES_CRTSH",
 		"AETHONX_SOURCES_RDAP",
-		"AETHONX_OUTPUTS_JSON",
 		"AETHONX_OUTPUTS_TABLE_DISABLED",
 		"AETHONX_PROXY_URL",
 	}
@@ -454,9 +448,6 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.Sources.RDAPEnabled != true {
 		t.Errorf("Sources.RDAPEnabled: expected true, got %v", cfg.Sources.RDAPEnabled)
-	}
-	if cfg.Outputs.JSONEnabled != false {
-		t.Errorf("Outputs.JSONEnabled: expected false, got %v", cfg.Outputs.JSONEnabled)
 	}
 	if cfg.Outputs.TableDisabled != false {
 		t.Errorf("Outputs.TableDisabled: expected false, got %v", cfg.Outputs.TableDisabled)
