@@ -58,10 +58,10 @@ func TestArtifact_Normalize(t *testing.T) {
 			expected: "admin@example.com",
 		},
 		{
-			name:     "normalize URL - lowercase",
+			name:     "normalize URL - lowercase scheme and host",
 			artType:  ArtifactTypeURL,
 			input:    "HTTPS://EXAMPLE.COM/PATH",
-			expected: "https://example.com/path",
+			expected: "https://example.com/PATH",
 		},
 		{
 			name:     "normalize IP - trim spaces",
@@ -281,4 +281,281 @@ func TestArtifact_TypedMetadataAccess(t *testing.T) {
 	// Verificar que ToMap() funciona para serialización
 	metaMap := meta.ToMap()
 	testutil.AssertEqual(t, metaMap["registrar"], "Test Registrar", "ToMap should work for serialization")
+}
+
+// Advanced normalization and validation tests
+
+func TestArtifact_IPNormalization(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		valid    bool
+	}{
+		{
+			name:     "valid IPv4",
+			input:    "192.168.1.1",
+			expected: "192.168.1.1",
+			valid:    true,
+		},
+		{
+			name:     "IPv4 with spaces",
+			input:    "  192.168.1.1  ",
+			expected: "192.168.1.1",
+			valid:    true,
+		},
+		{
+			name:     "valid IPv6",
+			input:    "2001:0db8:0000:0000:0000:0000:0000:0001",
+			expected: "2001:db8::1",
+			valid:    true,
+		},
+		{
+			name:     "IPv6 shorthand",
+			input:    "2001:db8::1",
+			expected: "2001:db8::1",
+			valid:    true,
+		},
+		{
+			name:     "invalid IP - letters",
+			input:    "192.168.1.abc",
+			expected: "",
+			valid:    false,
+		},
+		{
+			name:     "invalid IP - out of range",
+			input:    "192.168.1.256",
+			expected: "",
+			valid:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewArtifact(ArtifactTypeIP, tt.input, "test")
+
+			if tt.valid {
+				testutil.AssertEqual(t, a.Value, tt.expected, "normalized IP")
+				testutil.AssertTrue(t, a.IsValid(), "should be valid")
+			} else {
+				testutil.AssertEqual(t, a.Value, tt.expected, "invalid IP should normalize to empty")
+				testutil.AssertFalse(t, a.IsValid(), "should be invalid")
+			}
+		})
+	}
+}
+
+func TestArtifact_URLNormalization(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "uppercase scheme and host",
+			input:    "HTTP://EXAMPLE.COM/Path",
+			expected: "http://example.com/Path",
+		},
+		{
+			name:     "remove default HTTP port",
+			input:    "http://example.com:80/path",
+			expected: "http://example.com/path",
+		},
+		{
+			name:     "remove default HTTPS port",
+			input:    "https://example.com:443/path",
+			expected: "https://example.com/path",
+		},
+		{
+			name:     "keep non-default port",
+			input:    "http://example.com:8080/path",
+			expected: "http://example.com:8080/path",
+		},
+		{
+			name:     "remove trailing slash on root",
+			input:    "https://example.com/",
+			expected: "https://example.com",
+		},
+		{
+			name:     "keep trailing slash on path",
+			input:    "https://example.com/path/",
+			expected: "https://example.com/path/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewArtifact(ArtifactTypeURL, tt.input, "test")
+			testutil.AssertEqual(t, a.Value, tt.expected, "normalized URL")
+			testutil.AssertTrue(t, a.IsValid(), "should be valid")
+		})
+	}
+}
+
+func TestArtifact_EmailValidation(t *testing.T) {
+	tests := []struct {
+		name  string
+		email string
+		valid bool
+	}{
+		{
+			name:  "valid email",
+			email: "user@example.com",
+			valid: true,
+		},
+		{
+			name:  "valid email with subdomain",
+			email: "user@mail.example.com",
+			valid: true,
+		},
+		{
+			name:  "valid email with plus",
+			email: "user+tag@example.com",
+			valid: true,
+		},
+		{
+			name:  "invalid - no @",
+			email: "userexample.com",
+			valid: false,
+		},
+		{
+			name:  "invalid - no domain",
+			email: "user@",
+			valid: false,
+		},
+		{
+			name:  "invalid - no TLD",
+			email: "user@example",
+			valid: false,
+		},
+		{
+			name:  "invalid - too short",
+			email: "a@b",
+			valid: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewArtifact(ArtifactTypeEmail, tt.email, "test")
+
+			if tt.valid {
+				testutil.AssertTrue(t, a.IsValid(), "should be valid")
+			} else {
+				testutil.AssertFalse(t, a.IsValid(), "should be invalid")
+			}
+		})
+	}
+}
+
+func TestArtifact_PortValidation(t *testing.T) {
+	tests := []struct {
+		name  string
+		port  string
+		valid bool
+	}{
+		{
+			name:  "valid port - 80",
+			port:  "80",
+			valid: true,
+		},
+		{
+			name:  "valid port - 443",
+			port:  "443",
+			valid: true,
+		},
+		{
+			name:  "valid port - 8080",
+			port:  "8080",
+			valid: true,
+		},
+		{
+			name:  "valid port - max",
+			port:  "65535",
+			valid: true,
+		},
+		{
+			name:  "invalid port - 0",
+			port:  "0",
+			valid: false,
+		},
+		{
+			name:  "invalid port - negative",
+			port:  "-1",
+			valid: false,
+		},
+		{
+			name:  "invalid port - too large",
+			port:  "65536",
+			valid: false,
+		},
+		{
+			name:  "invalid port - not a number",
+			port:  "abc",
+			valid: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewArtifact(ArtifactTypePort, tt.port, "test")
+
+			if tt.valid {
+				testutil.AssertTrue(t, a.IsValid(), "should be valid")
+			} else {
+				testutil.AssertFalse(t, a.IsValid(), "should be invalid")
+			}
+		})
+	}
+}
+
+func TestArtifact_CertificateSerialValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		serial string
+		valid  bool
+	}{
+		{
+			name:   "valid hex serial",
+			serial: "00d389b7d7936a9a5efbd697c8af3ecbf9",
+			valid:  true,
+		},
+		{
+			name:   "valid hex serial uppercase",
+			serial: "00D389B7D7936A9A5EFBD697C8AF3ECBF9",
+			valid:  true,
+		},
+		{
+			name:   "valid hex serial with colons",
+			serial: "00:d3:89:b7:d7",
+			valid:  true,
+		},
+		{
+			name:   "valid hex serial with spaces",
+			serial: "00 d3 89 b7",
+			valid:  true,
+		},
+		{
+			name:   "invalid serial - empty",
+			serial: "",
+			valid:  false,
+		},
+		{
+			name:   "invalid serial - non-hex characters",
+			serial: "00g389",
+			valid:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewArtifact(ArtifactTypeCertificate, tt.serial, "test")
+
+			if tt.valid {
+				testutil.AssertTrue(t, a.IsValid(), "should be valid")
+			} else {
+				testutil.AssertFalse(t, a.IsValid(), "should be invalid")
+			}
+		})
+	}
 }

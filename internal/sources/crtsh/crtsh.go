@@ -164,9 +164,7 @@ func (c *CRT) processRecords(records []certRecord, target domain.Target) []*doma
 				artifact.AddTag("wildcard")
 			}
 
-			artifacts = append(artifacts, artifact)
-
-			// También guardamos el certificado como artifact separado (opcional)
+			// También guardamos el certificado como artifact separado
 			certArtifact := domain.NewArtifactWithMetadata(
 				domain.ArtifactTypeCertificate,
 				record.SerialNumber,
@@ -175,6 +173,10 @@ func (c *CRT) processRecords(records []certRecord, target domain.Target) []*doma
 			)
 			certArtifact.Confidence = 0.95
 
+			// Establecer relación: subdomain uses_cert certificate
+			artifact.AddRelation(certArtifact.ID, domain.RelationUsesCert, 0.95, c.Name())
+
+			artifacts = append(artifacts, artifact)
 			artifacts = append(artifacts, certArtifact)
 		}
 	}

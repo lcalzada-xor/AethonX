@@ -4,6 +4,10 @@ package domain
 import (
 	"crypto/sha256"
 	"fmt"
+	"net"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +32,9 @@ type Artifact struct {
 	// TypedMetadata contiene metadata estructurado y tipado
 	TypedMetadata metadata.ArtifactMetadata
 
+	// Relations contiene las relaciones con otros artifacts
+	Relations []ArtifactRelation
+
 	// Confidence indica la confianza del descubrimiento [0.0-1.0]
 	Confidence float64
 
@@ -38,12 +45,78 @@ type Artifact struct {
 	Tags []string
 }
 
+// ArtifactRelation representa una relación dirigida entre dos artifacts.
+type ArtifactRelation struct {
+	// Type es el tipo de relación (e.g., "uses_cert", "resolves_to")
+	Type RelationType
+
+	// TargetID es el ID del artifact relacionado
+	TargetID string
+
+	// Confidence indica la confianza de esta relación [0.0-1.0]
+	Confidence float64
+
+	// DiscoveredAt es cuándo se descubrió esta relación
+	DiscoveredAt time.Time
+
+	// Source es la fuente que descubrió esta relación
+	Source string
+
+	// Metadata contiene contexto adicional específico de la relación
+	Metadata map[string]string
+}
+
+// RelationType define el tipo de relación entre artifacts.
+type RelationType string
+
+// Relaciones de infraestructura
+const (
+	RelationResolvesTo       RelationType = "resolves_to"        // Domain/Subdomain -> IP
+	RelationReverseResolves  RelationType = "reverse_resolves"   // IP -> Domain
+	RelationOwnedBy          RelationType = "owned_by"           // IP -> ASN
+	RelationHostedOn         RelationType = "hosted_on"          // URL -> Domain
+	RelationSubdomainOf      RelationType = "subdomain_of"       // Subdomain -> Domain
+)
+
+// Relaciones de seguridad
+const (
+	RelationUsesCert     RelationType = "uses_cert"      // Domain -> Certificate
+	RelationProtectedBy  RelationType = "protected_by"   // Domain -> WAF
+	RelationHasVuln      RelationType = "has_vuln"       // Service -> Vulnerability
+)
+
+// Relaciones de servicios
+const (
+	RelationRunsOn    RelationType = "runs_on"     // Service -> Port
+	RelationListensOn RelationType = "listens_on"  // IP -> Port
+	RelationServes    RelationType = "serves"      // Port -> Service
+)
+
+// Relaciones DNS
+const (
+	RelationHasNameserver RelationType = "has_nameserver" // Domain -> Nameserver
+	RelationHasMX         RelationType = "has_mx"         // Domain -> MXRecord
+	RelationHasCNAME      RelationType = "has_cname"      // Domain -> Domain
+)
+
+// Relaciones de contacto
+const (
+	RelationHasContact RelationType = "has_contact"  // Domain -> Email
+	RelationManagedBy  RelationType = "managed_by"   // Domain -> WhoisContact
+)
+
+// Relaciones de tecnología
+const (
+	RelationUsesTech RelationType = "uses_tech" // URL -> Technology
+)
+
 // NewArtifact crea un nuevo artefacto con valores por defecto.
 func NewArtifact(artifactType ArtifactType, value, source string) *Artifact {
 	a := &Artifact{
 		Type:         artifactType,
 		Value:        value,
 		Sources:      []string{source},
+		Relations:    []ArtifactRelation{},
 		Confidence:   1.0,
 		DiscoveredAt: time.Now(),
 		Tags:         []string{},
@@ -114,6 +187,85 @@ func (a *Artifact) AddTag(tag string) {
 	a.Tags = append(a.Tags, tag)
 }
 
+// AddRelation añade una relación con otro artifact.
+func (a *Artifact) AddRelation(targetID string, relType RelationType, confidence float64, source string) {
+	// No añadir relaciones duplicadas
+	if a.HasRelation(targetID, relType) {
+		return
+	}
+
+	relation := ArtifactRelation{
+		Type:         relType,
+		TargetID:     targetID,
+		Confidence:   confidence,
+		DiscoveredAt: time.Now(),
+		Source:       source,
+		Metadata:     make(map[string]string),
+	}
+
+	a.Relations = append(a.Relations, relation)
+}
+
+// AddRelationWithMetadata añade una relación con metadata adicional.
+func (a *Artifact) AddRelationWithMetadata(targetID string, relType RelationType, confidence float64, source string, metadata map[string]string) {
+	if a.HasRelation(targetID, relType) {
+		return
+	}
+
+	relation := ArtifactRelation{
+		Type:         relType,
+		TargetID:     targetID,
+		Confidence:   confidence,
+		DiscoveredAt: time.Now(),
+		Source:       source,
+		Metadata:     metadata,
+	}
+
+	a.Relations = append(a.Relations, relation)
+}
+
+// GetRelations retorna todas las relaciones de un tipo específico.
+func (a *Artifact) GetRelations(relType RelationType) []ArtifactRelation {
+	var results []ArtifactRelation
+	for _, rel := range a.Relations {
+		if rel.Type == relType {
+			results = append(results, rel)
+		}
+	}
+	return results
+}
+
+// GetAllRelations retorna todas las relaciones del artifact.
+func (a *Artifact) GetAllRelations() []ArtifactRelation {
+	return a.Relations
+}
+
+// HasRelation verifica si existe una relación específica.
+func (a *Artifact) HasRelation(targetID string, relType RelationType) bool {
+	for _, rel := range a.Relations {
+		if rel.TargetID == targetID && rel.Type == relType {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveRelation elimina una relación específica.
+func (a *Artifact) RemoveRelation(targetID string, relType RelationType) {
+	newRelations := make([]ArtifactRelation, 0, len(a.Relations))
+	for _, rel := range a.Relations {
+		if !(rel.TargetID == targetID && rel.Type == relType) {
+			newRelations = append(newRelations, rel)
+		}
+	}
+	a.Relations = newRelations
+}
+
+// GetRelationCount retorna el número total de relaciones.
+func (a *Artifact) GetRelationCount() int {
+	return len(a.Relations)
+}
+
 // Merge combina datos de otro artefacto del mismo tipo y valor.
 func (a *Artifact) Merge(other *Artifact) error {
 	if a.Key() != other.Key() {
@@ -128,6 +280,13 @@ func (a *Artifact) Merge(other *Artifact) error {
 	// Combinar tags
 	for _, t := range other.Tags {
 		a.AddTag(t)
+	}
+
+	// Combinar relaciones (evitar duplicados)
+	for _, rel := range other.Relations {
+		if !a.HasRelation(rel.TargetID, rel.Type) {
+			a.Relations = append(a.Relations, rel)
+		}
 	}
 
 	// Merge TypedMetadata si existe
@@ -153,6 +312,7 @@ func (a *Artifact) Merge(other *Artifact) error {
 
 // IsValid verifica si el artefacto tiene datos válidos.
 func (a *Artifact) IsValid() bool {
+	// Basic checks
 	if a.Type == "" || a.Value == "" {
 		return false
 	}
@@ -162,6 +322,45 @@ func (a *Artifact) IsValid() bool {
 	if a.Confidence < 0.0 || a.Confidence > 1.0 {
 		return false
 	}
+
+	// Type-specific validation
+	switch a.Type {
+	case ArtifactTypeIP, ArtifactTypeIPv6:
+		// IP was already normalized; if Value is empty after normalization, it was invalid
+		if a.Value == "" {
+			return false
+		}
+		// Additional check: verify it's a valid IP
+		if net.ParseIP(a.Value) == nil {
+			return false
+		}
+
+	case ArtifactTypeEmail:
+		if !isValidEmail(a.Value) {
+			return false
+		}
+
+	case ArtifactTypeURL:
+		if _, err := url.ParseRequestURI(a.Value); err != nil {
+			return false
+		}
+
+	case ArtifactTypeDomain, ArtifactTypeSubdomain:
+		if !isValidDomain(a.Value) {
+			return false
+		}
+
+	case ArtifactTypePort:
+		if !isValidPort(a.Value) {
+			return false
+		}
+
+	case ArtifactTypeCertificate:
+		if !isValidCertSerial(a.Value) {
+			return false
+		}
+	}
+
 	return true
 }
 
@@ -190,13 +389,91 @@ func normalizeEmail(v string) string {
 
 func normalizeIP(v string) string {
 	v = strings.TrimSpace(v)
-	// Aquí podríamos usar net.ParseIP para validación adicional
-	return v
+
+	// Parse and validate IP address
+	ip := net.ParseIP(v)
+	if ip == nil {
+		// If parsing fails, return empty string (invalid IP)
+		return ""
+	}
+
+	// Return canonical form
+	// IPv4 addresses are returned in dotted notation: "192.168.1.1"
+	// IPv6 addresses are returned in canonical form: "2001:db8::1"
+	return ip.String()
 }
 
 func normalizeURL(v string) string {
 	v = strings.TrimSpace(v)
-	v = strings.ToLower(v)
-	// Normalización básica, podría mejorarse con url.Parse
-	return v
+
+	// Parse URL
+	u, err := url.Parse(v)
+	if err != nil {
+		// If parsing fails, return lowercase trimmed version as fallback
+		return strings.ToLower(v)
+	}
+
+	// Normalize components
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+
+	// Remove default ports
+	if (u.Scheme == "http" && strings.HasSuffix(u.Host, ":80")) {
+		u.Host = strings.TrimSuffix(u.Host, ":80")
+	}
+	if (u.Scheme == "https" && strings.HasSuffix(u.Host, ":443")) {
+		u.Host = strings.TrimSuffix(u.Host, ":443")
+	}
+
+	// Remove trailing slash from path if it's the only character
+	if u.Path == "/" && u.RawQuery == "" && u.Fragment == "" {
+		u.Path = ""
+	}
+
+	return u.String()
+}
+
+// Validation functions
+
+// emailRegex is a simplified RFC 5322 email validation regex
+// Note: Full RFC 5322 is complex; this covers 99% of valid emails
+var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
+
+// isValidEmail validates email format (simplified RFC 5322)
+func isValidEmail(email string) bool {
+	if len(email) < 3 || len(email) > 254 {
+		return false
+	}
+	return emailRegex.MatchString(email)
+}
+
+// Note: isValidDomain is defined in target.go and reused here
+
+// isValidPort validates port range [1-65535]
+func isValidPort(portStr string) bool {
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return false
+	}
+	return port >= 1 && port <= 65535
+}
+
+// isValidCertSerial validates certificate serial number format (hex string)
+func isValidCertSerial(serial string) bool {
+	if len(serial) == 0 {
+		return false
+	}
+
+	// Serial numbers are typically hex strings
+	// Allow 0-9, a-f, A-F, and optional colons/spaces
+	for _, ch := range serial {
+		if !((ch >= '0' && ch <= '9') ||
+			(ch >= 'a' && ch <= 'f') ||
+			(ch >= 'A' && ch <= 'F') ||
+			ch == ':' || ch == ' ') {
+			return false
+		}
+	}
+
+	return true
 }

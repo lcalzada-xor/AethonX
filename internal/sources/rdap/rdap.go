@@ -222,8 +222,9 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 	regMeta := r.extractRegistrarMetadata(rdapData)
 
 	// Add domain artifact with registrar metadata
+	var domainArtifact *domain.Artifact
 	if regMeta.IsValid() {
-		domainArtifact := domain.NewArtifactWithMetadata(
+		domainArtifact = domain.NewArtifactWithMetadata(
 			domain.ArtifactTypeDomain,
 			domainName,
 			sourceName,
@@ -233,7 +234,7 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 		result.AddArtifact(domainArtifact)
 	}
 
-	// Extract nameservers
+	// Extract nameservers and create relations
 	for _, ns := range rdapData.Nameservers {
 		if ns.LDHName != "" {
 			nsArtifact := domain.NewArtifact(
@@ -243,11 +244,16 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 			)
 			nsArtifact.Confidence = 1.0
 			result.AddArtifact(nsArtifact)
+
+			// Establecer relación: domain has_nameserver nameserver
+			if domainArtifact != nil {
+				domainArtifact.AddRelation(nsArtifact.ID, domain.RelationHasNameserver, 1.0, sourceName)
+			}
 		}
 	}
 
-	// Extract emails and contacts
-	r.extractContacts(result, rdapData.Entities)
+	// Extract emails and contacts with relations
+	r.extractContacts(result, rdapData.Entities, domainArtifact)
 }
 
 // extractRegistrarMetadata creates RegistrarMetadata from RDAP response
@@ -307,7 +313,7 @@ func (r *RDAP) extractRegistrarMetadata(rdapData *rdapResponse) *metadata.Regist
 }
 
 // extractContacts extracts contact information from entities
-func (r *RDAP) extractContacts(result *domain.ScanResult, entities []rdapEntity) {
+func (r *RDAP) extractContacts(result *domain.ScanResult, entities []rdapEntity, domainArtifact *domain.Artifact) {
 	for _, entity := range entities {
 		// Extract emails
 		if email := r.extractVCardField(entity.VCardArray, "email"); email != "" {
@@ -325,11 +331,16 @@ func (r *RDAP) extractContacts(result *domain.ScanResult, entities []rdapEntity)
 			}
 
 			result.AddArtifact(emailArtifact)
+
+			// Establecer relación: domain has_contact email
+			if domainArtifact != nil {
+				domainArtifact.AddRelation(emailArtifact.ID, domain.RelationHasContact, 0.95, sourceName)
+			}
 		}
 
 		// Recursively process nested entities
 		if len(entity.Entities) > 0 {
-			r.extractContacts(result, entity.Entities)
+			r.extractContacts(result, entity.Entities, domainArtifact)
 		}
 	}
 }
