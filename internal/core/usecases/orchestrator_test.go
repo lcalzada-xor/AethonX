@@ -228,7 +228,7 @@ func TestOrchestrator_Run_WithNotifiers(t *testing.T) {
 	// But notifications are async, so we need to wait a bit
 	time.Sleep(50 * time.Millisecond)
 
-	testutil.AssertTrue(t, notifier.notifyCallCount >= 2, "should have notifications")
+	testutil.AssertTrue(t, notifier.getNotifyCallCount() >= 2, "should have notifications")
 
 	// Check for scan started and completed events
 	startEvents := notifier.getEventsByType(ports.EventTypeScanStarted)

@@ -93,12 +93,21 @@ func (o *Orchestrator) Run(ctx context.Context, target domain.Target) (*domain.S
 	// Deduplicar y normalizar artifacts
 	result.Artifacts = o.dedupe.Deduplicate(result.Artifacts)
 
+	// Construir grafo y agregar estadísticas
+	graph := NewGraphService(result.Artifacts, o.logger)
+	graphStats := graph.GetStats()
+
+	// Almacenar estadísticas del grafo en metadata
+	result.Metadata.TotalRelations = graphStats.TotalRelations
+	result.Metadata.RelationsByType = graphStats.RelationsByType
+
 	// Finalizar resultado
 	result.Finalize()
 
 	o.logger.Info("scan completed",
 		"target", target.Root,
 		"artifacts", len(result.Artifacts),
+		"relations", graphStats.TotalRelations,
 		"warnings", len(result.Warnings),
 		"errors", len(result.Errors),
 		"duration_ms", result.Metadata.Duration.Milliseconds(),

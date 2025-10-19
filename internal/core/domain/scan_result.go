@@ -44,6 +44,12 @@ type ScanMetadata struct {
 	// TotalSources número total de fuentes disponibles
 	TotalSources int
 
+	// TotalRelations número total de relaciones en el grafo
+	TotalRelations int
+
+	// RelationsByType cuenta de relaciones agrupadas por tipo
+	RelationsByType map[RelationType]int
+
 	// Version versión de AethonX utilizada
 	Version string
 

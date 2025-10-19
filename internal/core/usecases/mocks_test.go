@@ -3,6 +3,7 @@ package usecases
 
 import (
 	"context"
+	"sync"
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/ports"
@@ -70,6 +71,7 @@ func mockSourceWithError(name string, err error) *mockSource {
 
 // mockNotifier es un mock de ports.Notifier para tests
 type mockNotifier struct {
+	mu              sync.Mutex
 	notifyFunc      func(ctx context.Context, event ports.Event) error
 	closeFunc       func() error
 	notifyCallCount int
@@ -84,8 +86,11 @@ func newMockNotifier() *mockNotifier {
 }
 
 func (m *mockNotifier) Notify(ctx context.Context, event ports.Event) error {
+	m.mu.Lock()
 	m.notifyCallCount++
 	m.events = append(m.events, event)
+	m.mu.Unlock()
+
 	if m.notifyFunc != nil {
 		return m.notifyFunc(ctx, event)
 	}
@@ -101,6 +106,9 @@ func (m *mockNotifier) Close() error {
 
 // getEventsByType returns events filtered by type
 func (m *mockNotifier) getEventsByType(eventType ports.EventType) []ports.Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	var filtered []ports.Event
 	for _, e := range m.events {
 		if e.Type == eventType {
@@ -108,4 +116,11 @@ func (m *mockNotifier) getEventsByType(eventType ports.EventType) []ports.Event 
 		}
 	}
 	return filtered
+}
+
+// getNotifyCallCount returns the number of times Notify was called (thread-safe)
+func (m *mockNotifier) getNotifyCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.notifyCallCount
 }

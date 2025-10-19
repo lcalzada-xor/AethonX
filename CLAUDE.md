@@ -376,32 +376,6 @@ The orchestrator emits events to `Notifier` observers:
 
 **Pattern**: Events are emitted **asynchronously** (goroutines) to avoid blocking the scan pipeline.
 
-## Project Status & Roadmap
-
-**Completed (Phase 1)**:
-- ✅ Clean Architecture foundation
-- ✅ Orchestrator with concurrent execution
-- ✅ Source: crt.sh (certificate transparency)
-- ✅ Deduplication service
-- ✅ Output adapters: JSON, Table
-- ✅ Config system (ENV + flags)
-- ✅ Structured logging
-- ✅ **Testing infrastructure: 28.5% coverage**
-  - domain: 55.1%
-  - usecases: 94.9%
-  - platform/config: 100%
-  - platform/logx: 100%
-  - adapters/output: 94.5%
-  - sources/crtsh: 51.6%
-
-**Pending (Phases 2-8)**:
-- ⏳ Platform modules: httpx (HTTP client), cache, rate limiter, errors
-- 🧩 Source: RDAP (WHOIS data)
-- 🚧 Metadata migration (dual → TypedMetadata only)
-- 🚧 Persistence: SQLite storage adapter
-- 🚧 Notifiers: Webhook, Slack
-- 🚧 Output formats: Markdown, HTML, SARIF
-- 🚧 CLI: Subcommands with cobra (scan, history, export, sources)
 
 ## Version Information
 
