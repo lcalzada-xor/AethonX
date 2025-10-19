@@ -26,7 +26,9 @@ type Orchestrator struct {
 	streamingConfig StreamingConfig
 
 	// Control de goroutines
-	notifyWg sync.WaitGroup
+	notifyWg   sync.WaitGroup
+	notifySem  chan struct{} // Semáforo para limitar notificaciones concurrentes
+	maxNotifiers int
 }
 
 // OrchestratorOptions configura el orchestrator.
@@ -65,6 +67,12 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		opts.StreamingConfig.ArtifactThreshold = 1000 // default
 	}
 
+	// Limitar notificaciones concurrentes (2x observers o mínimo 4)
+	maxNotifiers := len(opts.Observers) * 2
+	if maxNotifiers < 4 {
+		maxNotifiers = 4
+	}
+
 	return &Orchestrator{
 		sources:         opts.Sources,
 		dedupe:          NewDedupeService(),
@@ -74,6 +82,8 @@ func NewOrchestrator(opts OrchestratorOptions) *Orchestrator {
 		failFast:        opts.FailFast,
 		streamingWriter: opts.StreamingWriter,
 		streamingConfig: opts.StreamingConfig,
+		notifySem:       make(chan struct{}, maxNotifiers),
+		maxNotifiers:    maxNotifiers,
 	}
 }
 
@@ -199,20 +209,44 @@ func (o *Orchestrator) filterCompatibleSources(mode domain.ScanMode) []ports.Sou
 	return compatible
 }
 
-// executeSources ejecuta las fuentes en paralelo con límite de workers.
+// executeSources ejecuta las fuentes con worker pool y scheduling inteligente.
 func (o *Orchestrator) executeSources(
 	ctx context.Context,
 	sources []ports.Source,
 	target domain.Target,
 ) []sourceResult {
+	// Crear tasks desde sources
+	tasks := make([]SourceTaskExecutor, 0, len(sources))
+	for _, source := range sources {
+		// Estimar peso basado en tipo de source
+		weight := EstimateSourceWeight(source)
+
+		// Priority ya viene configurada en SourceConfig
+		priority := 5 // Default
+
+		task := &SourceTaskWrapper{
+			orchestrator: o,
+			source:       source,
+			target:       target,
+			priority:     priority,
+			weight:       weight,
+		}
+		tasks = append(tasks, task)
+	}
+
+	// Ejecutar con simple semaphore pattern (compatible con código existente)
+	// En futuro: usar workerpool.WorkerPool cuando se implemente completamente
 	sem := make(chan struct{}, o.maxWorkers)
 	var wg sync.WaitGroup
 	results := make([]sourceResult, 0, len(sources))
 	resultsMu := sync.Mutex{}
 
-	for _, source := range sources {
+	// Ordenar tasks por prioridad y peso antes de ejecutar
+	sortedTasks := sortTasksByPriority(tasks)
+
+	for _, task := range sortedTasks {
 		wg.Add(1)
-		go func(s ports.Source) {
+		go func(t SourceTaskExecutor) {
 			defer wg.Done()
 
 			// Adquirir semáforo
@@ -220,17 +254,68 @@ func (o *Orchestrator) executeSources(
 			defer func() { <-sem }()
 
 			// Ejecutar fuente
-			res := o.executeSource(ctx, s, target)
+			res := o.executeSource(ctx, t.GetSource(), target)
 
 			// Guardar resultado
 			resultsMu.Lock()
 			results = append(results, res)
 			resultsMu.Unlock()
-		}(source)
+		}(task)
 	}
 
 	wg.Wait()
 	return results
+}
+
+// SourceTaskExecutor interface mínima para compatibilidad.
+type SourceTaskExecutor interface {
+	GetSource() ports.Source
+	Priority() int
+	Weight() int
+}
+
+// SourceTaskWrapper envuelve una source como task.
+type SourceTaskWrapper struct {
+	orchestrator *Orchestrator
+	source       ports.Source
+	target       domain.Target
+	priority     int
+	weight       int
+}
+
+func (st *SourceTaskWrapper) GetSource() ports.Source {
+	return st.source
+}
+
+func (st *SourceTaskWrapper) Priority() int {
+	return st.priority
+}
+
+func (st *SourceTaskWrapper) Weight() int {
+	return st.weight
+}
+
+// sortTasksByPriority ordena tasks por prioridad (mayor primero) y peso (menor primero).
+func sortTasksByPriority(tasks []SourceTaskExecutor) []SourceTaskExecutor {
+	sorted := make([]SourceTaskExecutor, len(tasks))
+	copy(sorted, tasks)
+
+	// Simple bubble sort (suficiente para pocas sources)
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := 0; j < len(sorted)-i-1; j++ {
+			// Mayor prioridad primero
+			if sorted[j].Priority() < sorted[j+1].Priority() {
+				sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
+			} else if sorted[j].Priority() == sorted[j+1].Priority() {
+				// Si misma prioridad, menor peso primero
+				if sorted[j].Weight() > sorted[j+1].Weight() {
+					sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
+				}
+			}
+		}
+	}
+
+	return sorted
 }
 
 // executeSource ejecuta una fuente individual y maneja errores.
@@ -310,8 +395,59 @@ func (o *Orchestrator) executeSource(
 	}
 }
 
-// consolidateResults consolida resultados de todas las fuentes.
+// consolidateResults consolida resultados de todas las fuentes concurrentemente.
 func (o *Orchestrator) consolidateResults(
+	result *domain.ScanResult,
+	sourceResults []sourceResult,
+) {
+	if len(sourceResults) == 0 {
+		return
+	}
+
+	// Si hay pocos resultados, consolidar secuencialmente (más simple)
+	if len(sourceResults) <= 2 {
+		o.consolidateResultsSequential(result, sourceResults)
+		return
+	}
+
+	// Consolidación concurrente con fan-out/fan-in pattern
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	for _, sr := range sourceResults {
+		wg.Add(1)
+		go func(sourceRes sourceResult) {
+			defer wg.Done()
+
+			// Procesar este resultado
+			mu.Lock()
+			defer mu.Unlock()
+
+			result.Metadata.SourcesUsed = append(result.Metadata.SourcesUsed, sourceRes.source)
+
+			if sourceRes.err != nil {
+				result.AddError(sourceRes.source, sourceRes.err.Error(), false)
+				return
+			}
+
+			if sourceRes.result != nil {
+				// Añadir artifacts
+				result.Artifacts = append(result.Artifacts, sourceRes.result.Artifacts...)
+
+				// Añadir warnings
+				result.Warnings = append(result.Warnings, sourceRes.result.Warnings...)
+
+				// Añadir errores
+				result.Errors = append(result.Errors, sourceRes.result.Errors...)
+			}
+		}(sr)
+	}
+
+	wg.Wait()
+}
+
+// consolidateResultsSequential consolidación secuencial (fallback).
+func (o *Orchestrator) consolidateResultsSequential(
 	result *domain.ScanResult,
 	sourceResults []sourceResult,
 ) {
@@ -328,20 +464,16 @@ func (o *Orchestrator) consolidateResults(
 			result.Artifacts = append(result.Artifacts, sr.result.Artifacts...)
 
 			// Añadir warnings
-			for _, w := range sr.result.Warnings {
-				result.Warnings = append(result.Warnings, w)
-			}
+			result.Warnings = append(result.Warnings, sr.result.Warnings...)
 
 			// Añadir errores
-			for _, e := range sr.result.Errors {
-				result.Errors = append(result.Errors, e)
-			}
+			result.Errors = append(result.Errors, sr.result.Errors...)
 		}
 	}
 }
 
-// notify envía una notificación a todos los observers.
-// Usa goroutines con WaitGroup y timeout para evitar leaks y bloqueos.
+// notify envía una notificación a todos los observers con pool limitado.
+// Usa goroutines con WaitGroup, semáforo y timeout para evitar leaks y bloqueos.
 func (o *Orchestrator) notify(ctx context.Context, event ports.Event) {
 	const notificationTimeout = 5 * time.Second
 
@@ -349,6 +481,15 @@ func (o *Orchestrator) notify(ctx context.Context, event ports.Event) {
 		o.notifyWg.Add(1)
 		go func(notifier ports.Notifier) {
 			defer o.notifyWg.Done()
+
+			// Adquirir semáforo para limitar goroutines concurrentes
+			select {
+			case o.notifySem <- struct{}{}:
+				defer func() { <-o.notifySem }()
+			case <-ctx.Done():
+				o.logger.Warn("notification skipped, context cancelled")
+				return
+			}
 
 			// Crear contexto con timeout para esta notificación
 			notifyCtx, cancel := context.WithTimeout(ctx, notificationTimeout)
