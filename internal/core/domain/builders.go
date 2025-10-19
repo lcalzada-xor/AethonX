@@ -56,19 +56,16 @@ func NewIPArtifact(ip, source string) *Artifact {
 // SetTechnologyMetadata establece metadata de tecnología en un artifact existente.
 func (a *Artifact) SetTechnologyMetadata(meta *metadata.TechnologyMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // SetDomainMetadata establece metadata de dominio en un artifact existente.
 func (a *Artifact) SetDomainMetadata(meta *metadata.DomainMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // SetIPMetadata establece metadata de IP en un artifact existente.
 func (a *Artifact) SetIPMetadata(meta *metadata.IPMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // GetTechnologyMetadata retorna el metadata de tecnología si existe.
@@ -238,41 +235,34 @@ func (a *Artifact) GetWebshellMetadata() *metadata.WebshellMetadata {
 // SetServiceMetadata establece metadata de servicio en un artifact existente.
 func (a *Artifact) SetServiceMetadata(meta *metadata.ServiceMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // SetWAFMetadata establece metadata de WAF en un artifact existente.
 func (a *Artifact) SetWAFMetadata(meta *metadata.WAFMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // SetAPIMetadata establece metadata de API en un artifact existente.
 func (a *Artifact) SetAPIMetadata(meta *metadata.APIMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // SetRepositoryMetadata establece metadata de repositorio en un artifact existente.
 func (a *Artifact) SetRepositoryMetadata(meta *metadata.RepositoryMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // SetBackupFileMetadata establece metadata de backup file en un artifact existente.
 func (a *Artifact) SetBackupFileMetadata(meta *metadata.BackupFileMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // SetStorageBucketMetadata establece metadata de storage bucket en un artifact existente.
 func (a *Artifact) SetStorageBucketMetadata(meta *metadata.StorageBucketMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }
 
 // SetWebshellMetadata establece metadata de webshell en un artifact existente.
 func (a *Artifact) SetWebshellMetadata(meta *metadata.WebshellMetadata) {
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 }

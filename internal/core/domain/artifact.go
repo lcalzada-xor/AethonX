@@ -25,11 +25,8 @@ type Artifact struct {
 	// Sources lista las fuentes que descubrieron este artefacto
 	Sources []string
 
-	// TypedMetadata contiene metadata estructurado y tipado (nuevo approach)
+	// TypedMetadata contiene metadata estructurado y tipado
 	TypedMetadata metadata.ArtifactMetadata
-
-	// Metadata contiene información adicional en formato string (backward compatible)
-	Metadata map[string]string
 
 	// Confidence indica la confianza del descubrimiento [0.0-1.0]
 	Confidence float64
@@ -47,7 +44,6 @@ func NewArtifact(artifactType ArtifactType, value, source string) *Artifact {
 		Type:         artifactType,
 		Value:        value,
 		Sources:      []string{source},
-		Metadata:     make(map[string]string),
 		Confidence:   1.0,
 		DiscoveredAt: time.Now(),
 		Tags:         []string{},
@@ -61,21 +57,11 @@ func NewArtifact(artifactType ArtifactType, value, source string) *Artifact {
 func NewArtifactWithMetadata(artifactType ArtifactType, value, source string, typedMeta metadata.ArtifactMetadata) *Artifact {
 	a := NewArtifact(artifactType, value, source)
 	a.TypedMetadata = typedMeta
-
-	// Sincronizar metadata tipado con mapa string
-	if typedMeta != nil {
-		a.Metadata = typedMeta.ToMap()
-	}
-
 	return a
 }
 
 // Normalize normaliza el valor del artefacto según su tipo.
 func (a *Artifact) Normalize() {
-	if a.Metadata == nil {
-		a.Metadata = make(map[string]string)
-	}
-
 	a.Value = strings.TrimSpace(a.Value)
 
 	switch a.Type {
@@ -144,27 +130,13 @@ func (a *Artifact) Merge(other *Artifact) error {
 		a.AddTag(t)
 	}
 
-	// Merge metadata string (no sobreescribir valores existentes)
-	for k, v := range other.Metadata {
-		if _, exists := a.Metadata[k]; !exists {
-			a.Metadata[k] = v
-		}
-	}
-
 	// Merge TypedMetadata si existe
-	if other.TypedMetadata != nil {
-		if a.TypedMetadata == nil {
-			a.TypedMetadata = other.TypedMetadata
-		} else {
-			// Merge metadata map del otro
-			otherMap := other.TypedMetadata.ToMap()
-			for k, v := range otherMap {
-				if _, exists := a.Metadata[k]; !exists {
-					a.Metadata[k] = v
-				}
-			}
-		}
+	// Si el artifact actual no tiene metadata, tomar el del otro
+	if a.TypedMetadata == nil && other.TypedMetadata != nil {
+		a.TypedMetadata = other.TypedMetadata
 	}
+	// Si ambos tienen metadata, mantener el actual (no sobreescribir)
+	// En el futuro podríamos implementar un Merge() más inteligente en cada tipo de metadata
 
 	// Usar la confianza máxima
 	if other.Confidence > a.Confidence {
@@ -197,13 +169,6 @@ func (a *Artifact) IsValid() bool {
 func (a *Artifact) String() string {
 	return fmt.Sprintf("[%s] %s (sources: %d, confidence: %.2f)",
 		a.Type, a.Value, len(a.Sources), a.Confidence)
-}
-
-// SyncMetadata sincroniza TypedMetadata con el mapa Metadata.
-func (a *Artifact) SyncMetadata() {
-	if a.TypedMetadata != nil {
-		a.Metadata = a.TypedMetadata.ToMap()
-	}
 }
 
 // Funciones de normalización privadas

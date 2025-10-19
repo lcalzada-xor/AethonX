@@ -18,7 +18,6 @@ func TestNewArtifact(t *testing.T) {
 	testutil.AssertContains(t, a.Sources, "crtsh", "sources")
 	testutil.AssertEqual(t, a.Confidence, 1.0, "default confidence")
 	testutil.AssertNotEqual(t, a.ID, "", "ID should be generated")
-	testutil.AssertNotNil(t, a.Metadata, "metadata should be initialized")
 }
 
 func TestArtifact_Normalize(t *testing.T) {
@@ -75,9 +74,8 @@ func TestArtifact_Normalize(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &Artifact{
-				Type:     tt.artType,
-				Value:    tt.input,
-				Metadata: make(map[string]string),
+				Type:  tt.artType,
+				Value: tt.input,
 			}
 			a.Normalize()
 			testutil.AssertEqual(t, a.Value, tt.expected, "normalized value")
@@ -142,14 +140,19 @@ func TestArtifact_AddTag(t *testing.T) {
 }
 
 func TestArtifact_Merge(t *testing.T) {
-	a1 := NewArtifact(ArtifactTypeSubdomain, "test.example.com", "crtsh")
+	// Create artifacts with typed metadata
+	meta1 := metadata.NewDomainMetadata()
+	meta1.Registrar = "Registrar1"
+
+	meta2 := metadata.NewDomainMetadata()
+	meta2.Registrar = "Registrar2"
+
+	a1 := NewArtifactWithMetadata(ArtifactTypeSubdomain, "test.example.com", "crtsh", meta1)
 	a1.Confidence = 0.8
-	a1.Metadata["key1"] = "value1"
 	a1.AddTag("tag1")
 
-	a2 := NewArtifact(ArtifactTypeSubdomain, "test.example.com", "rdap")
+	a2 := NewArtifactWithMetadata(ArtifactTypeSubdomain, "test.example.com", "rdap", meta2)
 	a2.Confidence = 0.9
-	a2.Metadata["key2"] = "value2"
 	a2.AddTag("tag2")
 
 	err := a1.Merge(a2)
@@ -165,9 +168,10 @@ func TestArtifact_Merge(t *testing.T) {
 	testutil.AssertContains(t, a1.Tags, "tag1", "tags")
 	testutil.AssertContains(t, a1.Tags, "tag2", "tags")
 
-	// Verificar metadata combinado
-	testutil.AssertEqual(t, a1.Metadata["key1"], "value1", "metadata key1")
-	testutil.AssertEqual(t, a1.Metadata["key2"], "value2", "metadata key2")
+	// Verificar TypedMetadata (a1 should keep its own metadata, not overwrite)
+	domainMeta := a1.GetDomainMetadata()
+	testutil.AssertNotNil(t, domainMeta, "typed metadata should exist")
+	testutil.AssertEqual(t, domainMeta.Registrar, "Registrar1", "metadata should not be overwritten")
 
 	// Verificar confianza máxima
 	testutil.AssertEqual(t, a1.Confidence, 0.9, "confidence should be max")
@@ -250,25 +254,31 @@ func TestNewArtifactWithMetadata(t *testing.T) {
 	a := NewArtifactWithMetadata(ArtifactTypeSubdomain, "test.example.com", "crtsh", meta)
 
 	testutil.AssertNotNil(t, a.TypedMetadata, "typed metadata should be set")
-	testutil.AssertNotNil(t, a.Metadata, "metadata map should be synchronized")
 
-	// Verificar sincronización
-	testutil.AssertEqual(t, a.Metadata["registrar"], "Test Registrar", "metadata should be synced")
-	testutil.AssertEqual(t, a.Metadata["subdomain_level"], "2", "metadata should be synced")
+	// Verificar que el metadata tipado se puede recuperar
+	domainMeta := a.GetDomainMetadata()
+	testutil.AssertNotNil(t, domainMeta, "domain metadata should be retrievable")
+	testutil.AssertEqual(t, domainMeta.Registrar, "Test Registrar", "registrar should match")
+	testutil.AssertEqual(t, domainMeta.SubdomainLevel, 2, "subdomain level should match")
 }
 
-func TestArtifact_SyncMetadata(t *testing.T) {
+func TestArtifact_TypedMetadataAccess(t *testing.T) {
 	a := NewArtifact(ArtifactTypeSubdomain, "test.example.com", "crtsh")
 
 	meta := &metadata.DomainMetadata{
-		ResolvedIPs: []string{"192.0.2.1"},
-		Registrar:   "Test Registrar",
+		ResolvedIPs:    []string{"192.0.2.1"},
+		Registrar:      "Test Registrar",
 		SubdomainLevel: 1,
 	}
 
 	a.TypedMetadata = meta
-	a.SyncMetadata()
 
-	testutil.AssertNotNil(t, a.Metadata, "metadata map should exist")
-	testutil.AssertEqual(t, a.Metadata["registrar"], "Test Registrar", "metadata synced")
+	// Verificar acceso a metadata tipado
+	domainMeta := a.GetDomainMetadata()
+	testutil.AssertNotNil(t, domainMeta, "domain metadata should be accessible")
+	testutil.AssertEqual(t, domainMeta.Registrar, "Test Registrar", "registrar should match")
+
+	// Verificar que ToMap() funciona para serialización
+	metaMap := meta.ToMap()
+	testutil.AssertEqual(t, metaMap["registrar"], "Test Registrar", "ToMap should work for serialization")
 }

@@ -156,11 +156,6 @@ func (c *CRT) processRecords(records []certRecord, target domain.Target) []*doma
 				domainMeta,
 			)
 
-			// Añadir metadata adicional del certificado en el mapa string
-			artifact.Metadata["cert_issuer"] = record.IssuerName
-			artifact.Metadata["cert_not_after"] = record.NotAfter
-			artifact.Metadata["cert_serial"] = record.SerialNumber
-
 			// Confianza alta para crt.sh (datos públicos oficiales)
 			artifact.Confidence = 0.95
 
@@ -179,7 +174,6 @@ func (c *CRT) processRecords(records []certRecord, target domain.Target) []*doma
 				certMeta,
 			)
 			certArtifact.Confidence = 0.95
-			certArtifact.Metadata["subject_domain"] = host
 
 			artifacts = append(artifacts, certArtifact)
 		}

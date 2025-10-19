@@ -126,15 +126,23 @@ func TestCRT_Run_Success(t *testing.T) {
 			if a.Confidence != 0.95 {
 				t.Errorf("subdomain confidence: expected 0.95, got %f", a.Confidence)
 			}
-			// Verify metadata
-			if a.Metadata["cert_issuer"] == "" {
-				t.Error("subdomain should have cert_issuer metadata")
+			// Verify TypedMetadata
+			domainMeta, ok := a.TypedMetadata.(*metadata.DomainMetadata)
+			if !ok {
+				t.Error("subdomain should have DomainMetadata")
+			}
+			if domainMeta.SSLIssuer == "" {
+				t.Error("subdomain should have SSL issuer in TypedMetadata")
 			}
 		case domain.ArtifactTypeCertificate:
 			certCount++
-			// Verify certificate metadata
-			if a.Metadata["subject_domain"] == "" {
-				t.Error("certificate should have subject_domain metadata")
+			// Verify TypedMetadata
+			certMeta, ok := a.TypedMetadata.(*metadata.CertificateMetadata)
+			if !ok {
+				t.Error("certificate should have CertificateMetadata")
+			}
+			if certMeta.IssuerCN == "" {
+				t.Error("certificate should have issuer in TypedMetadata")
 			}
 		}
 	}
@@ -370,17 +378,6 @@ func TestCRT_ProcessRecords_MetadataPopulation(t *testing.T) {
 		t.Fatal("subdomain artifact not found")
 	}
 
-	// Verify metadata map
-	if subdomainArtifact.Metadata["cert_issuer"] != "DigiCert Inc" {
-		t.Errorf("cert_issuer: expected %q, got %q", "DigiCert Inc", subdomainArtifact.Metadata["cert_issuer"])
-	}
-	if subdomainArtifact.Metadata["cert_not_after"] != "2026-06-30T12:00:00" {
-		t.Errorf("cert_not_after: expected %q, got %q", "2026-06-30T12:00:00", subdomainArtifact.Metadata["cert_not_after"])
-	}
-	if subdomainArtifact.Metadata["cert_serial"] != "0A1B2C3D" {
-		t.Errorf("cert_serial: expected %q, got %q", "0A1B2C3D", subdomainArtifact.Metadata["cert_serial"])
-	}
-
 	// Verify TypedMetadata
 	if subdomainArtifact.TypedMetadata == nil {
 		t.Fatal("TypedMetadata should not be nil")
@@ -417,12 +414,20 @@ func TestCRT_ProcessRecords_MetadataPopulation(t *testing.T) {
 		t.Fatal("certificate artifact not found")
 	}
 
-	// Verify certificate metadata
+	// Verify certificate value and TypedMetadata
 	if certArtifact.Value != "0A1B2C3D" {
 		t.Errorf("certificate value: expected %q, got %q", "0A1B2C3D", certArtifact.Value)
 	}
-	if certArtifact.Metadata["subject_domain"] != "secure.example.com" {
-		t.Errorf("subject_domain: expected %q, got %q", "secure.example.com", certArtifact.Metadata["subject_domain"])
+
+	certMeta, ok := certArtifact.TypedMetadata.(*metadata.CertificateMetadata)
+	if !ok {
+		t.Fatal("certificate TypedMetadata should be *metadata.CertificateMetadata")
+	}
+	if certMeta.IssuerCN != "DigiCert Inc" {
+		t.Errorf("IssuerCN: expected %q, got %q", "DigiCert Inc", certMeta.IssuerCN)
+	}
+	if certMeta.SerialNumber != "0A1B2C3D" {
+		t.Errorf("SerialNumber: expected %q, got %q", "0A1B2C3D", certMeta.SerialNumber)
 	}
 }
 
