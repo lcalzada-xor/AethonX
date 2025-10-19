@@ -16,6 +16,7 @@ import (
 	"aethonx/internal/platform/config"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/sources/crtsh"
+	"aethonx/internal/sources/rdap"
 )
 
 var (
@@ -149,10 +150,13 @@ func buildSources(logger logx.Logger, cfg config.Config) []ports.Source {
 		logger.Debug("registered source", "name", "crtsh")
 	}
 
+	// Registrar RDAP si está habilitada
+	if cfg.Sources.RDAPEnabled {
+		sources = append(sources, rdap.New(logger))
+		logger.Debug("registered source", "name", "rdap")
+	}
+
 	// Futuras fuentes:
-	// if cfg.Sources.RDAPEnabled {
-	//     sources = append(sources, rdap.New(logger))
-	// }
 	// if cfg.Sources.SubfinderEnabled {
 	//     sources = append(sources, subfinder.New(logger, cfg.Platform))
 	// }
