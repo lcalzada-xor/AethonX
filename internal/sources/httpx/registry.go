@@ -1,0 +1,95 @@
+package httpx
+
+import (
+	"fmt"
+
+	"aethonx/internal/core/domain"
+	"aethonx/internal/core/ports"
+	"aethonx/internal/platform/logx"
+	"aethonx/internal/platform/registry"
+)
+
+// Auto-register httpx source on package import.
+func init() {
+	err := registry.Global().Register("httpx", factory, ports.SourceMetadata{
+		Name:        "httpx",
+		Description: "Project Discovery httpx - fast HTTP probing and fingerprinting tool",
+		Author:      "Project Discovery",
+		Version:     "1.6.9",
+		Mode:        domain.SourceModeActive,
+		Type:        domain.SourceTypeCLI,
+		Priority:    15, // High priority (runs after passive sources)
+	})
+
+	if err != nil {
+		// Log warning but don't panic - allows application to continue
+		logx.New().Warn("failed to register httpx source", "error", err.Error())
+	}
+}
+
+// factory creates a new HTTPXSource from SourceConfig.
+func factory(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
+	// Extract custom configuration
+	execPath := getStringConfig(cfg.Custom, "exec_path", "httpx")
+	profileStr := getStringConfig(cfg.Custom, "profile", string(ProfileFull))
+	threads := getIntConfig(cfg.Custom, "threads", defaultThreads)
+	rateLimit := getIntConfig(cfg.Custom, "rate_limit", defaultRateLimit)
+
+	// Parse profile
+	profile := ScanProfile(profileStr)
+	if _, exists := Profiles[profile]; !exists {
+		return nil, fmt.Errorf("invalid httpx profile: %s (valid: basic, tech, tls, full, headless)", profileStr)
+	}
+
+	// Use configured timeout or default
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
+
+	// Validate configuration
+	if threads <= 0 || threads > 1000 {
+		return nil, fmt.Errorf("httpx threads must be between 1 and 1000, got %d", threads)
+	}
+
+	if rateLimit < 0 {
+		return nil, fmt.Errorf("httpx rate_limit cannot be negative, got %d", rateLimit)
+	}
+
+	// Create source
+	source := NewWithConfig(logger, execPath, profile, timeout, threads, rateLimit)
+
+	// Set custom flags if provided
+	if customFlags, ok := cfg.Custom["custom_flags"].([]string); ok {
+		source.SetCustomFlags(customFlags)
+	}
+
+	logger.Debug("httpx source created via factory",
+		"profile", profile,
+		"threads", threads,
+		"rate_limit", rateLimit,
+		"timeout", timeout.String(),
+	)
+
+	return source, nil
+}
+
+// getStringConfig extracts string value from custom config map with default.
+func getStringConfig(custom map[string]interface{}, key, defaultValue string) string {
+	if val, ok := custom[key].(string); ok && val != "" {
+		return val
+	}
+	return defaultValue
+}
+
+// getIntConfig extracts int value from custom config map with default.
+func getIntConfig(custom map[string]interface{}, key string, defaultValue int) int {
+	if val, ok := custom[key].(int); ok {
+		return val
+	}
+	// Try float64 (JSON numbers are parsed as float64)
+	if val, ok := custom[key].(float64); ok {
+		return int(val)
+	}
+	return defaultValue
+}

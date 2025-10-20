@@ -206,20 +206,21 @@ func (p *Parser) createCertificateArtifact(tls *TLSData) *domain.Artifact {
 	artifact := domain.NewArtifact(domain.ArtifactTypeCertificate, certValue, p.sourceName)
 
 	certMeta := &metadata.CertificateMetadata{
-		IssuerCN:           tls.IssuerCN,
-		IssuerFull:         tls.IssuerDN,
-		SubjectCN:          tls.SubjectCN,
-		SubjectFull:        tls.SubjectDN,
-		ValidFrom:          tls.NotBefore,
-		ValidUntil:         tls.NotAfter,
-		SANDomains:         tls.SubjectAN,
-		SignatureAlgorithm: tls.Version,
-		FingerprintSHA256:  tls.FingerprintHash,
+		IssuerCN:      tls.IssuerCN,
+		IssuerFull:    tls.IssuerDN,
+		SubjectCN:     tls.SubjectCN,
+		SubjectFull:   tls.SubjectDN,
+		ValidFrom:     tls.NotBefore,
+		ValidUntil:    tls.NotAfter,
+		SANDomains:    tls.SubjectAN,
+		SerialNumber:  tls.Serial,
+		WildcardCert:  tls.WildcardCert,
 	}
 
-	// Check if it's a wildcard cert
-	if strings.HasPrefix(tls.SubjectCN, "*.") {
-		certMeta.WildcardCert = true
+	// Add fingerprints if available
+	if tls.FingerprintHash != nil {
+		certMeta.FingerprintSHA256 = tls.FingerprintHash.SHA256
+		certMeta.FingerprintSHA1 = tls.FingerprintHash.SHA1
 	}
 
 	artifact.TypedMetadata = certMeta

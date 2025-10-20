@@ -206,12 +206,17 @@ func (h *HTTPXSource) Close() error {
 
 	// Kill process if still running
 	if h.cmd != nil && h.cmd.Process != nil {
-		// Try SIGTERM first
-		if err := h.cmd.Process.Signal(os.Interrupt); err != nil {
-			// Force kill if SIGTERM fails
-			h.logger.Warn("SIGTERM failed, forcing kill", "error", err.Error())
-			if killErr := h.cmd.Process.Kill(); killErr != nil {
-				h.logger.Warn("failed to kill httpx process", "error", killErr.Error())
+		// Check if process is still running by getting process state
+		if h.cmd.ProcessState == nil || !h.cmd.ProcessState.Exited() {
+			// Try SIGTERM first
+			if err := h.cmd.Process.Signal(os.Interrupt); err != nil {
+				// Only log if it's not "already finished"
+				if err.Error() != "os: process already finished" {
+					h.logger.Warn("SIGTERM failed, forcing kill", "error", err.Error())
+					if killErr := h.cmd.Process.Kill(); killErr != nil && killErr.Error() != "os: process already finished" {
+						h.logger.Warn("failed to kill httpx process", "error", killErr.Error())
+					}
+				}
 			}
 		}
 

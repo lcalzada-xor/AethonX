@@ -94,11 +94,16 @@ func DefaultConfig() Config {
 			},
 			"httpx": {
 				Enabled:   true,
-				Timeout:   30 * time.Second,
+				Timeout:   120 * time.Second, // httpx can be slow with tech detection
 				Retries:   2,
 				RateLimit: 0,
-				Priority:  7,
-				Custom:    make(map[string]interface{}),
+				Priority:  15, // High priority after passive sources
+				Custom: map[string]interface{}{
+					"profile":    "full",
+					"threads":    50,
+					"rate_limit": 150,
+					"exec_path":  "httpx",
+				},
 			},
 		},
 
@@ -182,6 +187,22 @@ func loadFromEnv(cfg *Config) {
 		}
 		if v := getenv(prefix+"RATELIMIT", ""); v != "" {
 			sourceCfg.RateLimit = parseInt(v, sourceCfg.RateLimit)
+		}
+
+		// HTTPx-specific custom config
+		if name == "httpx" {
+			if v := getenv(prefix+"PROFILE", ""); v != "" {
+				sourceCfg.Custom["profile"] = v
+			}
+			if v := getenv(prefix+"THREADS", ""); v != "" {
+				sourceCfg.Custom["threads"] = parseInt(v, 50)
+			}
+			if v := getenv(prefix+"RATE_LIMIT", ""); v != "" {
+				sourceCfg.Custom["rate_limit"] = parseInt(v, 150)
+			}
+			if v := getenv(prefix+"EXEC_PATH", ""); v != "" {
+				sourceCfg.Custom["exec_path"] = v
+			}
 		}
 
 		cfg.Sources[name] = sourceCfg
