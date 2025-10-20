@@ -61,6 +61,16 @@ type RateLimitedSource interface {
 	GetRateLimit() int
 }
 
+// InputConsumer es implementado por sources que consumen artifacts de stages anteriores.
+// Sources que implementan esta interfaz pueden recibir resultados filtrados de stages previos.
+type InputConsumer interface {
+	Source
+
+	// RunWithInput ejecuta la source con artifacts filtrados de stages previos.
+	// Los artifacts en input están pre-filtrados según InputArtifacts declarados en metadata.
+	RunWithInput(ctx context.Context, target domain.Target, input *domain.ScanResult) (*domain.ScanResult, error)
+}
+
 // SourceConfig contiene la configuración específica de una fuente.
 type SourceConfig struct {
 	// Enabled indica si la fuente está habilitada
@@ -107,4 +117,10 @@ type SourceMetadata struct {
 	Type        domain.SourceType
 	RequiresAuth bool
 	RateLimit   int // Límite recomendado de requests/segundo
+
+	// Dependency declaration para stage-based execution
+	InputArtifacts  []domain.ArtifactType // Artifact types required as input (empty = can run without inputs)
+	OutputArtifacts []domain.ArtifactType // Artifact types produced by this source
+	Priority        int                    // Prioridad de ejecución (mayor = más prioritario)
+	StageHint       int                    // Hint manual de stage (0 = auto-detect, >0 = forzar stage específico)
 }

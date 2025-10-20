@@ -38,6 +38,17 @@ func init() {
 			Type:         domain.SourceTypeAPI,
 			RequiresAuth: false,
 			RateLimit:    0, // Varies by RDAP server
+
+			// Dependency declaration (Stage 0: sin inputs)
+			InputArtifacts: []domain.ArtifactType{}, // Sin inputs = Stage 0
+			OutputArtifacts: []domain.ArtifactType{
+				domain.ArtifactTypeDomain,
+				domain.ArtifactTypeEmail,
+				domain.ArtifactTypeNameserver,
+				domain.ArtifactTypeWhoisContact,
+			},
+			Priority:  8, // Alta prioridad (passive discovery)
+			StageHint: 0, // Stage 0 explícito
 		},
 	); err != nil {
 		// Log error but don't panic - allow application to start

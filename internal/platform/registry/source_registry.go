@@ -197,6 +197,20 @@ func (r *SourceRegistry) GetMetadata(name string) (ports.SourceMetadata, bool) {
 	return meta, exists
 }
 
+// GetAllMetadata retorna el metadata de todas las sources registradas.
+func (r *SourceRegistry) GetAllMetadata() map[string]ports.SourceMetadata {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Crear copia para evitar race conditions
+	result := make(map[string]ports.SourceMetadata, len(r.metadata))
+	for name, meta := range r.metadata {
+		result[name] = meta
+	}
+
+	return result
+}
+
 // IsRegistered verifica si una source está registrada.
 func (r *SourceRegistry) IsRegistered(name string) bool {
 	r.mu.RLock()

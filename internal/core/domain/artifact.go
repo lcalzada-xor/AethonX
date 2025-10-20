@@ -32,7 +32,7 @@ type Artifact struct {
 	TypedMetadata metadata.ArtifactMetadata `json:"-"`
 
 	// Relations contiene las relaciones con otros artifacts
-	Relations []ArtifactRelation
+	Relations []ArtifactRelation `json:"relations,omitempty"`
 
 	// Confidence indica la confianza del descubrimiento [0.0-1.0]
 	Confidence float64
@@ -41,7 +41,7 @@ type Artifact struct {
 	DiscoveredAt time.Time
 
 	// Tags permite categorización adicional
-	Tags []string
+	Tags []string `json:"tags,omitempty"`
 }
 
 // ArtifactRelation representa una relación dirigida entre dos artifacts.
@@ -62,7 +62,7 @@ type ArtifactRelation struct {
 	Source string
 
 	// Metadata contiene contexto adicional específico de la relación
-	Metadata map[string]string
+	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
 // RelationType define el tipo de relación entre artifacts.
@@ -415,10 +415,10 @@ type artifactJSON struct {
 	Value         string                      `json:"value"`
 	Sources       []string                    `json:"sources"`
 	Metadata      *metadata.MetadataEnvelope  `json:"metadata,omitempty"`
-	Relations     []ArtifactRelation          `json:"relations"`
+	Relations     []ArtifactRelation          `json:"relations,omitempty"`
 	Confidence    float64                     `json:"confidence"`
 	DiscoveredAt  time.Time                   `json:"discovered_at"`
-	Tags          []string                    `json:"tags"`
+	Tags          []string                    `json:"tags,omitempty"`
 }
 
 // MarshalJSON implementa custom JSON marshaling para Artifact.

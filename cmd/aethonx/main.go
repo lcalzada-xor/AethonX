@@ -20,6 +20,7 @@ import (
 
 	// Import sources for auto-registration via init()
 	_ "aethonx/internal/sources/crtsh"
+	_ "aethonx/internal/sources/httpx"
 	_ "aethonx/internal/sources/rdap"
 )
 
@@ -115,13 +116,16 @@ func main() {
 		"output_dir", cfg.OutputDir,
 	)
 
-	// 7. Crear orquestador
-	orch := usecases.NewOrchestrator(usecases.OrchestratorOptions{
+	// 7. Obtener metadata de sources desde registry
+	sourceMetadata := registry.Global().GetAllMetadata()
+
+	// 8. Crear pipeline orchestrator (stage-based execution)
+	orch := usecases.NewPipelineOrchestrator(usecases.PipelineOrchestratorOptions{
 		Sources:         sources,
+		SourceMetadata:  sourceMetadata,
 		Logger:          logger,
 		Observers:       []ports.Notifier{}, // Futuro: webhooks, metrics, etc.
 		MaxWorkers:      max(1, cfg.Workers),
-		FailFast:        false,
 		StreamingWriter: streamingWriter,
 		StreamingConfig: usecases.StreamingConfig{
 			ArtifactThreshold: cfg.Streaming.ArtifactThreshold,

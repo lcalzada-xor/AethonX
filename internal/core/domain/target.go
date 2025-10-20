@@ -32,7 +32,7 @@ type ScopeConfig struct {
 	IncludeSubdomains bool
 
 	// ExcludeDomains lista de dominios a excluir
-	ExcludeDomains []string
+	ExcludeDomains []string `json:"exclude_domains,omitempty"`
 
 	// MaxDepth profundidad máxima para subdominios recursivos (0 = sin límite)
 	MaxDepth int

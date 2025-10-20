@@ -24,14 +24,23 @@ func init() {
 			return New(logger), nil
 		},
 		ports.SourceMetadata{
-			Name:        "crtsh",
-			Description: "Certificate Transparency log search via crt.sh",
-			Version:     "1.0.0",
-			Author:      "AethonX",
-			Mode:        domain.SourceModePassive,
-			Type:        domain.SourceTypeAPI,
+			Name:         "crtsh",
+			Description:  "Certificate Transparency log search via crt.sh",
+			Version:      "1.0.0",
+			Author:       "AethonX",
+			Mode:         domain.SourceModePassive,
+			Type:         domain.SourceTypeAPI,
 			RequiresAuth: false,
-			RateLimit:   0, // No documented rate limit
+			RateLimit:    0, // No documented rate limit
+
+			// Dependency declaration (Stage 0: sin inputs)
+			InputArtifacts:  []domain.ArtifactType{}, // Sin inputs = Stage 0
+			OutputArtifacts: []domain.ArtifactType{
+				domain.ArtifactTypeSubdomain,
+				domain.ArtifactTypeCertificate,
+			},
+			Priority:  10, // Alta prioridad (passive discovery)
+			StageHint: 0,  // Stage 0 explícito
 		},
 	); err != nil {
 		// Log error but don't panic - allow application to start

@@ -15,24 +15,45 @@ type SourceTask struct {
 	priority int
 	weight   int
 
+	// Input artifacts from previous stages (filtered)
+	input *domain.ScanResult
+
 	// Result storage
 	result *domain.ScanResult
 	err    error
 }
 
-// NewSourceTask crea una nueva SourceTask.
+// NewSourceTask crea una nueva SourceTask sin inputs.
 func NewSourceTask(source ports.Source, target domain.Target, priority, weight int) *SourceTask {
 	return &SourceTask{
 		source:   source,
 		target:   target,
 		priority: priority,
 		weight:   weight,
+		input:    nil, // Sin inputs
 	}
 }
 
-// Execute ejecuta la source.
+// NewSourceTaskWithInput crea una nueva SourceTask con input artifacts.
+func NewSourceTaskWithInput(source ports.Source, target domain.Target, priority, weight int, input *domain.ScanResult) *SourceTask {
+	return &SourceTask{
+		source:   source,
+		target:   target,
+		priority: priority,
+		weight:   weight,
+		input:    input,
+	}
+}
+
+// Execute ejecuta la source con o sin inputs según corresponda.
 func (st *SourceTask) Execute(ctx context.Context) error {
-	st.result, st.err = st.source.Run(ctx, st.target)
+	// Verificar si la source implementa InputConsumer y tiene inputs
+	if consumer, ok := st.source.(ports.InputConsumer); ok && st.input != nil {
+		st.result, st.err = consumer.RunWithInput(ctx, st.target, st.input)
+	} else {
+		// Fallback: ejecutar sin inputs
+		st.result, st.err = st.source.Run(ctx, st.target)
+	}
 	return st.err
 }
 

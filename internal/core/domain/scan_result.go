@@ -8,6 +8,9 @@ import (
 
 // ScanResult representa el resultado completo de un escaneo.
 type ScanResult struct {
+	// SchemaVersion versión del schema JSON para compatibilidad futura
+	SchemaVersion string `json:"schema_version"`
+
 	// ID identificador único del escaneo
 	ID string
 
@@ -35,8 +38,11 @@ type ScanMetadata struct {
 	// EndTime momento de finalización del escaneo
 	EndTime time.Time
 
-	// Duration duración total del escaneo
-	Duration time.Duration
+	// Duration duración total del escaneo (nanosegundos)
+	Duration time.Duration `json:"duration_ns"`
+
+	// DurationHuman duración en formato legible (e.g., "2.5s", "1m30s")
+	DurationHuman string `json:"duration"`
 
 	// SourcesUsed lista de fuentes que fueron ejecutadas
 	SourcesUsed []string
@@ -69,7 +75,7 @@ type Warning struct {
 	Timestamp time.Time
 
 	// Context contexto adicional
-	Context map[string]string
+	Context map[string]string `json:"context,omitempty"`
 }
 
 // ErrorSeverity define la severidad de un error.
@@ -108,18 +114,22 @@ type Error struct {
 	Timestamp time.Time
 
 	// Context contexto adicional
-	Context map[string]string
+	Context map[string]string `json:"context,omitempty"`
 
 	// Retryable indica si el error es recuperable con retry
 	Retryable bool
 }
 
+// CurrentSchemaVersion es la versión actual del schema JSON
+const CurrentSchemaVersion = "1.0"
+
 // NewScanResult crea un nuevo resultado de escaneo.
 func NewScanResult(target Target) *ScanResult {
 	return &ScanResult{
-		ID:        generateScanID(),
-		Target:    target,
-		Artifacts: []*Artifact{},
+		SchemaVersion: CurrentSchemaVersion,
+		ID:            generateScanID(),
+		Target:        target,
+		Artifacts:     []*Artifact{},
 		Metadata: ScanMetadata{
 			StartTime:   time.Now(),
 			Environment: make(map[string]string),
@@ -179,6 +189,7 @@ func (r *ScanResult) AddErrorWithSeverity(source, message string, severity Error
 func (r *ScanResult) Finalize() {
 	r.Metadata.EndTime = time.Now()
 	r.Metadata.Duration = r.Metadata.EndTime.Sub(r.Metadata.StartTime)
+	r.Metadata.DurationHuman = r.Metadata.Duration.String()
 }
 
 // Stats retorna estadísticas del escaneo agrupadas por tipo de artefacto.
