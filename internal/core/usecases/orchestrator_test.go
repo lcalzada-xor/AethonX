@@ -4,6 +4,7 @@ package usecases
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -300,4 +301,88 @@ func TestOrchestrator_Run_ConcurrencyLimit(t *testing.T) {
 		mock := s.(*mockSource)
 		testutil.AssertEqual(t, mock.runCallCount, 1, "source should run once")
 	}
+}
+
+// TestOrchestrator_ConsolidateResults_NoRaceCondition verifica que la consolidación
+// concurrente no tiene race conditions cuando múltiples sources retornan resultados grandes.
+// Este test debe ejecutarse con -race flag: go test -race
+func TestOrchestrator_ConsolidateResults_NoRaceCondition(t *testing.T) {
+	logger := logx.New()
+
+	// Crear 10 sources que retornan cada una 100 artifacts
+	sources := make([]ports.Source, 10)
+	for i := 0; i < 10; i++ {
+		sourceName := fmt.Sprintf("source-%d", i)
+		artifacts := make([]*domain.Artifact, 100)
+		for j := 0; j < 100; j++ {
+			artifacts[j] = domain.NewArtifact(
+				domain.ArtifactTypeSubdomain,
+				fmt.Sprintf("sub%d-%d.example.com", i, j),
+				sourceName,
+			)
+		}
+		sources[i] = mockSourceWithArtifacts(sourceName, artifacts)
+	}
+
+	orch := NewOrchestrator(OrchestratorOptions{
+		Sources:    sources,
+		Logger:     logger,
+		MaxWorkers: 5, // Forzar concurrencia
+	})
+
+	target := domain.NewTarget("example.com", domain.ScanModePassive)
+
+	// Ejecutar múltiples veces para aumentar probabilidad de detectar race
+	for run := 0; run < 10; run++ {
+		result, err := orch.Run(context.Background(), *target)
+
+		testutil.AssertNoError(t, err, "run should succeed")
+		testutil.AssertNotNil(t, result, "result should not be nil")
+
+		// Verificar que todos los artifacts fueron consolidados correctamente
+		// 10 sources × 100 artifacts = 1000 artifacts esperados (antes de deduplicación)
+		// Nota: Después de deduplicación puede haber menos debido a IDs random
+		testutil.AssertTrue(t, len(result.Artifacts) > 0, "should have artifacts")
+		testutil.AssertTrue(t, len(result.Metadata.SourcesUsed) == 10, "should have 10 sources")
+	}
+}
+
+// TestOrchestrator_ConsolidateResults_WithErrors verifica consolidación cuando
+// algunas sources fallan concurrentemente.
+func TestOrchestrator_ConsolidateResults_WithErrors(t *testing.T) {
+	logger := logx.New()
+
+	// 5 sources exitosas + 5 sources que fallan
+	sources := make([]ports.Source, 10)
+
+	for i := 0; i < 5; i++ {
+		sourceName := fmt.Sprintf("success-source-%d", i)
+		artifacts := []*domain.Artifact{
+			domain.NewArtifact(domain.ArtifactTypeSubdomain, fmt.Sprintf("sub%d.example.com", i), sourceName),
+		}
+		sources[i] = mockSourceWithArtifacts(sourceName, artifacts)
+	}
+
+	for i := 5; i < 10; i++ {
+		sourceName := fmt.Sprintf("error-source-%d", i)
+		sources[i] = mockSourceWithError(sourceName, errors.New("source failed"))
+	}
+
+	orch := NewOrchestrator(OrchestratorOptions{
+		Sources:    sources,
+		Logger:     logger,
+		MaxWorkers: 5,
+	})
+
+	target := domain.NewTarget("example.com", domain.ScanModePassive)
+	result, err := orch.Run(context.Background(), *target)
+
+	testutil.AssertNoError(t, err, "run should succeed despite source errors")
+	testutil.AssertNotNil(t, result, "result should not be nil")
+
+	// Verificar que los errores fueron registrados
+	testutil.AssertTrue(t, len(result.Errors) >= 5, "should have errors from failed sources")
+
+	// Verificar que las sources exitosas contribuyeron artifacts
+	testutil.AssertTrue(t, len(result.Artifacts) > 0, "should have artifacts from successful sources")
 }

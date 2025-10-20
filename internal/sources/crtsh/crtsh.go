@@ -5,21 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"strings"
 	"time"
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/domain/metadata"
 	"aethonx/internal/core/ports"
+	"aethonx/internal/platform/httpx"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
 )
 
 // Auto-registro de la source al importar el package
 func init() {
-	registry.Global().MustRegister(
+	if err := registry.Global().Register(
 		"crtsh",
 		func(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
 			return New(logger), nil
@@ -34,22 +33,35 @@ func init() {
 			RequiresAuth: false,
 			RateLimit:   0, // No documented rate limit
 		},
-	)
+	); err != nil {
+		// Log error but don't panic - allow application to start
+		// Registry will skip this source during Build()
+		logx.New().Warn("failed to register crtsh source", "error", err.Error())
+	}
 }
 
 // CRT implementa una fuente que consulta la base de datos crt.sh
 // para descubrir certificados SSL/TLS y subdominios asociados.
 type CRT struct {
-	client *http.Client
+	client httpx.Client
 	logger logx.Logger
 }
 
-// New crea una nueva instancia de la fuente crt.sh.
+// New crea una nueva instancia de la fuente crt.sh con resilience completa.
 func New(logger logx.Logger) ports.Source {
+	// Configuración específica para crt.sh
+	httpConfig := httpx.Config{
+		Timeout:          30 * time.Second,
+		MaxRetries:       3,
+		RetryBackoff:     2 * time.Second,
+		MaxRetryBackoff:  30 * time.Second,
+		UserAgent:        "AethonX/1.0 (RDAP-like reconnaissance tool; +https://github.com/yourusername/aethonx)",
+		RateLimit:        2.0, // 2 req/s - ser respetuoso con crt.sh
+		RateLimitBurst:   1,
+	}
+
 	return &CRT{
-		client: &http.Client{
-			Timeout: 30 * time.Second,
-		},
+		client: *httpx.New(httpConfig, logger),
 		logger: logger.With("source", "crtsh"),
 	}
 }
@@ -79,32 +91,12 @@ func (c *CRT) Run(ctx context.Context, target domain.Target) (*domain.ScanResult
 	// Construir URL de la API
 	url := fmt.Sprintf("https://crt.sh/?q=%%25.%s&output=json", target.Root)
 
-	// Crear request con contexto
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Fetch JSON usando httpx.Client (con retry, rate limiting, etc.)
+	body, err := c.client.FetchJSON(ctx, url)
 	if err != nil {
-		result.AddError(c.Name(), fmt.Sprintf("failed to create request: %v", err), false)
-		return result, err
-	}
-
-	// Ejecutar request
-	resp, err := c.client.Do(req)
-	if err != nil {
-		result.AddError(c.Name(), fmt.Sprintf("request failed: %v", err), false)
-		return result, err
-	}
-	defer resp.Body.Close()
-
-	// Verificar status code
-	if resp.StatusCode != http.StatusOK {
-		err := fmt.Errorf("crt.sh returned status %d", resp.StatusCode)
-		result.AddError(c.Name(), err.Error(), false)
-		return result, err
-	}
-
-	// Leer respuesta
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		result.AddError(c.Name(), fmt.Sprintf("failed to read response: %v", err), false)
+		errMsg := fmt.Sprintf("HTTP request failed: %v", err)
+		result.AddError(c.Name(), errMsg, false) // No fatal - el scan puede continuar
+		c.logger.Warn("crtsh request failed", "target", target.Root, "error", err.Error())
 		return result, err
 	}
 

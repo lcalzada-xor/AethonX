@@ -104,12 +104,43 @@ func TestMergeService_ConsolidateIntoResult(t *testing.T) {
 	// Consolidar
 	logger := logx.New()
 	merger := NewMergeService(logger)
-	merger.ConsolidateIntoResult(result, partials)
+	err := merger.ConsolidateIntoResult(result, partials)
 
 	// Verificar
+	testutil.AssertNoError(t, err, "ConsolidateIntoResult should succeed")
 	testutil.AssertEqual(t, len(result.Artifacts), 2, "should have 2 artifacts")
 	testutil.AssertEqual(t, len(result.Warnings), 1, "should have 1 warning")
 	testutil.AssertEqual(t, len(result.Errors), 1, "should have 1 error")
+}
+
+func TestMergeService_LoadPartialResults_InvalidDir(t *testing.T) {
+	logger := logx.New()
+	merger := NewMergeService(logger)
+
+	results, err := merger.LoadPartialResults("", "*.json")
+
+	testutil.AssertTrue(t, err != nil, "should fail with empty directory")
+	testutil.AssertTrue(t, results == nil, "results should be nil on error")
+}
+
+func TestMergeService_LoadPartialResults_InvalidPattern(t *testing.T) {
+	logger := logx.New()
+	merger := NewMergeService(logger)
+
+	results, err := merger.LoadPartialResults("/tmp", "")
+
+	testutil.AssertTrue(t, err != nil, "should fail with empty pattern")
+	testutil.AssertTrue(t, results == nil, "results should be nil on error")
+}
+
+func TestMergeService_ConsolidateIntoResult_NilResult(t *testing.T) {
+	logger := logx.New()
+	merger := NewMergeService(logger)
+
+	partials := []PartialScanResult{{Source: "test"}}
+	err := merger.ConsolidateIntoResult(nil, partials)
+
+	testutil.AssertTrue(t, err != nil, "should fail with nil result")
 }
 
 func TestMergeService_ClearPartialFiles(t *testing.T) {

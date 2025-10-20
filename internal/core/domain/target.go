@@ -3,9 +3,9 @@ package domain
 
 import (
 	"fmt"
-	"net"
-	"regexp"
 	"strings"
+
+	"aethonx/internal/platform/validator"
 )
 
 // Target representa el objetivo del reconocimiento.
@@ -63,12 +63,11 @@ func (t *Target) Validate() error {
 		return ErrEmptyTarget
 	}
 
-	// Normalizar
-	t.Root = strings.ToLower(strings.TrimSpace(t.Root))
-	t.Root = strings.TrimSuffix(t.Root, ".")
+	// Normalizar usando validator centralizado
+	t.Root = validator.NormalizeDomain(t.Root)
 
-	// Validar formato de dominio
-	if !isValidDomain(t.Root) {
+	// Validar formato de dominio usando validator centralizado
+	if !validator.IsDomain(t.Root) {
 		return fmt.Errorf("%w: %s", ErrInvalidDomain, t.Root)
 	}
 
@@ -154,25 +153,4 @@ func (t *Target) AddExclusion(domain string) {
 // String retorna una representación legible del target.
 func (t *Target) String() string {
 	return fmt.Sprintf("Target{root=%s, mode=%s, scope=%v}", t.Root, t.Mode, t.Scope.IncludeSubdomains)
-}
-
-// isValidDomain verifica si un string es un dominio válido.
-func isValidDomain(domain string) bool {
-	if len(domain) == 0 || len(domain) > 253 {
-		return false
-	}
-
-	// Regex básica para validar dominios
-	// Permite dominios internacionales (IDN) y punycode
-	domainRegex := regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$`)
-	if !domainRegex.MatchString(domain) {
-		return false
-	}
-
-	// Verificar que no sea solo números (podría ser IP)
-	if net.ParseIP(domain) != nil {
-		return false
-	}
-
-	return true
 }

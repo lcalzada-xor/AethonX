@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/domain/metadata"
 	"aethonx/internal/core/ports"
@@ -22,7 +24,7 @@ import (
 
 // Auto-registro de la source al importar el package
 func init() {
-	registry.Global().MustRegister(
+	if err := registry.Global().Register(
 		"rdap",
 		func(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
 			return New(logger), nil
@@ -37,7 +39,11 @@ func init() {
 			RequiresAuth: false,
 			RateLimit:    0, // Varies by RDAP server
 		},
-	)
+	); err != nil {
+		// Log error but don't panic - allow application to start
+		// Registry will skip this source during Build()
+		logx.New().Warn("failed to register rdap source", "error", err.Error())
+	}
 }
 
 const (
@@ -538,12 +544,18 @@ func (r *RDAP) Close() error {
 	return nil
 }
 
-// extractBaseDomain extracts the base domain from a target value
-// Example: subdomain.example.com -> example.com
+// extractBaseDomain extracts the base domain (eTLD+1) from a target value.
+// Handles complex TLDs like .co.uk, .com.br using the Public Suffix List.
+//
+// Examples:
+//   - subdomain.example.com -> example.com
+//   - test.example.co.uk -> example.co.uk
+//   - api.example.com.br -> example.com.br
 func (r *RDAP) extractBaseDomain(target string) string {
-	// Remove protocol if present
+	// Normalize input
 	target = strings.TrimPrefix(target, "http://")
 	target = strings.TrimPrefix(target, "https://")
+	target = strings.TrimSuffix(target, ".")
 
 	// Remove port if present
 	if idx := strings.Index(target, ":"); idx != -1 {
@@ -555,16 +567,24 @@ func (r *RDAP) extractBaseDomain(target string) string {
 		target = target[:idx]
 	}
 
-	// Remove trailing dot
-	target = strings.TrimSuffix(target, ".")
+	// Trim whitespace
+	target = strings.TrimSpace(target)
 
-	// Split by dots
-	parts := strings.Split(target, ".")
-	if len(parts) < 2 {
+	if target == "" {
+		return ""
+	}
+
+	// Extract eTLD+1 using publicsuffix library
+	eTLDPlusOne, err := publicsuffix.EffectiveTLDPlusOne(target)
+	if err != nil {
+		// Fallback: if publicsuffix fails (e.g., invalid domain, localhost),
+		// log warning and return cleaned target
+		r.logger.Warn("failed to extract eTLD+1, using fallback",
+			"target", target,
+			"error", err.Error(),
+		)
 		return target
 	}
 
-	// Return last two parts (domain.tld)
-	// This is a simplification - doesn't handle .co.uk, etc.
-	return strings.Join(parts[len(parts)-2:], ".")
+	return eTLDPlusOne
 }

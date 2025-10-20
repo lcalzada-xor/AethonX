@@ -5,14 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"net"
-	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"aethonx/internal/core/domain/metadata"
+	"aethonx/internal/platform/validator"
 )
 
 // Artifact representa un dato descubierto durante el reconocimiento.
@@ -332,8 +329,8 @@ func (a *Artifact) IsValid() bool {
 		if a.Value == "" {
 			return false
 		}
-		// Additional check: verify it's a valid IP
-		if net.ParseIP(a.Value) == nil {
+		// Additional check: verify it's a valid IP using centralized validator
+		if !validator.IsIP(a.Value) {
 			return false
 		}
 
@@ -343,7 +340,7 @@ func (a *Artifact) IsValid() bool {
 		}
 
 	case ArtifactTypeURL:
-		if _, err := url.ParseRequestURI(a.Value); err != nil {
+		if !validator.IsURL(a.Value) {
 			return false
 		}
 
@@ -375,109 +372,40 @@ func (a *Artifact) String() string {
 // Funciones de normalización privadas
 
 func normalizeDomain(v string) string {
-	v = strings.ToLower(v)
-	v = strings.TrimSpace(v)
-	v = strings.TrimSuffix(v, ".")
+	// Handle wildcard prefix specific to certificates
 	v = strings.TrimPrefix(v, "*.")
-	v = strings.TrimPrefix(v, "www.")
-	return v
+	// Delegate to centralized validator
+	return validator.NormalizeDomain(v)
 }
 
 func normalizeEmail(v string) string {
-	v = strings.ToLower(v)
-	v = strings.TrimSpace(v)
-	return v
+	return validator.NormalizeEmail(v)
 }
 
 func normalizeIP(v string) string {
-	v = strings.TrimSpace(v)
-
-	// Parse and validate IP address
-	ip := net.ParseIP(v)
-	if ip == nil {
-		// If parsing fails, return empty string (invalid IP)
-		return ""
-	}
-
-	// Return canonical form
-	// IPv4 addresses are returned in dotted notation: "192.168.1.1"
-	// IPv6 addresses are returned in canonical form: "2001:db8::1"
-	return ip.String()
+	return validator.NormalizeIP(v)
 }
 
 func normalizeURL(v string) string {
-	v = strings.TrimSpace(v)
-
-	// Parse URL
-	u, err := url.Parse(v)
-	if err != nil {
-		// If parsing fails, return lowercase trimmed version as fallback
-		return strings.ToLower(v)
-	}
-
-	// Normalize components
-	u.Scheme = strings.ToLower(u.Scheme)
-	u.Host = strings.ToLower(u.Host)
-
-	// Remove default ports
-	if (u.Scheme == "http" && strings.HasSuffix(u.Host, ":80")) {
-		u.Host = strings.TrimSuffix(u.Host, ":80")
-	}
-	if (u.Scheme == "https" && strings.HasSuffix(u.Host, ":443")) {
-		u.Host = strings.TrimSuffix(u.Host, ":443")
-	}
-
-	// Remove trailing slash from path if it's the only character
-	if u.Path == "/" && u.RawQuery == "" && u.Fragment == "" {
-		u.Path = ""
-	}
-
-	return u.String()
+	return validator.NormalizeURL(v)
 }
 
-// Validation functions
+// Validation functions - delegate to centralized validator
 
-// emailRegex is a simplified RFC 5322 email validation regex
-// Note: Full RFC 5322 is complex; this covers 99% of valid emails
-var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
-
-// isValidEmail validates email format (simplified RFC 5322)
 func isValidEmail(email string) bool {
-	if len(email) < 3 || len(email) > 254 {
-		return false
-	}
-	return emailRegex.MatchString(email)
+	return validator.IsEmail(email)
 }
 
-// Note: isValidDomain is defined in target.go and reused here
+func isValidDomain(domain string) bool {
+	return validator.IsDomain(domain)
+}
 
-// isValidPort validates port range [1-65535]
 func isValidPort(portStr string) bool {
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return false
-	}
-	return port >= 1 && port <= 65535
+	return validator.IsPort(portStr)
 }
 
-// isValidCertSerial validates certificate serial number format (hex string)
 func isValidCertSerial(serial string) bool {
-	if len(serial) == 0 {
-		return false
-	}
-
-	// Serial numbers are typically hex strings
-	// Allow 0-9, a-f, A-F, and optional colons/spaces
-	for _, ch := range serial {
-		if !((ch >= '0' && ch <= '9') ||
-			(ch >= 'a' && ch <= 'f') ||
-			(ch >= 'A' && ch <= 'F') ||
-			ch == ':' || ch == ' ') {
-			return false
-		}
-	}
-
-	return true
+	return validator.IsCertSerial(serial)
 }
 
 // artifactJSON es una estructura auxiliar para serialización custom.

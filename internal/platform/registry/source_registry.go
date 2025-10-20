@@ -70,17 +70,20 @@ func (r *SourceRegistry) Register(name string, factory SourceFactory, meta ports
 	return nil
 }
 
-// MustRegister registra una source o hace panic (para uso en init()).
-func (r *SourceRegistry) MustRegister(name string, factory SourceFactory, meta ports.SourceMetadata) {
-	if err := r.Register(name, factory, meta); err != nil {
-		panic(fmt.Sprintf("failed to register source %s: %v", name, err))
-	}
-}
 
 // Build construye todas las sources habilitadas según la configuración.
 func (r *SourceRegistry) Build(configs map[string]ports.SourceConfig, logger logx.Logger) ([]ports.Source, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	// Validación de configuración (fail-fast)
+	if configs == nil {
+		return nil, fmt.Errorf("configs cannot be nil")
+	}
+
+	if logger == nil {
+		return nil, fmt.Errorf("logger cannot be nil")
+	}
 
 	sources := make([]ports.Source, 0, len(configs))
 	errors := make([]error, 0)
@@ -97,6 +100,25 @@ func (r *SourceRegistry) Build(configs map[string]ports.SourceConfig, logger log
 		if !cfg.Enabled {
 			continue
 		}
+
+		// Validar que la source esté registrada
+		if _, exists := r.factories[name]; !exists {
+			r.logger.Warn("source not registered, skipping",
+				"source", name,
+			)
+			errors = append(errors, fmt.Errorf("source %s not registered in registry", name))
+			continue
+		}
+
+		// Validar prioridad razonable
+		if cfg.Priority < 0 {
+			r.logger.Warn("invalid priority, using default",
+				"source", name,
+				"priority", cfg.Priority,
+			)
+			cfg.Priority = 5 // Default priority
+		}
+
 		prioritized = append(prioritized, prioritizedSource{
 			name:     name,
 			config:   cfg,
@@ -110,11 +132,7 @@ func (r *SourceRegistry) Build(configs map[string]ports.SourceConfig, logger log
 
 	// Construir sources
 	for _, ps := range prioritized {
-		factory, exists := r.factories[ps.name]
-		if !exists {
-			errors = append(errors, fmt.Errorf("source %s not registered", ps.name))
-			continue
-		}
+		factory := r.factories[ps.name] // Ya validado arriba
 
 		source, err := factory(ps.config, logger)
 		if err != nil {

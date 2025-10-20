@@ -258,14 +258,16 @@ func rootContextWithSignals(timeoutSeconds int) (context.Context, context.Cancel
 	// Goroutine que espera señales O cancelación del contexto
 	go func() {
 		select {
-		case <-ch:
+		case sig := <-ch:
 			// Señal recibida, cancelar contexto
+			_ = sig // Evitar unused variable warning
 			baseCancel()
+			// Goroutine termina después de cancelar
 		case <-base.Done():
 			// Contexto cancelado por timeout u otra razón
-			// La goroutine puede terminar
-			return
+			// La goroutine puede terminar limpiamente
 		}
+		// Goroutine siempre termina aquí
 	}()
 
 	// Función de cancelación que limpia TODO

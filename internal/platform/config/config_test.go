@@ -339,8 +339,8 @@ func TestLoad_FromEnv(t *testing.T) {
 	os.Setenv("AETHONX_WORKERS", "8")
 	os.Setenv("AETHONX_TIMEOUT", "60")
 	os.Setenv("AETHONX_OUTPUT_DIR", "custom_out")
-	os.Setenv("AETHONX_SOURCES_CRTSH", "false")
-	os.Setenv("AETHONX_SOURCES_RDAP", "true")
+	os.Setenv("AETHONX_SOURCES_CRTSH_ENABLED", "false")
+	os.Setenv("AETHONX_SOURCES_RDAP_ENABLED", "true")
 	os.Setenv("AETHONX_OUTPUTS_TABLE_DISABLED", "false")
 	os.Setenv("AETHONX_PROXY_URL", "http://proxy.example.com:8080")
 
@@ -350,8 +350,8 @@ func TestLoad_FromEnv(t *testing.T) {
 		os.Unsetenv("AETHONX_WORKERS")
 		os.Unsetenv("AETHONX_TIMEOUT")
 		os.Unsetenv("AETHONX_OUTPUT_DIR")
-		os.Unsetenv("AETHONX_SOURCES_CRTSH")
-		os.Unsetenv("AETHONX_SOURCES_RDAP")
+		os.Unsetenv("AETHONX_SOURCES_CRTSH_ENABLED")
+		os.Unsetenv("AETHONX_SOURCES_RDAP_ENABLED")
 		os.Unsetenv("AETHONX_OUTPUTS_TABLE_DISABLED")
 		os.Unsetenv("AETHONX_PROXY_URL")
 	}()
@@ -380,11 +380,11 @@ func TestLoad_FromEnv(t *testing.T) {
 	if cfg.OutputDir != "custom_out" {
 		t.Errorf("OutputDir: expected %q, got %q", "custom_out", cfg.OutputDir)
 	}
-	if cfg.Sources.CRTSHEnabled != false {
-		t.Errorf("Sources.CRTSHEnabled: expected false, got %v", cfg.Sources.CRTSHEnabled)
+	if crtshCfg, exists := cfg.Sources["crtsh"]; !exists || crtshCfg.Enabled != false {
+		t.Errorf("Sources[\"crtsh\"].Enabled: expected false, got %v", crtshCfg.Enabled)
 	}
-	if cfg.Sources.RDAPEnabled != true {
-		t.Errorf("Sources.RDAPEnabled: expected true, got %v", cfg.Sources.RDAPEnabled)
+	if rdapCfg, exists := cfg.Sources["rdap"]; !exists || rdapCfg.Enabled != true {
+		t.Errorf("Sources[\"rdap\"].Enabled: expected true, got %v", rdapCfg.Enabled)
 	}
 	if cfg.Outputs.TableDisabled != false {
 		t.Errorf("Outputs.TableDisabled: expected false, got %v", cfg.Outputs.TableDisabled)
@@ -409,8 +409,8 @@ func TestLoad_Defaults(t *testing.T) {
 		"AETHONX_WORKERS",
 		"AETHONX_TIMEOUT",
 		"AETHONX_OUTPUT_DIR",
-		"AETHONX_SOURCES_CRTSH",
-		"AETHONX_SOURCES_RDAP",
+		"AETHONX_SOURCES_CRTSH_ENABLED",
+		"AETHONX_SOURCES_RDAP_ENABLED",
 		"AETHONX_OUTPUTS_TABLE_DISABLED",
 		"AETHONX_PROXY_URL",
 	}
@@ -443,11 +443,11 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.OutputDir != "aethonx_out" {
 		t.Errorf("OutputDir: expected %q, got %q", "aethonx_out", cfg.OutputDir)
 	}
-	if cfg.Sources.CRTSHEnabled != true {
-		t.Errorf("Sources.CRTSHEnabled: expected true, got %v", cfg.Sources.CRTSHEnabled)
+	if crtshCfg, exists := cfg.Sources["crtsh"]; !exists || crtshCfg.Enabled != true {
+		t.Errorf("Sources[\"crtsh\"].Enabled: expected true, got %v", crtshCfg.Enabled)
 	}
-	if cfg.Sources.RDAPEnabled != true {
-		t.Errorf("Sources.RDAPEnabled: expected true, got %v", cfg.Sources.RDAPEnabled)
+	if rdapCfg, exists := cfg.Sources["rdap"]; !exists || rdapCfg.Enabled != true {
+		t.Errorf("Sources[\"rdap\"].Enabled: expected true, got %v", rdapCfg.Enabled)
 	}
 	if cfg.Outputs.TableDisabled != false {
 		t.Errorf("Outputs.TableDisabled: expected false, got %v", cfg.Outputs.TableDisabled)

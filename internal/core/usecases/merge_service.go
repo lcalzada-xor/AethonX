@@ -38,7 +38,16 @@ type PartialScanResult struct {
 }
 
 // LoadPartialResults carga todos los resultados parciales que coincidan con el patrón.
+// Si algún archivo falla al cargar, se retorna error inmediatamente (fail-fast).
 func (m *MergeService) LoadPartialResults(dir, pattern string) ([]PartialScanResult, error) {
+	// Validación de entradas
+	if dir == "" {
+		return nil, fmt.Errorf("directory cannot be empty")
+	}
+	if pattern == "" {
+		return nil, fmt.Errorf("pattern cannot be empty")
+	}
+
 	// Construir patrón completo
 	fullPattern := filepath.Join(dir, pattern)
 
@@ -55,13 +64,21 @@ func (m *MergeService) LoadPartialResults(dir, pattern string) ([]PartialScanRes
 
 	m.logger.Info("loading partial results", "files", len(files), "pattern", pattern)
 
-	// Cargar cada archivo
+	// Cargar cada archivo (fail-fast si alguno falla)
 	results := make([]PartialScanResult, 0, len(files))
+	failedFiles := make([]string, 0)
+
 	for _, file := range files {
 		partial, err := m.loadPartialFile(file)
 		if err != nil {
-			m.logger.Warn("failed to load partial file", "file", file, "error", err.Error())
-			continue
+			m.logger.Warn("failed to load partial file",
+				"file", file,
+				"error", err.Error(),
+			)
+			failedFiles = append(failedFiles, file)
+			// FAIL-FAST: No continuar si hay errores de carga
+			// Esto previene pérdida silenciosa de datos
+			return nil, fmt.Errorf("failed to load partial file %s: %w", file, err)
 		}
 		results = append(results, partial)
 	}
@@ -81,6 +98,10 @@ func (m *MergeService) LoadPartialResults(dir, pattern string) ([]PartialScanRes
 
 // loadPartialFile carga un archivo parcial individual.
 func (m *MergeService) loadPartialFile(filepath string) (PartialScanResult, error) {
+	if filepath == "" {
+		return PartialScanResult{}, fmt.Errorf("filepath cannot be empty")
+	}
+
 	f, err := os.Open(filepath)
 	if err != nil {
 		return PartialScanResult{}, fmt.Errorf("failed to open file: %w", err)
@@ -90,7 +111,12 @@ func (m *MergeService) loadPartialFile(filepath string) (PartialScanResult, erro
 	var partial PartialScanResult
 	dec := json.NewDecoder(f)
 	if err := dec.Decode(&partial); err != nil {
-		return PartialScanResult{}, fmt.Errorf("failed to decode JSON: %w", err)
+		return PartialScanResult{}, fmt.Errorf("failed to decode JSON from %s: %w", filepath, err)
+	}
+
+	// Validar que el resultado parcial tenga datos mínimos
+	if partial.Source == "" {
+		return PartialScanResult{}, fmt.Errorf("invalid partial result: source name is empty in %s", filepath)
 	}
 
 	m.logger.Debug("partial file loaded",
@@ -105,7 +131,17 @@ func (m *MergeService) loadPartialFile(filepath string) (PartialScanResult, erro
 func (m *MergeService) ConsolidateIntoResult(
 	result *domain.ScanResult,
 	partials []PartialScanResult,
-) {
+) error {
+	// Validación de entradas
+	if result == nil {
+		return fmt.Errorf("result cannot be nil")
+	}
+
+	if len(partials) == 0 {
+		m.logger.Debug("no partial results to consolidate")
+		return nil
+	}
+
 	for _, partial := range partials {
 		// Añadir artifacts
 		result.Artifacts = append(result.Artifacts, partial.Artifacts...)
@@ -121,6 +157,8 @@ func (m *MergeService) ConsolidateIntoResult(
 			"artifacts", len(partial.Artifacts),
 		)
 	}
+
+	return nil
 }
 
 // ClearPartialFiles elimina archivos parciales después del merge exitoso.

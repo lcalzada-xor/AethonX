@@ -135,10 +135,15 @@ func (o *Orchestrator) Run(ctx context.Context, target domain.Target) (*domain.S
 
 		partialResults, err := merger.LoadPartialResults(o.streamingConfig.OutputDir, pattern)
 		if err != nil {
-			o.logger.Warn("failed to load partial results", "error", err.Error())
-		} else if len(partialResults) > 0 {
+			// FAIL-FAST: Error crítico al cargar resultados parciales
+			return nil, fmt.Errorf("failed to load partial results: %w", err)
+		}
+
+		if len(partialResults) > 0 {
 			// Consolidar artifacts de archivos parciales
-			merger.ConsolidateIntoResult(result, partialResults)
+			if err := merger.ConsolidateIntoResult(result, partialResults); err != nil {
+				return nil, fmt.Errorf("failed to consolidate partial results: %w", err)
+			}
 			o.logger.Info("partial results consolidated",
 				"sources", len(partialResults),
 				"total_artifacts", len(result.Artifacts),
@@ -395,7 +400,8 @@ func (o *Orchestrator) executeSource(
 	}
 }
 
-// consolidateResults consolida resultados de todas las fuentes concurrentemente.
+// consolidateResults consolida resultados de todas las fuentes usando fan-out/fan-in pattern.
+// Cada goroutine escribe en su buffer local (sin contención), luego se hace merge secuencial.
 func (o *Orchestrator) consolidateResults(
 	result *domain.ScanResult,
 	sourceResults []sourceResult,
@@ -404,46 +410,58 @@ func (o *Orchestrator) consolidateResults(
 		return
 	}
 
-	// Si hay pocos resultados, consolidar secuencialmente (más simple)
+	// Si hay pocos resultados, consolidar secuencialmente (más eficiente)
 	if len(sourceResults) <= 2 {
 		o.consolidateResultsSequential(result, sourceResults)
 		return
 	}
 
-	// Consolidación concurrente con fan-out/fan-in pattern
-	var mu sync.Mutex
+	// Buffer local por goroutine (elimina contención de mutex)
+	type resultBuffer struct {
+		sourceName string
+		artifacts  []*domain.Artifact
+		warnings   []domain.Warning
+		errors     []domain.Error
+	}
+
+	buffers := make([]resultBuffer, len(sourceResults))
 	var wg sync.WaitGroup
 
-	for _, sr := range sourceResults {
+	// Fan-out: cada goroutine procesa su resultado en buffer dedicado
+	for i, sr := range sourceResults {
 		wg.Add(1)
-		go func(sourceRes sourceResult) {
+		go func(idx int, sourceRes sourceResult) {
 			defer wg.Done()
 
-			// Procesar este resultado
-			mu.Lock()
-			defer mu.Unlock()
-
-			result.Metadata.SourcesUsed = append(result.Metadata.SourcesUsed, sourceRes.source)
+			buf := resultBuffer{sourceName: sourceRes.source}
 
 			if sourceRes.err != nil {
-				result.AddError(sourceRes.source, sourceRes.err.Error(), false)
-				return
+				// Error de source: crear Error entry
+				buf.errors = []domain.Error{{
+					Source:   sourceRes.source,
+					Message:  sourceRes.err.Error(),
+					Severity: domain.ErrorCritical,
+				}}
+			} else if sourceRes.result != nil {
+				// Source exitosa: copiar datos
+				buf.artifacts = sourceRes.result.Artifacts
+				buf.warnings = sourceRes.result.Warnings
+				buf.errors = sourceRes.result.Errors
 			}
 
-			if sourceRes.result != nil {
-				// Añadir artifacts
-				result.Artifacts = append(result.Artifacts, sourceRes.result.Artifacts...)
-
-				// Añadir warnings
-				result.Warnings = append(result.Warnings, sourceRes.result.Warnings...)
-
-				// Añadir errores
-				result.Errors = append(result.Errors, sourceRes.result.Errors...)
-			}
-		}(sr)
+			buffers[idx] = buf
+		}(i, sr)
 	}
 
 	wg.Wait()
+
+	// Fan-in: merge secuencial sin concurrencia (thread-safe)
+	for _, buf := range buffers {
+		result.Metadata.SourcesUsed = append(result.Metadata.SourcesUsed, buf.sourceName)
+		result.Artifacts = append(result.Artifacts, buf.artifacts...)
+		result.Warnings = append(result.Warnings, buf.warnings...)
+		result.Errors = append(result.Errors, buf.errors...)
+	}
 }
 
 // consolidateResultsSequential consolidación secuencial (fallback).

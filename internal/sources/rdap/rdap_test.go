@@ -491,3 +491,127 @@ func createMockRDAPResponse() *rdapResponse {
 		},
 	}
 }
+
+// TestExtractBaseDomain tests the extractBaseDomain function with various TLD scenarios
+func TestExtractBaseDomain(t *testing.T) {
+	logger := logx.New()
+	rdap := New(logger).(*RDAP)
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		// Simple TLDs (.com, .org, .net)
+		{
+			name:     "simple domain",
+			input:    "example.com",
+			expected: "example.com",
+		},
+		{
+			name:     "subdomain with simple TLD",
+			input:    "subdomain.example.com",
+			expected: "example.com",
+		},
+		{
+			name:     "deep subdomain with simple TLD",
+			input:    "api.subdomain.example.com",
+			expected: "example.com",
+		},
+		// Complex TLDs (.co.uk, .com.br, .gov.uk)
+		{
+			name:     "domain with .co.uk",
+			input:    "example.co.uk",
+			expected: "example.co.uk",
+		},
+		{
+			name:     "subdomain with .co.uk",
+			input:    "subdomain.example.co.uk",
+			expected: "example.co.uk",
+		},
+		{
+			name:     "domain with .com.br",
+			input:    "example.com.br",
+			expected: "example.com.br",
+		},
+		{
+			name:     "subdomain with .com.br",
+			input:    "api.example.com.br",
+			expected: "example.com.br",
+		},
+		{
+			name:     "domain with .gov.uk",
+			input:    "parliament.gov.uk",
+			expected: "parliament.gov.uk",
+		},
+		// With protocol
+		{
+			name:     "http:// prefix",
+			input:    "http://example.com",
+			expected: "example.com",
+		},
+		{
+			name:     "https:// prefix",
+			input:    "https://example.co.uk",
+			expected: "example.co.uk",
+		},
+		// With port
+		{
+			name:     "domain with port",
+			input:    "example.com:8080",
+			expected: "example.com",
+		},
+		{
+			name:     "subdomain with port",
+			input:    "api.example.com:443",
+			expected: "example.com",
+		},
+		// With path
+		{
+			name:     "domain with path",
+			input:    "example.com/path",
+			expected: "example.com",
+		},
+		{
+			name:     "subdomain with path",
+			input:    "api.example.com/v1/users",
+			expected: "example.com",
+		},
+		// Combined
+		{
+			name:     "full URL with complex TLD",
+			input:    "https://api.example.co.uk:443/path",
+			expected: "example.co.uk",
+		},
+		// Trailing dot
+		{
+			name:     "domain with trailing dot",
+			input:    "example.com.",
+			expected: "example.com",
+		},
+		// Whitespace
+		{
+			name:     "domain with whitespace",
+			input:    "  example.com  ",
+			expected: "example.com",
+		},
+		// Edge cases
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "www prefix",
+			input:    "www.example.com",
+			expected: "example.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := rdap.extractBaseDomain(tt.input)
+			testutil.AssertEqual(t, result, tt.expected, tt.name)
+		})
+	}
+}
