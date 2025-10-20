@@ -38,10 +38,10 @@ func TestSourceMode_CompatibleWith(t *testing.T) {
 			compatible: true,
 		},
 		{
-			name:       "passive source NOT compatible with active scan",
+			name:       "passive source compatible with active scan",
 			sourceMode: SourceModePassive,
 			scanMode:   ScanModeActive,
-			compatible: false,
+			compatible: true,
 		},
 		{
 			name:       "passive source compatible with hybrid scan",

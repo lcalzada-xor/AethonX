@@ -63,7 +63,7 @@ func (m SourceMode) String() string {
 func (m SourceMode) CompatibleWith(scanMode ScanMode) bool {
 	switch m {
 	case SourceModePassive:
-		return scanMode == ScanModePassive || scanMode == ScanModeHybrid
+		return scanMode == ScanModePassive || scanMode == ScanModeActive || scanMode == ScanModeHybrid
 	case SourceModeActive:
 		return scanMode == ScanModeActive || scanMode == ScanModeHybrid
 	case SourceModeBoth:

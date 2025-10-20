@@ -2,347 +2,522 @@ package httpx
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"aethonx/internal/core/domain"
-	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
 )
 
-func TestNew(t *testing.T) {
+func TestHTTPXSource_Name(t *testing.T) {
 	logger := logx.New()
 	source := New(logger)
-
-	if source == nil {
-		t.Fatal("New() returned nil")
-	}
 
 	if source.Name() != "httpx" {
-		t.Errorf("expected name 'httpx', got %s", source.Name())
+		t.Errorf("expected name 'httpx', got '%s'", source.Name())
 	}
+}
+
+func TestHTTPXSource_Mode(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
 
 	if source.Mode() != domain.SourceModeActive {
-		t.Errorf("expected mode active, got %s", source.Mode())
-	}
-
-	if source.Type() != domain.SourceTypeBuiltin {
-		t.Errorf("expected type builtin, got %s", source.Type())
+		t.Errorf("expected mode 'active', got '%s'", source.Mode())
 	}
 }
 
-func TestHTTPx_Run(t *testing.T) {
-	// Setup test HTTP server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("test response"))
-	}))
-	defer server.Close()
-
-	logger := logx.New()
-	source := New(logger).(*HTTPx)
-
-	// Note: Este test no prueba conexión real porque Run() prueba el target.Root
-	// que en este caso sería un dominio de prueba, no el servidor de test
-	target := *domain.NewTarget("example.com", domain.ScanModeActive)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	result, err := source.Run(ctx, target)
-
-	if err != nil {
-		t.Fatalf("Run() failed: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("Run() returned nil result")
-	}
-
-	// El test no hará conexión real a example.com, pero no debe fallar
-	// En producción, probaría dominios reales
-}
-
-func TestHTTPx_RunWithInput(t *testing.T) {
-	// Setup test HTTP server
-	hitCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hitCount++
-		w.Header().Set("Server", "TestServer/1.0")
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("<html><body>Test</body></html>"))
-	}))
-	defer server.Close()
-
+func TestHTTPXSource_Type(t *testing.T) {
 	logger := logx.New()
 	source := New(logger)
 
-	target := *domain.NewTarget("example.com", domain.ScanModeActive)
-
-	// Crear input con subdomains (simulados)
-	input := domain.NewScanResult(target)
-	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeSubdomain, "test.example.com", "crtsh"))
-	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeSubdomain, "api.example.com", "crtsh"))
-	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeDomain, "example.com", "rdap"))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Cast to InputConsumer for RunWithInput
-	consumer, ok := source.(ports.InputConsumer)
-	if !ok {
-		t.Fatal("HTTPx should implement InputConsumer")
-	}
-
-	result, err := consumer.RunWithInput(ctx, target, input)
-
-	if err != nil {
-		t.Fatalf("RunWithInput() failed: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("RunWithInput() returned nil result")
-	}
-
-	// Verificar que se procesaron los inputs
-	// Nota: En este test no habrá resultados porque los dominios no son reales
-	// En un ambiente real con dominios válidos, habría artifacts de URL e IP
-}
-
-func TestHTTPx_RunWithInput_EmptyInput(t *testing.T) {
-	logger := logx.New()
-	source := New(logger)
-
-	target := *domain.NewTarget("example.com", domain.ScanModeActive)
-	input := domain.NewScanResult(target) // Empty input
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	consumer, ok := source.(ports.InputConsumer)
-	if !ok {
-		t.Fatal("HTTPx should implement InputConsumer")
-	}
-
-	result, err := consumer.RunWithInput(ctx, target, input)
-
-	if err != nil {
-		t.Fatalf("RunWithInput() with empty input failed: %v", err)
-	}
-
-	if result == nil {
-		t.Fatal("RunWithInput() returned nil result")
-	}
-
-	// Con input vacío, debería hacer fallback a Run()
-}
-
-func TestHTTPx_ExtractHosts(t *testing.T) {
-	logger := logx.New()
-	source := New(logger).(*HTTPx)
-
-	artifacts := []*domain.Artifact{
-		domain.NewArtifact(domain.ArtifactTypeSubdomain, "test.example.com", "crtsh"),
-		domain.NewArtifact(domain.ArtifactTypeSubdomain, "api.example.com", "crtsh"),
-		domain.NewArtifact(domain.ArtifactTypeDomain, "example.com", "rdap"),
-		domain.NewArtifact(domain.ArtifactTypeEmail, "contact@example.com", "rdap"), // Should be ignored
-		domain.NewArtifact(domain.ArtifactTypeSubdomain, "test.example.com", "other"), // Duplicate
-	}
-
-	hosts := source.extractHosts(artifacts)
-
-	expectedCount := 3 // test.example.com, api.example.com, example.com (deduped)
-	if len(hosts) != expectedCount {
-		t.Errorf("expected %d hosts, got %d", expectedCount, len(hosts))
-	}
-
-	// Verificar que no hay duplicados
-	seen := make(map[string]bool)
-	for _, host := range hosts {
-		if seen[host] {
-			t.Errorf("duplicate host found: %s", host)
-		}
-		seen[host] = true
-	}
-
-	// Verificar que email fue filtrado
-	for _, host := range hosts {
-		if host == "contact@example.com" {
-			t.Error("email should not be extracted as host")
-		}
+	if source.Type() != domain.SourceTypeCLI {
+		t.Errorf("expected type 'cli', got '%s'", source.Type())
 	}
 }
 
-func TestHTTPx_ExtractHosts_NilArtifacts(t *testing.T) {
+func TestHTTPXSource_Validate(t *testing.T) {
 	logger := logx.New()
-	source := New(logger).(*HTTPx)
-
-	artifacts := []*domain.Artifact{
-		domain.NewArtifact(domain.ArtifactTypeSubdomain, "test.example.com", "crtsh"),
-		nil, // Nil artifact should be skipped
-		domain.NewArtifact(domain.ArtifactTypeSubdomain, "api.example.com", "crtsh"),
-	}
-
-	hosts := source.extractHosts(artifacts)
-
-	expectedCount := 2
-	if len(hosts) != expectedCount {
-		t.Errorf("expected %d hosts (nil skipped), got %d", expectedCount, len(hosts))
-	}
-}
-
-func TestHTTPx_ExtractIP(t *testing.T) {
-	logger := logx.New()
-	source := New(logger).(*HTTPx)
 
 	tests := []struct {
-		name     string
-		host     string
-		expectIP bool
+		name      string
+		source    *HTTPXSource
+		wantError bool
 	}{
 		{
-			name:     "IP address",
-			host:     "192.168.1.1",
-			expectIP: true,
+			name:      "valid default config",
+			source:    New(logger),
+			wantError: false,
 		},
 		{
-			name:     "IP with port",
-			host:     "192.168.1.1:8080",
-			expectIP: true,
+			name: "invalid empty exec path",
+			source: &HTTPXSource{
+				logger:    logger,
+				execPath:  "",
+				profile:   ProfileBasic,
+				timeout:   30 * time.Second,
+				threads:   50,
+				rateLimit: 150,
+			},
+			wantError: true,
 		},
 		{
-			name:     "hostname (will resolve or empty)",
-			host:     "localhost",
-			expectIP: true, // localhost should resolve
+			name: "invalid negative timeout",
+			source: &HTTPXSource{
+				logger:    logger,
+				execPath:  "httpx",
+				profile:   ProfileBasic,
+				timeout:   -1 * time.Second,
+				threads:   50,
+				rateLimit: 150,
+			},
+			wantError: true,
 		},
 		{
-			name:     "invalid host",
-			host:     "",
-			expectIP: false,
+			name: "invalid zero threads",
+			source: &HTTPXSource{
+				logger:    logger,
+				execPath:  "httpx",
+				profile:   ProfileBasic,
+				timeout:   30 * time.Second,
+				threads:   0,
+				rateLimit: 150,
+			},
+			wantError: true,
+		},
+		{
+			name: "invalid negative rate limit",
+			source: &HTTPXSource{
+				logger:    logger,
+				execPath:  "httpx",
+				profile:   ProfileBasic,
+				timeout:   30 * time.Second,
+				threads:   50,
+				rateLimit: -1,
+			},
+			wantError: true,
+		},
+		{
+			name: "invalid scan profile",
+			source: &HTTPXSource{
+				logger:    logger,
+				execPath:  "httpx",
+				profile:   "invalid_profile",
+				timeout:   30 * time.Second,
+				threads:   50,
+				rateLimit: 150,
+			},
+			wantError: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ip := source.extractIP(tt.host)
-
-			if tt.expectIP && ip == "" {
-				t.Errorf("expected IP extraction to succeed, got empty")
-			}
-
-			if !tt.expectIP && ip != "" {
-				t.Errorf("expected empty IP, got %s", ip)
+			err := tt.source.Validate()
+			if (err != nil) != tt.wantError {
+				t.Errorf("Validate() error = %v, wantError = %v", err, tt.wantError)
 			}
 		})
 	}
 }
 
-func TestHTTPx_Close(t *testing.T) {
+func TestParser_ParseResponse_Success(t *testing.T) {
 	logger := logx.New()
-	source := New(logger)
+	parser := NewParser(logger, "httpx")
 
-	err := source.Close()
-	if err != nil {
-		t.Errorf("Close() failed: %v", err)
+	jsonLine := `{
+		"timestamp": "2025-10-20T10:00:00Z",
+		"url": "https://example.com",
+		"input": "example.com",
+		"title": "Example Domain",
+		"status_code": 200,
+		"content_length": 1256,
+		"content_type": "text/html",
+		"webserver": "nginx/1.24.0",
+		"response_time": "125ms",
+		"scheme": "https",
+		"host": "example.com",
+		"port": "443",
+		"method": "GET",
+		"tech": ["Nginx", "Ubuntu"],
+		"ip": "93.184.216.34",
+		"cdn": "cloudflare",
+		"cdn_name": "Cloudflare",
+		"failed": false
+	}`
+
+	var resp HTTPXResponse
+	if err := json.Unmarshal([]byte(jsonLine), &resp); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+
+	target := domain.NewTarget("example.com", domain.ScanModeActive)
+	artifacts := parser.ParseResponse(&resp, *target)
+
+	// Should create: URL + IP + 2 Technologies = 4 artifacts minimum
+	if len(artifacts) < 4 {
+		t.Errorf("expected at least 4 artifacts, got %d", len(artifacts))
+	}
+
+	// Check URL artifact
+	urlArtifact := artifacts[0]
+	if urlArtifact.Type != domain.ArtifactTypeURL {
+		t.Errorf("expected first artifact to be URL, got %s", urlArtifact.Type)
+	}
+	if urlArtifact.Value != "https://example.com" {
+		t.Errorf("expected URL 'https://example.com', got '%s'", urlArtifact.Value)
+	}
+	if urlArtifact.Confidence != 1.0 {
+		t.Errorf("expected confidence 1.0, got %f", urlArtifact.Confidence)
+	}
+
+	// Check IP artifact
+	ipArtifact := artifacts[1]
+	if ipArtifact.Type != domain.ArtifactTypeIP {
+		t.Errorf("expected second artifact to be IP, got %s", ipArtifact.Type)
+	}
+	if ipArtifact.Value != "93.184.216.34" {
+		t.Errorf("expected IP '93.184.216.34', got '%s'", ipArtifact.Value)
+	}
+
+	// Check technology artifacts
+	techCount := 0
+	for _, a := range artifacts {
+		if a.Type == domain.ArtifactTypeTechnology {
+			techCount++
+		}
+	}
+	if techCount != 2 {
+		t.Errorf("expected 2 technology artifacts, got %d", techCount)
 	}
 }
 
-func TestHTTPx_ContextCancellation(t *testing.T) {
-	// Setup slow server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(5 * time.Second) // Simulate slow response
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
+func TestParser_ParseResponse_Failed(t *testing.T) {
 	logger := logx.New()
-	source := New(logger)
+	parser := NewParser(logger, "httpx")
 
-	target := *domain.NewTarget("example.com", domain.ScanModeActive)
-	input := domain.NewScanResult(target)
-	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeSubdomain, "slow.example.com", "crtsh"))
+	jsonLine := `{
+		"url": "https://notfound.example.com",
+		"input": "notfound.example.com",
+		"failed": true,
+		"status_code": 0
+	}`
 
-	// Cancel context immediately
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	consumer, ok := source.(ports.InputConsumer)
-	if !ok {
-		t.Fatal("HTTPx should implement InputConsumer")
+	var resp HTTPXResponse
+	if err := json.Unmarshal([]byte(jsonLine), &resp); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
 	}
 
-	_, err := consumer.RunWithInput(ctx, target, input)
+	target := domain.NewTarget("notfound.example.com", domain.ScanModeActive)
+	artifacts := parser.ParseResponse(&resp, *target)
 
-	// Should not error (context cancellation is handled gracefully)
-	if err != nil {
-		t.Errorf("expected no error on context cancellation, got: %v", err)
+	// Failed probe should return empty artifacts
+	if len(artifacts) != 0 {
+		t.Errorf("expected 0 artifacts for failed probe, got %d", len(artifacts))
 	}
 }
 
-func TestHTTPx_Probe_Success(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Server", "TestServer")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
-	}))
-	defer server.Close()
-
+func TestParser_ParseResponse_WithTLS(t *testing.T) {
 	logger := logx.New()
-	source := New(logger).(*HTTPx)
+	parser := NewParser(logger, "httpx")
 
-	target := *domain.NewTarget("example.com", domain.ScanModeActive)
-	result := domain.NewScanResult(target)
+	jsonLine := `{
+		"url": "https://example.com",
+		"status_code": 200,
+		"scheme": "https",
+		"host": "example.com",
+		"port": "443",
+		"failed": false,
+		"tls": {
+			"host": "example.com",
+			"port": "443",
+			"probe_status": true,
+			"version": "TLSv1.3",
+			"cipher": "TLS_AES_128_GCM_SHA256",
+			"subject_dn": "CN=example.com",
+			"issuer_dn": "CN=Let's Encrypt Authority X3",
+			"subject_cn": "example.com",
+			"issuer_cn": "Let's Encrypt Authority X3",
+			"subject_an": ["example.com", "www.example.com"],
+			"not_before": "2025-01-01T00:00:00Z",
+			"not_after": "2025-04-01T00:00:00Z"
+		}
+	}`
 
-	ctx := context.Background()
-
-	success := source.probe(ctx, server.URL, result)
-
-	if !success {
-		t.Error("expected probe to succeed")
+	var resp HTTPXResponse
+	if err := json.Unmarshal([]byte(jsonLine), &resp); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
 	}
 
-	if len(result.Artifacts) == 0 {
-		t.Error("expected artifacts to be added")
-	}
+	target := domain.NewTarget("example.com", domain.ScanModeActive)
+	artifacts := parser.ParseResponse(&resp, *target)
 
-	// Verificar que se creó artifact de URL
-	hasURL := false
-	for _, artifact := range result.Artifacts {
-		if artifact.Type == domain.ArtifactTypeURL {
-			hasURL = true
-			if artifact.Value != server.URL {
-				t.Errorf("expected URL %s, got %s", server.URL, artifact.Value)
-			}
+	// Should create: URL + Certificate + 2 SANs as subdomains
+	certCount := 0
+	subdomainCount := 0
+	for _, a := range artifacts {
+		if a.Type == domain.ArtifactTypeCertificate {
+			certCount++
+		}
+		if a.Type == domain.ArtifactTypeSubdomain {
+			subdomainCount++
 		}
 	}
 
-	if !hasURL {
-		t.Error("expected URL artifact")
+	if certCount != 1 {
+		t.Errorf("expected 1 certificate artifact, got %d", certCount)
+	}
+
+	if subdomainCount != 2 {
+		t.Errorf("expected 2 subdomain artifacts from SANs, got %d", subdomainCount)
 	}
 }
 
-func TestHTTPx_Probe_Failure(t *testing.T) {
-	logger := logx.New()
-	source := New(logger).(*HTTPx)
-
-	target := *domain.NewTarget("example.com", domain.ScanModeActive)
-	result := domain.NewScanResult(target)
-
-	ctx := context.Background()
-
-	// Probe invalid URL
-	success := source.probe(ctx, "http://invalid-domain-that-does-not-exist-12345.com", result)
-
-	if success {
-		t.Error("expected probe to fail")
+func TestParser_ExtractProduct(t *testing.T) {
+	tests := []struct {
+		banner   string
+		expected string
+	}{
+		{"nginx/1.24.0", "nginx"},
+		{"Apache/2.4.41 (Ubuntu)", "Apache"},
+		{"Microsoft-IIS/10.0", "Microsoft-IIS"},
+		{"", ""},
+		{"nginx", "nginx"},
 	}
 
-	// No artifacts should be added on failure
-	if len(result.Artifacts) > 0 {
-		t.Error("expected no artifacts on failed probe")
+	for _, tt := range tests {
+		t.Run(tt.banner, func(t *testing.T) {
+			result := extractProduct(tt.banner)
+			if result != tt.expected {
+				t.Errorf("extractProduct(%s) = %s, want %s", tt.banner, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParser_ExtractVersion(t *testing.T) {
+	tests := []struct {
+		banner   string
+		expected string
+	}{
+		{"nginx/1.24.0", "1.24.0"},
+		{"Apache/2.4.41 (Ubuntu)", "2.4.41"},
+		{"Microsoft-IIS/10.0", "10.0"},
+		{"", ""},
+		{"nginx", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.banner, func(t *testing.T) {
+			result := extractVersion(tt.banner)
+			if result != tt.expected {
+				t.Errorf("extractVersion(%s) = %s, want %s", tt.banner, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParser_ParsePort(t *testing.T) {
+	tests := []struct {
+		portStr  string
+		expected int
+	}{
+		{"80", 80},
+		{"443", 443},
+		{"8080", 8080},
+		{"", 0},
+		{"invalid", 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.portStr, func(t *testing.T) {
+			result := parsePort(tt.portStr)
+			if result != tt.expected {
+				t.Errorf("parsePort(%s) = %d, want %d", tt.portStr, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParser_IsValidDomain(t *testing.T) {
+	logger := logx.New()
+	parser := NewParser(logger, "httpx")
+
+	tests := []struct {
+		domain   string
+		expected bool
+	}{
+		{"example.com", true},
+		{"sub.example.com", true},
+		{"*.example.com", true},
+		{"example", false},
+		{"", false},
+		{"example@com", false},
+		{"example..com", true}, // Basic validation doesn't catch consecutive dots
+		{"very.long.subdomain.example.com", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.domain, func(t *testing.T) {
+			result := parser.isValidDomain(tt.domain)
+			if result != tt.expected {
+				t.Errorf("isValidDomain(%s) = %v, want %v", tt.domain, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestGetProfile(t *testing.T) {
+	tests := []struct {
+		profile  ScanProfile
+		expected string
+	}{
+		{ProfileBasic, "Basic host verification with essential metadata"},
+		{ProfileTech, "Technology detection and advanced fingerprinting"},
+		{ProfileTLS, "TLS/SSL certificate analysis"},
+		{ProfileFull, "Comprehensive scan with all probes enabled"},
+		{ProfileHeadless, "Visual reconnaissance with headless browser (requires Chrome)"},
+		{"invalid", "Basic host verification with essential metadata"}, // Falls back to basic
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.profile), func(t *testing.T) {
+			cfg := GetProfile(tt.profile)
+			if cfg.Description != tt.expected {
+				t.Errorf("GetProfile(%s).Description = %s, want %s", tt.profile, cfg.Description, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHTTPXSource_SetProfile(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
+
+	// Default should be ProfileFull
+	if source.profile != ProfileFull {
+		t.Errorf("expected default profile 'full', got '%s'", source.profile)
+	}
+
+	// Change to ProfileBasic
+	source.SetProfile(ProfileBasic)
+	if source.profile != ProfileBasic {
+		t.Errorf("expected profile 'basic' after SetProfile, got '%s'", source.profile)
+	}
+}
+
+func TestHTTPXSource_SetCustomFlags(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
+
+	customFlags := []string{"-proxy", "http://proxy:8080", "-header", "X-Custom: value"}
+	source.SetCustomFlags(customFlags)
+
+	if len(source.customFlags) != len(customFlags) {
+		t.Errorf("expected %d custom flags, got %d", len(customFlags), len(source.customFlags))
+	}
+
+	for i, flag := range customFlags {
+		if source.customFlags[i] != flag {
+			t.Errorf("expected custom flag[%d] = '%s', got '%s'", i, flag, source.customFlags[i])
+		}
+	}
+}
+
+func TestHTTPXSource_Close(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
+
+	// Close should not error even if no process is running
+	if err := source.Close(); err != nil {
+		t.Errorf("Close() returned error: %v", err)
+	}
+
+	// Close should be idempotent
+	if err := source.Close(); err != nil {
+		t.Errorf("second Close() returned error: %v", err)
+	}
+}
+
+func TestHTTPXSource_BuildCommand(t *testing.T) {
+	logger := logx.New()
+	source := NewWithConfig(logger, "httpx", ProfileBasic, 60*time.Second, 25, 100)
+
+	target := domain.NewTarget("example.com", domain.ScanModeActive)
+	ctx := context.Background()
+
+	cmd := source.buildCommand(ctx, *target)
+
+	// Verify command path
+	if cmd.Path == "" {
+		t.Error("expected command path to be set")
+	}
+
+	// Verify args contain essential flags
+	args := cmd.Args
+	containsJSON := false
+	containsSilent := false
+	containsTarget := false
+
+	for i, arg := range args {
+		if arg == "-json" {
+			containsJSON = true
+		}
+		if arg == "-silent" {
+			containsSilent = true
+		}
+		if arg == "-u" && i+1 < len(args) && args[i+1] == "example.com" {
+			containsTarget = true
+		}
+	}
+
+	if !containsJSON {
+		t.Error("expected command args to contain '-json'")
+	}
+	if !containsSilent {
+		t.Error("expected command args to contain '-silent'")
+	}
+	if !containsTarget {
+		t.Error("expected command args to contain target 'example.com'")
+	}
+}
+
+func TestParser_ParseMultipleResponses(t *testing.T) {
+	logger := logx.New()
+	parser := NewParser(logger, "httpx")
+
+	responses := []*HTTPXResponse{
+		{
+			URL:        "https://example.com",
+			StatusCode: 200,
+			Host:       "example.com",
+			Port:       "443",
+			Scheme:     "https",
+			Failed:     false,
+		},
+		{
+			URL:        "https://www.example.com",
+			StatusCode: 200,
+			Host:       "www.example.com",
+			Port:       "443",
+			Scheme:     "https",
+			Failed:     false,
+		},
+	}
+
+	target := domain.NewTarget("example.com", domain.ScanModeActive)
+	artifacts := parser.ParseMultipleResponses(responses, *target)
+
+	// Should create at least 2 URL artifacts (one per response)
+	urlCount := 0
+	for _, a := range artifacts {
+		if a.Type == domain.ArtifactTypeURL {
+			urlCount++
+		}
+	}
+
+	if urlCount < 2 {
+		t.Errorf("expected at least 2 URL artifacts, got %d", urlCount)
 	}
 }
