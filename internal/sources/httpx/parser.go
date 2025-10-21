@@ -3,6 +3,7 @@ package httpx
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/domain/metadata"
@@ -26,7 +27,7 @@ func NewParser(logger logx.Logger, sourceName string) *Parser {
 // ParseResponse converts an HTTPXResponse into domain Artifacts.
 // Returns multiple artifacts: URL, IP, Technologies, Certificate, Subdomains.
 func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*domain.Artifact {
-	artifacts := make([]*domain.Artifact, 0, 5)
+	artifacts := make([]*domain.Artifact, 0, 6)
 
 	// Skip failed probes (no useful data)
 	if resp.Failed || resp.StatusCode == 0 {
@@ -38,19 +39,25 @@ func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*dom
 	urlArtifact := p.createURLArtifact(resp)
 	artifacts = append(artifacts, urlArtifact)
 
-	// 2. IP artifact (if available)
+	// 2. Domain artifact marked as alive (NEW)
+	if resp.Host != "" {
+		domainArtifact := p.createAliveDomainArtifact(resp)
+		artifacts = append(artifacts, domainArtifact)
+	}
+
+	// 3. IP artifact (if available)
 	if resp.IP != "" {
 		ipArtifact := p.createIPArtifact(resp)
 		artifacts = append(artifacts, ipArtifact)
 	}
 
-	// 3. Technology artifacts (from tech detection)
+	// 4. Technology artifacts (from tech detection)
 	for _, tech := range resp.TechDetect {
 		techArtifact := p.createTechnologyArtifact(tech, resp.URL)
 		artifacts = append(artifacts, techArtifact)
 	}
 
-	// 4. Certificate artifact (if TLS data available)
+	// 5. Certificate artifact (if TLS data available)
 	if resp.TLS != nil && resp.TLS.ProbeStatus {
 		certArtifact := p.createCertificateArtifact(resp.TLS)
 		artifacts = append(artifacts, certArtifact)
@@ -64,7 +71,7 @@ func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*dom
 		}
 	}
 
-	// 5. Extracted FQDNs (if -extract-fqdn was used)
+	// 6. Extracted FQDNs (if -extract-fqdn was used)
 	for _, fqdn := range resp.ExtractedFQDNs {
 		if p.isValidDomain(fqdn) && fqdn != resp.Host {
 			fqdnArtifact := p.createSubdomainArtifact(fqdn, resp.URL)
@@ -72,7 +79,7 @@ func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*dom
 		}
 	}
 
-	// 6. CNAME artifact (if different from host)
+	// 7. CNAME artifact (if different from host)
 	if resp.CNAME != "" && resp.CNAME != resp.Host {
 		cnameArtifact := domain.NewArtifact(domain.ArtifactTypeDNSRecord, resp.CNAME, p.sourceName)
 		targetArtifact := domain.NewArtifact(domain.ArtifactTypeDomain, resp.Host, p.sourceName)
@@ -132,6 +139,62 @@ func (p *Parser) createURLArtifact(resp *HTTPXResponse) *domain.Artifact {
 			},
 		}
 	}
+
+	return artifact
+}
+
+// createAliveDomainArtifact creates a domain/subdomain artifact marked as alive.
+func (p *Parser) createAliveDomainArtifact(resp *HTTPXResponse) *domain.Artifact {
+	// Determine if it's a subdomain or domain
+	artifactType := domain.ArtifactTypeDomain
+	if strings.Count(resp.Host, ".") > 1 {
+		artifactType = domain.ArtifactTypeSubdomain
+	}
+
+	artifact := domain.NewArtifact(artifactType, resp.Host, p.sourceName)
+
+	// Create DomainMetadata with alive status
+	domainMeta := metadata.NewDomainMetadata()
+	domainMeta.IsAlive = true
+	domainMeta.ProbeStatus = "alive"
+	domainMeta.LastProbed = time.Now().Format(time.RFC3339)
+	domainMeta.ProbeSource = "httpx"
+
+	// Add HTTP information
+	domainMeta.HTTPStatus = resp.StatusCode
+	domainMeta.HTTPTitle = resp.Title
+	domainMeta.HTTPServer = resp.Webserver
+
+	// Add redirect if present (use chain if available)
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 && len(resp.Chain) > 0 {
+		// Get the final URL from the last chain item
+		lastChainItem := resp.Chain[len(resp.Chain)-1]
+		if lastChainItem.Location != "" {
+			domainMeta.HTTPRedirect = lastChainItem.Location
+		} else {
+			domainMeta.HTTPRedirect = lastChainItem.RequestURL
+		}
+	}
+
+	// Add SSL information if HTTPS
+	if resp.Scheme == "https" && resp.TLS != nil {
+		domainMeta.HasSSL = true
+		domainMeta.SSLIssuer = resp.TLS.IssuerCN
+		domainMeta.SSLValidFrom = resp.TLS.NotBefore
+		domainMeta.SSLValidUntil = resp.TLS.NotAfter
+		domainMeta.SSLWildcard = resp.TLS.WildcardCert
+	}
+
+	// Add CDN/WAF information
+	if resp.CDN != "" {
+		domainMeta.CDN = resp.CDNName
+	}
+
+	artifact.TypedMetadata = domainMeta
+	artifact.Confidence = 1.0
+
+	// Add "alive" tag
+	artifact.AddTag("alive")
 
 	return artifact
 }

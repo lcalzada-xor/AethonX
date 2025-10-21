@@ -39,8 +39,8 @@ type HTTPXResponse struct {
 	CDNName string `json:"cdn_name,omitempty"`
 
 	// Redirect chain
-	Chain            []string `json:"chain,omitempty"`
-	ChainStatusCodes []int    `json:"chain_status_codes,omitempty"`
+	Chain            []ChainItem `json:"chain,omitempty"`
+	ChainStatusCodes []int       `json:"chain_status_codes,omitempty"`
 
 	// Extracted FQDNs (when using -extract-fqdn)
 	ExtractedFQDNs []string `json:"fqdn,omitempty"`
@@ -98,4 +98,13 @@ type ASNData struct {
 	ASN     string `json:"asn"`
 	Country string `json:"country"`
 	Org     string `json:"org"`
+}
+
+// ChainItem represents a single redirect in the chain.
+type ChainItem struct {
+	Request    string `json:"request"`
+	Response   string `json:"response"`
+	StatusCode int    `json:"status_code"`
+	Location   string `json:"location,omitempty"`
+	RequestURL string `json:"request-url"`
 }

@@ -19,6 +19,18 @@ func init() {
 		Mode:        domain.SourceModeActive,
 		Type:        domain.SourceTypeCLI,
 		Priority:    15, // High priority (runs after passive sources)
+		InputArtifacts: []domain.ArtifactType{
+			domain.ArtifactTypeSubdomain, // Consume subdomains from crtsh
+			domain.ArtifactTypeDomain,    // Consume domains from rdap
+			domain.ArtifactTypeURL,       // Consume URLs if exist
+		},
+		OutputArtifacts: []domain.ArtifactType{
+			domain.ArtifactTypeURL,        // Probed URLs
+			domain.ArtifactTypeIP,         // Resolved IPs
+			domain.ArtifactTypeTechnology, // Detected technologies
+			domain.ArtifactTypeCertificate, // SSL certificates
+			domain.ArtifactTypeSubdomain,  // Subdomains from SANs
+		},
 	})
 
 	if err != nil {

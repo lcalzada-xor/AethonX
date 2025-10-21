@@ -258,3 +258,110 @@ func TestPipelineOrchestrator_CircularDependency(t *testing.T) {
 
 	t.Logf("Circular dependency detected correctly: %v", err)
 }
+
+// TestPipelineOrchestrator_InputConsumerIntegration verifica que InputConsumer se llama correctamente
+func TestPipelineOrchestrator_InputConsumerIntegration(t *testing.T) {
+	logger := logx.New()
+
+	// Crear source pasiva que genera subdominios
+	passiveSource := &MockPassiveSource{name: "crtsh-test"}
+
+	// Crear source activa con InputConsumer que cuenta cuántos inputs recibe
+	inputReceivedCount := 0
+	activeSource := &mockInputConsumerSource{
+		name: "httpx-test",
+		onRunWithInput: func(ctx context.Context, target domain.Target, input *domain.ScanResult) (*domain.ScanResult, error) {
+			inputReceivedCount = len(input.Artifacts)
+			result := domain.NewScanResult(target)
+
+			// Generar URLs a partir de los inputs
+			for _, artifact := range input.Artifacts {
+				if artifact.Type == domain.ArtifactTypeSubdomain || artifact.Type == domain.ArtifactTypeDomain {
+					url := "https://" + artifact.Value
+					result.AddArtifact(domain.NewArtifact(domain.ArtifactTypeURL, url, "httpx-test"))
+				}
+			}
+
+			return result, nil
+		},
+	}
+
+	// Metadata de sources
+	sourceMetadata := map[string]ports.SourceMetadata{
+		"crtsh-test": {
+			Name:            "crtsh-test",
+			InputArtifacts:  []domain.ArtifactType{},
+			OutputArtifacts: []domain.ArtifactType{domain.ArtifactTypeSubdomain, domain.ArtifactTypeDomain},
+			Priority:        10,
+		},
+		"httpx-test": {
+			Name:            "httpx-test",
+			InputArtifacts:  []domain.ArtifactType{domain.ArtifactTypeSubdomain, domain.ArtifactTypeDomain},
+			OutputArtifacts: []domain.ArtifactType{domain.ArtifactTypeURL},
+			Priority:        5,
+		},
+	}
+
+	sources := []ports.Source{passiveSource, activeSource}
+
+	orchestrator := NewPipelineOrchestrator(PipelineOrchestratorOptions{
+		Sources:        sources,
+		SourceMetadata: sourceMetadata,
+		Logger:         logger,
+		MaxWorkers:     2,
+	})
+
+	target := *domain.NewTarget("example.com", domain.ScanModeHybrid)
+	ctx := context.Background()
+
+	result, err := orchestrator.Run(ctx, target)
+
+	if err != nil {
+		t.Fatalf("pipeline execution failed: %v", err)
+	}
+
+	// Verificar que RunWithInput fue llamado con los artifacts correctos
+	// crtsh-test genera: api.example.com, www.example.com, example.com
+	// www.example.com se normaliza a example.com, entonces deberíamos tener 2 únicos después de dedupe
+	// PERO el input que recibe httpx-test es ANTES del dedupe final, así que recibe 3
+	expectedInputCount := 3
+	if inputReceivedCount != expectedInputCount {
+		t.Errorf("expected RunWithInput to receive %d artifacts, got %d", expectedInputCount, inputReceivedCount)
+	}
+
+	// Verificar que se generaron URLs a partir de los inputs
+	// Nota: Los URLs también se deduplicarán si los hosts se normalizan igual
+	stats := result.Stats()
+	urlCount := stats[string(domain.ArtifactTypeURL)]
+	if urlCount < 1 {
+		t.Errorf("expected at least 1 URL from InputConsumer, got %d", urlCount)
+	}
+
+	t.Logf("InputConsumer integration test passed!")
+	t.Logf("  - Inputs received by httpx-test: %d", inputReceivedCount)
+	t.Logf("  - URLs generated: %d", urlCount)
+	t.Logf("  - Total artifacts: %d", len(result.Artifacts))
+}
+
+// mockInputConsumerSource es un mock que implementa InputConsumer
+type mockInputConsumerSource struct {
+	name           string
+	onRunWithInput func(context.Context, domain.Target, *domain.ScanResult) (*domain.ScanResult, error)
+}
+
+func (m *mockInputConsumerSource) Name() string          { return m.name }
+func (m *mockInputConsumerSource) Mode() domain.SourceMode { return domain.SourceModeActive }
+func (m *mockInputConsumerSource) Type() domain.SourceType { return domain.SourceTypeBuiltin }
+func (m *mockInputConsumerSource) Close() error           { return nil }
+
+func (m *mockInputConsumerSource) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
+	// Fallback sin inputs (no debería ser llamado si hay inputs)
+	return domain.NewScanResult(target), nil
+}
+
+func (m *mockInputConsumerSource) RunWithInput(ctx context.Context, target domain.Target, input *domain.ScanResult) (*domain.ScanResult, error) {
+	if m.onRunWithInput != nil {
+		return m.onRunWithInput(ctx, target, input)
+	}
+	return domain.NewScanResult(target), nil
+}

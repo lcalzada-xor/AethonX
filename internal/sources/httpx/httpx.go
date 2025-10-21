@@ -355,3 +355,221 @@ func (h *HTTPXSource) SetCustomFlags(flags []string) {
 func (h *HTTPXSource) SetProfile(profile ScanProfile) {
 	h.profile = profile
 }
+
+// RunWithInput executes httpx with artifacts from previous stages.
+// Implements ports.InputConsumer interface.
+func (h *HTTPXSource) RunWithInput(ctx context.Context, target domain.Target, input *domain.ScanResult) (*domain.ScanResult, error) {
+	result := domain.NewScanResult(target)
+	startTime := time.Now()
+
+	// Extract targets from input artifacts
+	targets := h.extractTargetsFromInput(input)
+
+	if len(targets) == 0 {
+		h.logger.Warn("no input artifacts found, using root target", "target", target.Root)
+		return h.Run(ctx, target)
+	}
+
+	h.logger.Info("starting httpx scan with input artifacts",
+		"target", target.Root,
+		"profile", h.profile,
+		"input_targets", len(targets),
+		"threads", h.threads,
+		"rate_limit", h.rateLimit,
+	)
+
+	// Build command with targets via stdin
+	cmd := h.buildCommandWithStdin(ctx, targets)
+
+	// Create stdout pipe for streaming JSON
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	// Create stderr pipe for warnings
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	// Create stdin pipe to send targets
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+
+	// Store command reference for Close()
+	h.mu.Lock()
+	h.cmd = cmd
+	h.mu.Unlock()
+
+	// Start httpx process
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start httpx: %w", err)
+	}
+
+	h.logger.Debug("httpx process started", "pid", cmd.Process.Pid)
+
+	// Write targets to stdin in goroutine
+	go func() {
+		defer stdin.Close()
+		for _, t := range targets {
+			fmt.Fprintln(stdin, t)
+		}
+	}()
+
+	// Parse stdout in real-time (streaming JSONL)
+	responses := make([]*HTTPXResponse, 0, len(targets))
+	scanner := bufio.NewScanner(stdout)
+
+	// Increase buffer size for large responses
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024) // 1MB max token size
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		var resp HTTPXResponse
+		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+			h.logger.Warn("failed to parse httpx output", "line", line, "error", err.Error())
+			continue
+		}
+
+		responses = append(responses, &resp)
+
+		h.logger.Debug("parsed httpx response",
+			"url", resp.URL,
+			"status_code", resp.StatusCode,
+			"title", resp.Title,
+		)
+	}
+
+	if err := scanner.Err(); err != nil {
+		h.logger.Warn("scanner error", "error", err.Error())
+	}
+
+	// Capture stderr for warnings
+	stderrBytes, _ := io.ReadAll(stderr)
+	if len(stderrBytes) > 0 {
+		stderrStr := string(stderrBytes)
+		h.logger.Debug("httpx stderr", "output", stderrStr)
+		result.AddWarning("httpx", fmt.Sprintf("stderr output: %s", stderrStr))
+	}
+
+	// Wait for process to complete
+	if err := cmd.Wait(); err != nil {
+		// Don't fail if we got some results
+		if len(responses) > 0 {
+			h.logger.Warn("httpx exited with error but produced results", "error", err.Error())
+			result.AddWarning("httpx", fmt.Sprintf("process exited with error: %v", err))
+		} else {
+			return nil, fmt.Errorf("httpx failed: %w", err)
+		}
+	}
+
+	// Parse responses into artifacts
+	artifacts := h.parser.ParseMultipleResponses(responses, target)
+	for _, artifact := range artifacts {
+		result.AddArtifact(artifact)
+	}
+
+	duration := time.Since(startTime)
+	h.logger.Info("httpx scan completed with input",
+		"target", target.Root,
+		"duration", duration.String(),
+		"input_targets", len(targets),
+		"responses", len(responses),
+		"artifacts", len(result.Artifacts),
+	)
+
+	return result, nil
+}
+
+// extractTargetsFromInput extracts domains, subdomains, and URLs from input artifacts.
+func (h *HTTPXSource) extractTargetsFromInput(input *domain.ScanResult) []string {
+	targets := make([]string, 0, len(input.Artifacts))
+	seen := make(map[string]bool)
+
+	for _, artifact := range input.Artifacts {
+		var target string
+
+		switch artifact.Type {
+		case domain.ArtifactTypeSubdomain, domain.ArtifactTypeDomain:
+			// Add as domain (httpx will try http:// and https://)
+			target = artifact.Value
+		case domain.ArtifactTypeURL:
+			// Use URL directly
+			target = artifact.Value
+		default:
+			continue
+		}
+
+		// Deduplicate targets
+		if target != "" && !seen[target] {
+			targets = append(targets, target)
+			seen[target] = true
+		}
+	}
+
+	h.logger.Debug("extracted targets from input",
+		"total_artifacts", len(input.Artifacts),
+		"extracted_targets", len(targets),
+	)
+
+	return targets
+}
+
+// buildCommandWithStdin constructs httpx command to read targets from stdin.
+func (h *HTTPXSource) buildCommandWithStdin(ctx context.Context, targets []string) *exec.Cmd {
+	profileCfg := GetProfile(h.profile)
+
+	args := []string{
+		"-json",     // JSON output
+		"-silent",   // No progress output
+		"-no-color", // No ANSI colors
+	}
+
+	// Add profile-specific flags
+	args = append(args, profileCfg.Flags...)
+
+	// Add performance flags
+	args = append(args,
+		"-t", strconv.Itoa(h.threads),
+		"-rl", strconv.Itoa(h.rateLimit),
+		"-timeout", strconv.Itoa(int(h.timeout.Seconds())),
+		"-retries", "2",
+		"-maxr", "5", // Max redirects
+	)
+
+	// Add optimization flags
+	args = append(args,
+		"-no-fallback",      // Don't try HTTP if HTTPS fails
+		"-random-agent",     // Random User-Agent
+		"-follow-redirects", // Follow redirects
+	)
+
+	// Add custom flags
+	args = append(args, h.customFlags...)
+
+	// Create command with timeout context
+	// Calculate timeout based on number of targets
+	estimatedDuration := time.Duration(len(targets)) * (h.timeout / time.Duration(h.threads))
+	totalTimeout := estimatedDuration + 60*time.Second // +60s buffer
+
+	cmdCtx, cancel := context.WithTimeout(ctx, totalTimeout)
+	h.mu.Lock()
+	h.cancel = cancel
+	h.mu.Unlock()
+
+	cmd := exec.CommandContext(cmdCtx, h.execPath, args...)
+
+	h.logger.Debug("built httpx command with stdin",
+		"args", args,
+		"targets_count", len(targets),
+		"estimated_duration", estimatedDuration.String(),
+		"total_timeout", totalTimeout.String(),
+	)
+
+	return cmd
+}

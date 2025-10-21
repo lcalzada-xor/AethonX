@@ -155,9 +155,9 @@ func TestParser_ParseResponse_Success(t *testing.T) {
 	target := domain.NewTarget("example.com", domain.ScanModeActive)
 	artifacts := parser.ParseResponse(&resp, *target)
 
-	// Should create: URL + IP + 2 Technologies = 4 artifacts minimum
-	if len(artifacts) < 4 {
-		t.Errorf("expected at least 4 artifacts, got %d", len(artifacts))
+	// Should create: URL + Domain (alive) + IP + 2 Technologies = 5 artifacts minimum
+	if len(artifacts) < 5 {
+		t.Errorf("expected at least 5 artifacts, got %d", len(artifacts))
 	}
 
 	// Check URL artifact
@@ -172,10 +172,19 @@ func TestParser_ParseResponse_Success(t *testing.T) {
 		t.Errorf("expected confidence 1.0, got %f", urlArtifact.Confidence)
 	}
 
+	// Check Domain artifact (alive)
+	domainArtifact := artifacts[1]
+	if domainArtifact.Type != domain.ArtifactTypeDomain {
+		t.Errorf("expected second artifact to be Domain, got %s", domainArtifact.Type)
+	}
+	if domainArtifact.Value != "example.com" {
+		t.Errorf("expected domain 'example.com', got '%s'", domainArtifact.Value)
+	}
+
 	// Check IP artifact
-	ipArtifact := artifacts[1]
+	ipArtifact := artifacts[2]
 	if ipArtifact.Type != domain.ArtifactTypeIP {
-		t.Errorf("expected second artifact to be IP, got %s", ipArtifact.Type)
+		t.Errorf("expected third artifact to be IP, got %s", ipArtifact.Type)
 	}
 	if ipArtifact.Value != "93.184.216.34" {
 		t.Errorf("expected IP '93.184.216.34', got '%s'", ipArtifact.Value)
@@ -519,5 +528,190 @@ func TestParser_ParseMultipleResponses(t *testing.T) {
 
 	if urlCount < 2 {
 		t.Errorf("expected at least 2 URL artifacts, got %d", urlCount)
+	}
+}
+
+func TestHTTPXSource_ExtractTargetsFromInput(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
+
+	// Create input with multiple artifact types
+	input := domain.NewScanResult(*domain.NewTarget("example.com", domain.ScanModeActive))
+
+	// Add subdomains (note: www.example.com will be normalized to example.com)
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeSubdomain, "mail.example.com", "crtsh"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeSubdomain, "api.example.com", "crtsh"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeSubdomain, "blog.example.com", "crtsh"))
+
+	// Add domains
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeDomain, "example.com", "rdap"))
+
+	// Add URLs
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeURL, "https://example.com/admin", "wayback"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeURL, "https://staging.example.com/login", "wayback"))
+
+	// Add non-relevant artifacts (should be ignored)
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeIP, "93.184.216.34", "crtsh"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeEmail, "admin@example.com", "rdap"))
+
+	targets := source.extractTargetsFromInput(input)
+
+	// Should extract: 3 subdomains + 1 domain + 2 URLs = 6 targets
+	if len(targets) != 6 {
+		t.Errorf("expected 6 targets, got %d", len(targets))
+	}
+
+	// Verify no duplicates
+	seen := make(map[string]bool)
+	for _, target := range targets {
+		if seen[target] {
+			t.Errorf("duplicate target found: %s", target)
+		}
+		seen[target] = true
+	}
+
+	// Verify specific targets are present
+	expectedTargets := []string{
+		"mail.example.com",
+		"api.example.com",
+		"blog.example.com",
+		"example.com",
+		"https://example.com/admin",
+		"https://staging.example.com/login",
+	}
+
+	for _, expected := range expectedTargets {
+		found := false
+		for _, target := range targets {
+			if target == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected target '%s' not found in extracted targets", expected)
+		}
+	}
+}
+
+func TestHTTPXSource_ExtractTargetsFromInput_Empty(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
+
+	// Create empty input
+	input := domain.NewScanResult(*domain.NewTarget("example.com", domain.ScanModeActive))
+
+	targets := source.extractTargetsFromInput(input)
+
+	// Should return empty slice
+	if len(targets) != 0 {
+		t.Errorf("expected 0 targets for empty input, got %d", len(targets))
+	}
+}
+
+func TestHTTPXSource_ExtractTargetsFromInput_OnlyIrrelevant(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
+
+	// Create input with only irrelevant artifacts
+	input := domain.NewScanResult(*domain.NewTarget("example.com", domain.ScanModeActive))
+
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeIP, "93.184.216.34", "crtsh"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeEmail, "admin@example.com", "rdap"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeTechnology, "nginx", "httpx"))
+
+	targets := source.extractTargetsFromInput(input)
+
+	// Should return empty slice
+	if len(targets) != 0 {
+		t.Errorf("expected 0 targets for irrelevant artifacts, got %d", len(targets))
+	}
+}
+
+func TestHTTPXSource_ExtractTargetsFromInput_Deduplication(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
+
+	// Create input with duplicate artifacts
+	input := domain.NewScanResult(*domain.NewTarget("example.com", domain.ScanModeActive))
+
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeSubdomain, "mail.example.com", "crtsh"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeSubdomain, "mail.example.com", "dnsbuffer"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeDomain, "example.com", "rdap"))
+	input.AddArtifact(domain.NewArtifact(domain.ArtifactTypeDomain, "example.com", "crtsh"))
+
+	targets := source.extractTargetsFromInput(input)
+
+	// Should deduplicate: 1 unique subdomain + 1 unique domain = 2 targets
+	if len(targets) != 2 {
+		t.Errorf("expected 2 deduplicated targets, got %d", len(targets))
+	}
+
+	// Verify deduplication
+	expectedTargets := map[string]bool{
+		"mail.example.com": false,
+		"example.com":      false,
+	}
+
+	for _, target := range targets {
+		if _, exists := expectedTargets[target]; exists {
+			if expectedTargets[target] {
+				t.Errorf("duplicate target found after deduplication: %s", target)
+			}
+			expectedTargets[target] = true
+		} else {
+			t.Errorf("unexpected target found: %s", target)
+		}
+	}
+}
+
+func TestHTTPXSource_BuildCommandWithStdin(t *testing.T) {
+	logger := logx.New()
+	source := NewWithConfig(logger, "httpx", ProfileBasic, 60*time.Second, 25, 100)
+
+	targets := []string{"example.com", "www.example.com", "api.example.com"}
+	ctx := context.Background()
+
+	cmd := source.buildCommandWithStdin(ctx, targets)
+
+	// Verify command path
+	if cmd.Path == "" {
+		t.Error("expected command path to be set")
+	}
+
+	// Verify args contain essential flags but NOT -u flag
+	args := cmd.Args
+	containsJSON := false
+	containsSilent := false
+	containsTarget := false
+
+	for i, arg := range args {
+		if arg == "-json" {
+			containsJSON = true
+		}
+		if arg == "-silent" {
+			containsSilent = true
+		}
+		if arg == "-u" {
+			containsTarget = true
+		}
+
+		// Verify timeout calculation considers number of targets
+		if arg == "-timeout" && i+1 < len(args) {
+			timeout := args[i+1]
+			if timeout == "" {
+				t.Error("timeout value should not be empty")
+			}
+		}
+	}
+
+	if !containsJSON {
+		t.Error("expected command args to contain '-json'")
+	}
+	if !containsSilent {
+		t.Error("expected command args to contain '-silent'")
+	}
+	if containsTarget {
+		t.Error("expected command args NOT to contain '-u' when using stdin")
 	}
 }

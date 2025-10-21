@@ -24,6 +24,12 @@ type DomainMetadata struct {
 	Status   string // active, inactive, pending, etc.
 	DNSSEC   bool   // Si tiene DNSSEC habilitado
 
+	// Estado de actividad (probing)
+	IsAlive     bool   // Si el dominio responde a HTTP/HTTPS
+	ProbeStatus string // "alive", "dead", "unknown"
+	LastProbed  string // Timestamp del último probe (ISO 8601)
+	ProbeSource string // Source que hizo el probe ("httpx", "nuclei", etc.)
+
 	// Organización (WHOIS)
 	OrgName    string
 	OrgCountry string
@@ -81,6 +87,12 @@ func (d *DomainMetadata) ToMap() map[string]string {
 	SetIfNotEmpty(m, "status", d.Status)
 	SetBool(m, "dnssec", d.DNSSEC)
 
+	// Estado de actividad
+	SetBool(m, "is_alive", d.IsAlive)
+	SetIfNotEmpty(m, "probe_status", d.ProbeStatus)
+	SetIfNotEmpty(m, "last_probed", d.LastProbed)
+	SetIfNotEmpty(m, "probe_source", d.ProbeSource)
+
 	// Organización
 	SetIfNotEmpty(m, "org_name", d.OrgName)
 	SetIfNotEmpty(m, "org_country", d.OrgCountry)
@@ -135,6 +147,12 @@ func (d *DomainMetadata) FromMap(m map[string]string) error {
 	// Estado
 	d.Status = GetString(m, "status", "")
 	d.DNSSEC = GetBool(m, "dnssec", false)
+
+	// Estado de actividad
+	d.IsAlive = GetBool(m, "is_alive", false)
+	d.ProbeStatus = GetString(m, "probe_status", "")
+	d.LastProbed = GetString(m, "last_probed", "")
+	d.ProbeSource = GetString(m, "probe_source", "")
 
 	// Organización
 	d.OrgName = GetString(m, "org_name", "")
