@@ -40,7 +40,7 @@ func main() {
 	}
 
 	// Validate target
-	if cfg.Target == "" {
+	if cfg.Core.Target == "" {
 		fmt.Fprintln(os.Stderr, "Error: target domain is required")
 		fmt.Fprintln(os.Stderr, "Usage: aethonx -t <domain>")
 		fmt.Fprintln(os.Stderr, "Try: aethonx -h for help")
@@ -54,22 +54,22 @@ func main() {
 		"version", version,
 		"commit", commit,
 		"date", date,
-		"target", cfg.Target,
-		"active", cfg.Active,
-		"workers", cfg.Workers,
+		"target", cfg.Core.Target,
+		"active", cfg.Core.Active,
+		"workers", cfg.Core.Workers,
 	)
 
 	// 3. Context and signals for clean shutdown
-	ctx, cancel := rootContextWithSignals(cfg.TimeoutS)
+	ctx, cancel := rootContextWithSignals(cfg.Core.TimeoutS)
 	defer cancel()
 
 	// 4. Build target domain
 	scanMode := domain.ScanModePassive
-	if cfg.Active {
+	if cfg.Core.Active {
 		scanMode = domain.ScanModeActive
 	}
 
-	target := domain.NewTarget(cfg.Target, scanMode)
+	target := domain.NewTarget(cfg.Core.Target, scanMode)
 
 	// Validate target
 	if err := target.Validate(); err != nil {
@@ -105,11 +105,11 @@ func main() {
 
 	// 6. Create streaming writer
 	scanID := fmt.Sprintf("scan-%d", time.Now().Unix())
-	streamingWriter := output.NewStreamingWriter(cfg.OutputDir, scanID, cfg.Target, logger)
+	streamingWriter := output.NewStreamingWriter(cfg.Output.Dir, scanID, cfg.Core.Target, logger)
 
 	logger.Info("streaming configured",
 		"threshold", cfg.Streaming.ArtifactThreshold,
-		"output_dir", cfg.OutputDir,
+		"output_dir", cfg.Output.Dir,
 	)
 
 	// 7. Get source metadata from registry
@@ -121,11 +121,11 @@ func main() {
 		SourceMetadata:  sourceMetadata,
 		Logger:          logger,
 		Observers:       []ports.Notifier{}, // Future: webhooks, metrics, etc.
-		MaxWorkers:      max(1, cfg.Workers),
+		MaxWorkers:      max(1, cfg.Core.Workers),
 		StreamingWriter: streamingWriter,
 		StreamingConfig: usecases.StreamingConfig{
 			ArtifactThreshold: cfg.Streaming.ArtifactThreshold,
-			OutputDir:         cfg.OutputDir,
+			OutputDir:         cfg.Output.Dir,
 		},
 	})
 
@@ -176,7 +176,7 @@ func main() {
 // buildSourcesWithResilience builds sources from registry with resilience wrappers.
 func buildSourcesWithResilience(logger logx.Logger, cfg config.Config) ([]ports.Source, error) {
 	// Build sources from registry
-	sources, err := registry.Global().Build(cfg.Sources, logger)
+	sources, err := registry.Global().Build(cfg.Source.Sources, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build sources: %w", err)
 	}
@@ -225,12 +225,12 @@ func buildSourcesWithResilience(logger logx.Logger, cfg config.Config) ([]ports.
 func writeOutputs(cfg config.Config, result *domain.ScanResult) error {
 	// ALWAYS generate consolidated JSON (required for streaming)
 	// This file contains final result after deduplication and graph building
-	if err := output.OutputJSON(cfg.OutputDir, result); err != nil {
+	if err := output.OutputJSON(cfg.Output.Dir, result); err != nil {
 		return fmt.Errorf("json output: %w", err)
 	}
 
 	// Terminal-readable table if not disabled
-	if !cfg.Outputs.TableDisabled {
+	if !cfg.Output.TableDisabled {
 		if err := output.OutputTable(result); err != nil {
 			return fmt.Errorf("table output: %w", err)
 		}

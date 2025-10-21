@@ -14,116 +14,127 @@ import (
 	"github.com/spf13/pflag"
 )
 
+// Config is the main configuration structure organized by functional categories.
 type Config struct {
-	// App
-	Target       string
-	Active       bool
-	Workers      int
-	TimeoutS     int // segundos (0 = sin timeout)
-	PrintVersion bool
+	Core       CoreConfig
+	Source     SourceConfig
+	Output     OutputConfig
+	Streaming  StreamingConfig
+	Resilience ResilienceConfig
+	Network    NetworkConfig
+}
 
-	// IO
-	OutputDir string
+// CoreConfig contains fundamental scan parameters.
+type CoreConfig struct {
+	Target   string // Target domain (required)
+	Active   bool   // Enable active reconnaissance mode
+	Workers  int    // Number of concurrent workers
+	TimeoutS int    // Global timeout in seconds (0 = no timeout)
+}
 
-	// Sources: mapa dinámico de configuraciones por source
-	// Key = source name (ej: "crtsh", "rdap", "subfinder")
-	// Value = configuración específica de esa source
+// SourceConfig contains source-specific configurations.
+type SourceConfig struct {
+	// Dynamic map of source configurations
+	// Key = source name (e.g., "crtsh", "rdap", "httpx")
+	// Value = source-specific configuration
 	Sources map[string]ports.SourceConfig
-
-	// Outputs
-	Outputs Outputs
-
-	// Streaming
-	Streaming Streaming
-
-	// Resilience
-	Resilience Resilience
-
-	// Proxy
-	ProxyURL string
 }
 
-type Outputs struct {
-	TableDisabled bool
-	// JSON output is ALWAYS generated (required for streaming consolidation)
+// OutputConfig contains output-related settings.
+type OutputConfig struct {
+	Dir           string // Output directory
+	TableDisabled bool   // Disable table output (JSON always generated)
 }
 
-type Streaming struct {
-	ArtifactThreshold int // Número de artifacts por source para activar escritura parcial
+// StreamingConfig contains memory management settings.
+type StreamingConfig struct {
+	ArtifactThreshold int // Artifact count threshold for partial disk writes
 }
 
-type Resilience struct {
+// ResilienceConfig contains fault tolerance settings.
+type ResilienceConfig struct {
 	// Retry configuration
-	MaxRetries       int           // Default max retries for sources
-	BackoffBase      time.Duration // Base backoff duration (e.g., 1s)
-	BackoffMultiplier float64      // Multiplier for exponential backoff (e.g., 2.0)
+	MaxRetries        int           // Max retries per source
+	BackoffBase       time.Duration // Base backoff duration (e.g., 1s)
+	BackoffMultiplier float64       // Multiplier for exponential backoff (e.g., 2.0)
 
 	// Circuit Breaker configuration
-	CircuitBreakerEnabled      bool
-	CircuitBreakerThreshold    int           // Failures before opening circuit
-	CircuitBreakerTimeout      time.Duration // How long circuit stays open
-	CircuitBreakerHalfOpenMax  int           // Max requests in half-open state
+	CircuitBreakerEnabled     bool          // Enable circuit breaker
+	CircuitBreakerThreshold   int           // Failures before opening circuit
+	CircuitBreakerTimeout     time.Duration // How long circuit stays open
+	CircuitBreakerHalfOpenMax int           // Max requests in half-open state
 }
 
-// DefaultConfig retorna una configuración por defecto.
+// NetworkConfig contains network-related settings.
+type NetworkConfig struct {
+	ProxyURL string // HTTP(S) proxy URL for outbound requests
+}
+
+// DefaultConfig returns a default configuration organized by categories.
 func DefaultConfig() Config {
 	return Config{
-		Target:   "",
-		Active:   false,
-		Workers:  4,
-		TimeoutS: 30,
+		Core: CoreConfig{
+			Target:   "",
+			Active:   false,
+			Workers:  4,
+			TimeoutS: 30,
+		},
 
-		OutputDir: "aethonx_out",
-		ProxyURL:  "",
-
-		Sources: map[string]ports.SourceConfig{
-			"crtsh": {
-				Enabled:   true,
-				Timeout:   30 * time.Second,
-				Retries:   2,
-				RateLimit: 0,
-				Priority:  10,
-				Custom:    make(map[string]interface{}),
-			},
-			"rdap": {
-				Enabled:   true,
-				Timeout:   30 * time.Second,
-				Retries:   2,
-				RateLimit: 0,
-				Priority:  8,
-				Custom:    make(map[string]interface{}),
-			},
-			"httpx": {
-				Enabled:   true,
-				Timeout:   120 * time.Second, // httpx can be slow with tech detection
-				Retries:   2,
-				RateLimit: 0,
-				Priority:  15, // High priority after passive sources
-				Custom: map[string]interface{}{
-					"profile":    "full",
-					"threads":    50,
-					"rate_limit": 150,
-					"exec_path":  "httpx",
+		Source: SourceConfig{
+			Sources: map[string]ports.SourceConfig{
+				"crtsh": {
+					Enabled:   true,
+					Timeout:   30 * time.Second,
+					Retries:   2,
+					RateLimit: 0,
+					Priority:  10,
+					Custom:    make(map[string]interface{}),
+				},
+				"rdap": {
+					Enabled:   true,
+					Timeout:   30 * time.Second,
+					Retries:   2,
+					RateLimit: 0,
+					Priority:  8,
+					Custom:    make(map[string]interface{}),
+				},
+				"httpx": {
+					Enabled:   true,
+					Timeout:   120 * time.Second, // httpx can be slow with tech detection
+					Retries:   2,
+					RateLimit: 0,
+					Priority:  15, // High priority after passive sources
+					Custom: map[string]interface{}{
+						"profile":    "full",
+						"threads":    50,
+						"rate_limit": 150,
+						"exec_path":  "httpx",
+					},
 				},
 			},
 		},
 
-		Outputs: Outputs{
+		Output: OutputConfig{
+			Dir:           "aethonx_out",
 			TableDisabled: false,
 		},
 
-		Streaming: Streaming{
+		Streaming: StreamingConfig{
 			ArtifactThreshold: 1000,
 		},
 
-		Resilience: Resilience{
-			MaxRetries:                 3,
-			BackoffBase:                1 * time.Second,
-			BackoffMultiplier:          2.0,
-			CircuitBreakerEnabled:      true,
-			CircuitBreakerThreshold:    5,
-			CircuitBreakerTimeout:      60 * time.Second,
-			CircuitBreakerHalfOpenMax:  3,
+		Resilience: ResilienceConfig{
+			MaxRetries:                3,
+			BackoffBase:               1 * time.Second,
+			BackoffMultiplier:         2.0,
+			CircuitBreakerEnabled:     true,
+			CircuitBreakerThreshold:   5,
+			CircuitBreakerTimeout:     60 * time.Second,
+			CircuitBreakerHalfOpenMax: 3,
+		},
+
+		Network: NetworkConfig{
+			ProxyURL: "",
 		},
 	}
 }
@@ -144,35 +155,43 @@ func Load(version, commit, date string) (Config, error) {
 	return cfg, nil
 }
 
-// loadFromEnv carga configuración desde variables de entorno.
+// loadFromEnv loads configuration from environment variables.
 func loadFromEnv(cfg *Config) {
+	// === CORE CONFIG ===
 	if v := getenv("AETHONX_TARGET", ""); v != "" {
-		cfg.Target = v
+		cfg.Core.Target = v
 	}
 	if v := getenv("AETHONX_ACTIVE", ""); v != "" {
-		cfg.Active = parseBool(v)
+		cfg.Core.Active = parseBool(v)
 	}
 	if v := getenv("AETHONX_WORKERS", ""); v != "" {
-		cfg.Workers = parseInt(v, cfg.Workers)
+		cfg.Core.Workers = parseInt(v, cfg.Core.Workers)
 	}
 	if v := getenv("AETHONX_TIMEOUT", ""); v != "" {
-		cfg.TimeoutS = parseInt(v, cfg.TimeoutS)
-	}
-	if v := getenv("AETHONX_OUTPUT_DIR", ""); v != "" {
-		cfg.OutputDir = v
-	}
-	if v := getenv("AETHONX_PROXY_URL", ""); v != "" {
-		cfg.ProxyURL = v
+		cfg.Core.TimeoutS = parseInt(v, cfg.Core.TimeoutS)
 	}
 
-	// Sources config desde ENV
-	// Formato: AETHONX_SOURCES_CRTSH_ENABLED=true
-	//          AETHONX_SOURCES_CRTSH_PRIORITY=10
-	//          AETHONX_SOURCES_CRTSH_TIMEOUT=60
-	for name := range cfg.Sources {
+	// === OUTPUT CONFIG ===
+	if v := getenv("AETHONX_OUTPUT_DIR", ""); v != "" {
+		cfg.Output.Dir = v
+	}
+	if v := getenv("AETHONX_OUTPUTS_TABLE_DISABLED", ""); v != "" {
+		cfg.Output.TableDisabled = parseBool(v)
+	}
+
+	// === NETWORK CONFIG ===
+	if v := getenv("AETHONX_PROXY_URL", ""); v != "" {
+		cfg.Network.ProxyURL = v
+	}
+
+	// === SOURCE CONFIG ===
+	// Format: AETHONX_SOURCES_CRTSH_ENABLED=true
+	//         AETHONX_SOURCES_CRTSH_PRIORITY=10
+	//         AETHONX_SOURCES_CRTSH_TIMEOUT=60
+	for name := range cfg.Source.Sources {
 		prefix := fmt.Sprintf("AETHONX_SOURCES_%s_", strings.ToUpper(name))
 
-		sourceCfg := cfg.Sources[name]
+		sourceCfg := cfg.Source.Sources[name]
 
 		if v := getenv(prefix+"ENABLED", ""); v != "" {
 			sourceCfg.Enabled = parseBool(v)
@@ -206,20 +225,15 @@ func loadFromEnv(cfg *Config) {
 			}
 		}
 
-		cfg.Sources[name] = sourceCfg
+		cfg.Source.Sources[name] = sourceCfg
 	}
 
-	// Outputs
-	if v := getenv("AETHONX_OUTPUTS_TABLE_DISABLED", ""); v != "" {
-		cfg.Outputs.TableDisabled = parseBool(v)
-	}
-
-	// Streaming
+	// === STREAMING CONFIG ===
 	if v := getenv("AETHONX_STREAMING_THRESHOLD", ""); v != "" {
 		cfg.Streaming.ArtifactThreshold = parseInt(v, cfg.Streaming.ArtifactThreshold)
 	}
 
-	// Resilience
+	// === RESILIENCE CONFIG ===
 	if v := getenv("AETHONX_RESILIENCE_MAX_RETRIES", ""); v != "" {
 		cfg.Resilience.MaxRetries = parseInt(v, cfg.Resilience.MaxRetries)
 	}
@@ -234,45 +248,45 @@ func loadFromEnv(cfg *Config) {
 	}
 }
 
-// loadFromFlags parses CLI flags with pflag (supports short aliases).
+// loadFromFlags parses CLI flags with pflag (supports short aliases and categories).
 func loadFromFlags(cfg *Config, version, commit, date string) {
 	// Custom help flag handling
 	showHelp := pflag.BoolP("help", "h", false, "Show help message")
 	showVersion := pflag.BoolP("version", "v", false, "Print version information")
 
-	// Core flags
-	pflag.StringVarP(&cfg.Target, "target", "t", cfg.Target, "Target domain (required, e.g., example.com)")
-	pflag.BoolVarP(&cfg.Active, "active", "a", cfg.Active, "Enable active reconnaissance mode")
-	pflag.IntVarP(&cfg.Workers, "workers", "w", cfg.Workers, "Number of concurrent workers")
-	pflag.IntVarP(&cfg.TimeoutS, "timeout", "T", cfg.TimeoutS, "Global timeout in seconds (0=no timeout)")
-	pflag.StringVarP(&cfg.OutputDir, "out", "o", cfg.OutputDir, "Output directory")
+	// === CORE FLAGS ===
+	pflag.StringVarP(&cfg.Core.Target, "target", "t", cfg.Core.Target, "Target domain (required)")
+	pflag.BoolVarP(&cfg.Core.Active, "active", "a", cfg.Core.Active, "Enable active reconnaissance")
+	pflag.IntVarP(&cfg.Core.Workers, "workers", "w", cfg.Core.Workers, "Concurrent workers")
+	pflag.IntVarP(&cfg.Core.TimeoutS, "timeout", "T", cfg.Core.TimeoutS, "Global timeout in seconds (0=none)")
 
-	// Source configs
-	for name := range cfg.Sources {
-		sourceCfg := cfg.Sources[name]
+	// === SOURCE FLAGS ===
+	for name := range cfg.Source.Sources {
+		sourceCfg := cfg.Source.Sources[name]
 		pflag.BoolVar(&sourceCfg.Enabled, fmt.Sprintf("src.%s", name), sourceCfg.Enabled,
 			fmt.Sprintf("Enable %s source", name))
 		pflag.IntVar(&sourceCfg.Priority, fmt.Sprintf("src.%s.priority", name), sourceCfg.Priority,
-			fmt.Sprintf("Priority for %s source (higher=first)", name))
-		cfg.Sources[name] = sourceCfg
+			fmt.Sprintf("Priority for %s (higher=first)", name))
+		cfg.Source.Sources[name] = sourceCfg
 	}
 
-	// Output flags
-	pflag.BoolVarP(&cfg.Outputs.TableDisabled, "quiet", "q", cfg.Outputs.TableDisabled,
-		"Disable table output, JSON only")
+	// === OUTPUT FLAGS ===
+	pflag.StringVarP(&cfg.Output.Dir, "out", "o", cfg.Output.Dir, "Output directory")
+	pflag.BoolVarP(&cfg.Output.TableDisabled, "quiet", "q", cfg.Output.TableDisabled,
+		"Quiet mode (JSON only, no table)")
 
-	// Streaming flags
+	// === STREAMING FLAGS ===
 	pflag.IntVarP(&cfg.Streaming.ArtifactThreshold, "streaming", "s", cfg.Streaming.ArtifactThreshold,
-		"Artifact threshold for partial disk writes")
+		"Artifact threshold for streaming")
 
-	// Resilience flags
+	// === RESILIENCE FLAGS ===
 	pflag.IntVarP(&cfg.Resilience.MaxRetries, "retries", "r", cfg.Resilience.MaxRetries,
-		"Max retries per source on failure")
+		"Max retries per source")
 	pflag.BoolVar(&cfg.Resilience.CircuitBreakerEnabled, "circuit-breaker", cfg.Resilience.CircuitBreakerEnabled,
-		"Enable circuit breaker for failing sources")
+		"Enable circuit breaker")
 
-	// Network flags
-	pflag.StringVarP(&cfg.ProxyURL, "proxy", "p", cfg.ProxyURL, "HTTP(S) proxy URL (optional)")
+	// === NETWORK FLAGS ===
+	pflag.StringVarP(&cfg.Network.ProxyURL, "proxy", "p", cfg.Network.ProxyURL, "HTTP(S) proxy URL")
 
 	// Parse flags
 	pflag.Parse()
@@ -287,17 +301,23 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 	}
 }
 
+// normalize sanitizes and validates configuration values.
 func normalize(c *Config) {
-	c.Target = strings.TrimSpace(strings.ToLower(strings.TrimSuffix(c.Target, ".")))
-	if c.Workers < 1 {
-		c.Workers = 1
+	// Core normalization
+	c.Core.Target = strings.TrimSpace(strings.ToLower(strings.TrimSuffix(c.Core.Target, ".")))
+	if c.Core.Workers < 1 {
+		c.Core.Workers = 1
 	}
-	if c.TimeoutS < 0 {
-		c.TimeoutS = 0
+	if c.Core.TimeoutS < 0 {
+		c.Core.TimeoutS = 0
 	}
-	if c.OutputDir == "" {
-		c.OutputDir = "aethonx_out"
+
+	// Output normalization
+	if c.Output.Dir == "" {
+		c.Output.Dir = "aethonx_out"
 	}
+
+	// Resilience normalization
 	if c.Resilience.BackoffBase < 0 {
 		c.Resilience.BackoffBase = 1 * time.Second
 	}
@@ -315,12 +335,12 @@ func (c Config) ToJSON() (string, error) {
 	return string(data), nil
 }
 
-// Timeout devuelve un time.Duration útil si prefieres trabajar con duración.
+// Timeout returns global timeout as time.Duration.
 func (c Config) Timeout() time.Duration {
-	if c.TimeoutS <= 0 {
+	if c.Core.TimeoutS <= 0 {
 		return 0
 	}
-	return time.Duration(c.TimeoutS) * time.Second
+	return time.Duration(c.Core.TimeoutS) * time.Second
 }
 
 // Helpers
