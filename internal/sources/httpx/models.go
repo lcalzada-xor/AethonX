@@ -32,11 +32,11 @@ type HTTPXResponse struct {
 	TLS *TLSData `json:"tls,omitempty"`
 
 	// Network fields
-	IP    string   `json:"ip,omitempty"`
-	CNAME string   `json:"cname,omitempty"`
-	ASN   *ASNData `json:"asn,omitempty"`
-	CDN   string   `json:"cdn,omitempty"`
-	CDNName string `json:"cdn_name,omitempty"`
+	IP      string         `json:"ip,omitempty"`
+	CNAME   FlexibleString `json:"cname,omitempty"`
+	ASN     *ASNData       `json:"asn,omitempty"`
+	CDN     FlexibleBool   `json:"cdn,omitempty"`
+	CDNName string         `json:"cdn_name,omitempty"`
 
 	// Redirect chain
 	Chain            []ChainItem `json:"chain,omitempty"`

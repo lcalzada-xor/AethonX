@@ -3,7 +3,6 @@ package config
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"strconv"
@@ -11,6 +10,8 @@ import (
 	"time"
 
 	"aethonx/internal/core/ports"
+
+	"github.com/spf13/pflag"
 )
 
 type Config struct {
@@ -127,17 +128,17 @@ func DefaultConfig() Config {
 	}
 }
 
-// Load inicializa la configuración: ENV -> defaults, luego FLAGS (flags tienen prioridad).
-func Load() (Config, error) {
+// Load initializes configuration: ENV -> defaults, then FLAGS (flags take priority).
+func Load(version, commit, date string) (Config, error) {
 	cfg := DefaultConfig()
 
-	// Cargar desde ENV
+	// Load from ENV
 	loadFromEnv(&cfg)
 
-	// Parsear flags (overrides ENV)
-	loadFromFlags(&cfg)
+	// Parse flags (overrides ENV)
+	loadFromFlags(&cfg, version, commit, date)
 
-	// Normalizar
+	// Normalize
 	normalize(&cfg)
 
 	return cfg, nil
@@ -233,44 +234,57 @@ func loadFromEnv(cfg *Config) {
 	}
 }
 
-// loadFromFlags parsea flags de CLI.
-func loadFromFlags(cfg *Config) {
-	flag.StringVar(&cfg.Target, "target", cfg.Target, "Dominio objetivo (e.g., example.com)")
-	flag.BoolVar(&cfg.Active, "active", cfg.Active, "Habilitar fase activa")
-	flag.IntVar(&cfg.Workers, "workers", cfg.Workers, "Concurrencia máxima de fuentes")
-	flag.IntVar(&cfg.TimeoutS, "timeout", cfg.TimeoutS, "Timeout global en segundos (0 = sin timeout)")
+// loadFromFlags parses CLI flags with pflag (supports short aliases).
+func loadFromFlags(cfg *Config, version, commit, date string) {
+	// Custom help flag handling
+	showHelp := pflag.BoolP("help", "h", false, "Show help message")
+	showVersion := pflag.BoolP("version", "v", false, "Print version information")
 
-	flag.StringVar(&cfg.OutputDir, "out", cfg.OutputDir, "Directorio de salida")
-	flag.BoolVar(&cfg.PrintVersion, "version", false, "Imprimir versión y salir")
+	// Core flags
+	pflag.StringVarP(&cfg.Target, "target", "t", cfg.Target, "Target domain (required, e.g., example.com)")
+	pflag.BoolVarP(&cfg.Active, "active", "a", cfg.Active, "Enable active reconnaissance mode")
+	pflag.IntVarP(&cfg.Workers, "workers", "w", cfg.Workers, "Number of concurrent workers")
+	pflag.IntVarP(&cfg.TimeoutS, "timeout", "T", cfg.TimeoutS, "Global timeout in seconds (0=no timeout)")
+	pflag.StringVarP(&cfg.OutputDir, "out", "o", cfg.OutputDir, "Output directory")
 
-	// Source configs (solo enabled y priority via flags, el resto via ENV o defaults)
+	// Source configs
 	for name := range cfg.Sources {
 		sourceCfg := cfg.Sources[name]
-		flag.BoolVar(&sourceCfg.Enabled, fmt.Sprintf("src.%s", name), sourceCfg.Enabled,
-			fmt.Sprintf("Habilitar fuente %s", name))
-		flag.IntVar(&sourceCfg.Priority, fmt.Sprintf("src.%s.priority", name), sourceCfg.Priority,
-			fmt.Sprintf("Prioridad de fuente %s (mayor = más prioritario)", name))
+		pflag.BoolVar(&sourceCfg.Enabled, fmt.Sprintf("src.%s", name), sourceCfg.Enabled,
+			fmt.Sprintf("Enable %s source", name))
+		pflag.IntVar(&sourceCfg.Priority, fmt.Sprintf("src.%s.priority", name), sourceCfg.Priority,
+			fmt.Sprintf("Priority for %s source (higher=first)", name))
 		cfg.Sources[name] = sourceCfg
 	}
 
-	// Outputs
-	flag.BoolVar(&cfg.Outputs.TableDisabled, "out.no-table", cfg.Outputs.TableDisabled,
-		"Desactivar salida en tabla (JSON siempre se genera)")
+	// Output flags
+	pflag.BoolVarP(&cfg.Outputs.TableDisabled, "quiet", "q", cfg.Outputs.TableDisabled,
+		"Disable table output, JSON only")
 
-	// Streaming
-	flag.IntVar(&cfg.Streaming.ArtifactThreshold, "streaming.threshold", cfg.Streaming.ArtifactThreshold,
-		"Threshold de artifacts para activar escritura parcial por source")
+	// Streaming flags
+	pflag.IntVarP(&cfg.Streaming.ArtifactThreshold, "streaming", "s", cfg.Streaming.ArtifactThreshold,
+		"Artifact threshold for partial disk writes")
 
-	// Resilience
-	flag.IntVar(&cfg.Resilience.MaxRetries, "resilience.retries", cfg.Resilience.MaxRetries,
-		"Número máximo de reintentos por source")
-	flag.BoolVar(&cfg.Resilience.CircuitBreakerEnabled, "resilience.cb", cfg.Resilience.CircuitBreakerEnabled,
-		"Habilitar circuit breaker")
+	// Resilience flags
+	pflag.IntVarP(&cfg.Resilience.MaxRetries, "retries", "r", cfg.Resilience.MaxRetries,
+		"Max retries per source on failure")
+	pflag.BoolVar(&cfg.Resilience.CircuitBreakerEnabled, "circuit-breaker", cfg.Resilience.CircuitBreakerEnabled,
+		"Enable circuit breaker for failing sources")
 
-	// Proxy
-	flag.StringVar(&cfg.ProxyURL, "proxy", cfg.ProxyURL, "Proxy HTTP(S) para peticiones salientes (opcional)")
+	// Network flags
+	pflag.StringVarP(&cfg.ProxyURL, "proxy", "p", cfg.ProxyURL, "HTTP(S) proxy URL (optional)")
 
-	flag.Parse()
+	// Parse flags
+	pflag.Parse()
+
+	// Handle help and version flags
+	if *showHelp {
+		PrintHelp()
+	}
+
+	if *showVersion {
+		PrintVersion(version, commit, date)
+	}
 }
 
 func normalize(c *Config) {

@@ -38,9 +38,8 @@ type HTTPXSource struct {
 	parser      *Parser
 
 	// Process management
-	mu     sync.Mutex
-	cmd    *exec.Cmd
-	cancel context.CancelFunc
+	mu  sync.Mutex
+	cmd *exec.Cmd
 }
 
 // New creates a new HTTPXSource with default configuration.
@@ -198,13 +197,9 @@ func (h *HTTPXSource) Close() error {
 
 	h.logger.Debug("closing httpx source")
 
-	// Cancel context
-	if h.cancel != nil {
-		h.cancel()
-		h.cancel = nil
-	}
-
 	// Kill process if still running
+	// Note: The context cancellation from the orchestrator will handle termination
+	// This is a safety cleanup for any edge cases
 	if h.cmd != nil && h.cmd.Process != nil {
 		// Check if process is still running by getting process state
 		if h.cmd.ProcessState == nil || !h.cmd.ProcessState.Exited() {
@@ -330,17 +325,13 @@ func (h *HTTPXSource) buildCommand(ctx context.Context, target domain.Target) *e
 	// Add custom flags
 	args = append(args, h.customFlags...)
 
-	// Create command with timeout context
-	cmdCtx, cancel := context.WithTimeout(ctx, h.timeout+30*time.Second) // +30s buffer
-	h.mu.Lock()
-	h.cancel = cancel
-	h.mu.Unlock()
-
-	cmd := exec.CommandContext(cmdCtx, h.execPath, args...)
+	// Use parent context directly - it already has the orchestrator's timeout
+	// The httpx CLI timeout flag (-timeout) controls individual HTTP request timeouts
+	cmd := exec.CommandContext(ctx, h.execPath, args...)
 
 	h.logger.Debug("built httpx command",
 		"args", args,
-		"timeout", h.timeout.String(),
+		"httpx_request_timeout", h.timeout.String(),
 	)
 
 	return cmd
@@ -552,23 +543,14 @@ func (h *HTTPXSource) buildCommandWithStdin(ctx context.Context, targets []strin
 	// Add custom flags
 	args = append(args, h.customFlags...)
 
-	// Create command with timeout context
-	// Calculate timeout based on number of targets
-	estimatedDuration := time.Duration(len(targets)) * (h.timeout / time.Duration(h.threads))
-	totalTimeout := estimatedDuration + 60*time.Second // +60s buffer
-
-	cmdCtx, cancel := context.WithTimeout(ctx, totalTimeout)
-	h.mu.Lock()
-	h.cancel = cancel
-	h.mu.Unlock()
-
-	cmd := exec.CommandContext(cmdCtx, h.execPath, args...)
+	// Use parent context directly - it already has the orchestrator's timeout
+	// The httpx CLI timeout flag (-timeout) controls individual HTTP request timeouts
+	cmd := exec.CommandContext(ctx, h.execPath, args...)
 
 	h.logger.Debug("built httpx command with stdin",
 		"args", args,
 		"targets_count", len(targets),
-		"estimated_duration", estimatedDuration.String(),
-		"total_timeout", totalTimeout.String(),
+		"httpx_request_timeout", h.timeout.String(),
 	)
 
 	return cmd

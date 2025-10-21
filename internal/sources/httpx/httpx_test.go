@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"aethonx/internal/core/domain"
+	"aethonx/internal/core/domain/metadata"
 	"aethonx/internal/platform/logx"
 )
 
@@ -137,12 +138,11 @@ func TestParser_ParseResponse_Success(t *testing.T) {
 		"webserver": "nginx/1.24.0",
 		"response_time": "125ms",
 		"scheme": "https",
-		"host": "example.com",
+		"host": "93.184.216.34",
 		"port": "443",
 		"method": "GET",
 		"tech": ["Nginx", "Ubuntu"],
-		"ip": "93.184.216.34",
-		"cdn": "cloudflare",
+		"cdn": true,
 		"cdn_name": "Cloudflare",
 		"failed": false
 	}`
@@ -713,5 +713,174 @@ func TestHTTPXSource_BuildCommandWithStdin(t *testing.T) {
 	}
 	if containsTarget {
 		t.Error("expected command args NOT to contain '-u' when using stdin")
+	}
+}
+
+func TestParser_ParseTechNameAndVersion(t *testing.T) {
+	tests := []struct {
+		input          string
+		expectedName   string
+		expectedVersion string
+	}{
+		{"jQuery:3.6.0", "jQuery", "3.6.0"},
+		{"jQuery", "jQuery", ""},
+		{"nginx:1.24.0", "nginx", "1.24.0"},
+		{"React:18.2.0", "React", "18.2.0"},
+		{"Bootstrap:5.3.0", "Bootstrap", "5.3.0"},
+		{"", "", ""},
+		{"  jQuery:3.6.0  ", "jQuery", "3.6.0"},
+		{"Vue.js:3.0.0", "Vue.js", "3.0.0"},
+		{"Ubuntu", "Ubuntu", ""},
+		{"Apache:2.4.41:extra", "Apache", "2.4.41:extra"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			name, version := parseTechNameAndVersion(tt.input)
+			if name != tt.expectedName {
+				t.Errorf("parseTechNameAndVersion(%s) name = %s, want %s", tt.input, name, tt.expectedName)
+			}
+			if version != tt.expectedVersion {
+				t.Errorf("parseTechNameAndVersion(%s) version = %s, want %s", tt.input, version, tt.expectedVersion)
+			}
+		})
+	}
+}
+
+func TestParser_CreateTechnologyArtifact_WithVersion(t *testing.T) {
+	logger := logx.New()
+	parser := NewParser(logger, "httpx")
+
+	// Test with version
+	artifact := parser.createTechnologyArtifact("jQuery:3.6.0", "https://example.com")
+
+	if artifact.Type != domain.ArtifactTypeTechnology {
+		t.Errorf("expected artifact type Technology, got %s", artifact.Type)
+	}
+
+	if artifact.Value != "jQuery" {
+		t.Errorf("expected artifact value 'jQuery', got '%s'", artifact.Value)
+	}
+
+	// Check TypedMetadata
+	if artifact.TypedMetadata == nil {
+		t.Fatal("expected TypedMetadata to be set")
+	}
+
+	techMeta, ok := artifact.TypedMetadata.(*metadata.TechnologyMetadata)
+	if !ok {
+		t.Fatal("expected TypedMetadata to be TechnologyMetadata")
+	}
+
+	if techMeta.Name != "jQuery" {
+		t.Errorf("expected technology name 'jQuery', got '%s'", techMeta.Name)
+	}
+
+	if techMeta.Version != "3.6.0" {
+		t.Errorf("expected technology version '3.6.0', got '%s'", techMeta.Version)
+	}
+
+	if techMeta.DetectionMethod != "wappalyzer" {
+		t.Errorf("expected detection method 'wappalyzer', got '%s'", techMeta.DetectionMethod)
+	}
+}
+
+func TestParser_CreateTechnologyArtifact_WithoutVersion(t *testing.T) {
+	logger := logx.New()
+	parser := NewParser(logger, "httpx")
+
+	// Test without version
+	artifact := parser.createTechnologyArtifact("Ubuntu", "https://example.com")
+
+	if artifact.Value != "Ubuntu" {
+		t.Errorf("expected artifact value 'Ubuntu', got '%s'", artifact.Value)
+	}
+
+	techMeta, ok := artifact.TypedMetadata.(*metadata.TechnologyMetadata)
+	if !ok {
+		t.Fatal("expected TypedMetadata to be TechnologyMetadata")
+	}
+
+	if techMeta.Name != "Ubuntu" {
+		t.Errorf("expected technology name 'Ubuntu', got '%s'", techMeta.Name)
+	}
+
+	if techMeta.Version != "" {
+		t.Errorf("expected empty version, got '%s'", techMeta.Version)
+	}
+}
+
+func TestParser_ExtractHostname(t *testing.T) {
+	logger := logx.New()
+	parser := NewParser(logger, "httpx")
+
+	tests := []struct {
+		name     string
+		resp     HTTPXResponse
+		expected string
+	}{
+		{
+			name: "input as domain",
+			resp: HTTPXResponse{
+				Input: "example.com",
+				URL:   "https://example.com",
+				Host:  "93.184.216.34", // IP, not hostname
+			},
+			expected: "example.com",
+		},
+		{
+			name: "input as full URL",
+			resp: HTTPXResponse{
+				Input: "https://example.com",
+				URL:   "https://example.com",
+				Host:  "93.184.216.34",
+			},
+			expected: "example.com",
+		},
+		{
+			name: "input empty, use URL",
+			resp: HTTPXResponse{
+				Input: "",
+				URL:   "https://example.com:8080/path",
+				Host:  "93.184.216.34",
+			},
+			expected: "example.com:8080",
+		},
+		{
+			name: "subdomain in input",
+			resp: HTTPXResponse{
+				Input: "api.example.com",
+				URL:   "https://api.example.com",
+				Host:  "93.184.216.34",
+			},
+			expected: "api.example.com",
+		},
+		{
+			name: "all fields empty",
+			resp: HTTPXResponse{
+				Input: "",
+				URL:   "",
+				Host:  "93.184.216.34",
+			},
+			expected: "",
+		},
+		{
+			name: "input with port",
+			resp: HTTPXResponse{
+				Input: "example.com:8443",
+				URL:   "https://example.com:8443",
+				Host:  "93.184.216.34",
+			},
+			expected: "example.com:8443",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parser.extractHostname(&tt.resp)
+			if result != tt.expected {
+				t.Errorf("extractHostname() = %v, want %v", result, tt.expected)
+			}
+		})
 	}
 }

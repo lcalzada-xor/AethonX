@@ -11,7 +11,7 @@ import (
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/domain/metadata"
 	"aethonx/internal/core/ports"
-	"aethonx/internal/platform/httpx"
+	"aethonx/internal/platform/httpclient"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
 )
@@ -52,14 +52,14 @@ func init() {
 // CRT implementa una fuente que consulta la base de datos crt.sh
 // para descubrir certificados SSL/TLS y subdominios asociados.
 type CRT struct {
-	client httpx.Client
+	client httpclient.Client
 	logger logx.Logger
 }
 
 // New crea una nueva instancia de la fuente crt.sh con resilience completa.
 func New(logger logx.Logger) ports.Source {
 	// Configuración específica para crt.sh
-	httpConfig := httpx.Config{
+	httpConfig := httpclient.Config{
 		Timeout:          30 * time.Second,
 		MaxRetries:       3,
 		RetryBackoff:     2 * time.Second,
@@ -70,7 +70,7 @@ func New(logger logx.Logger) ports.Source {
 	}
 
 	return &CRT{
-		client: *httpx.New(httpConfig, logger),
+		client: *httpclient.New(httpConfig, logger),
 		logger: logger.With("source", "crtsh"),
 	}
 }

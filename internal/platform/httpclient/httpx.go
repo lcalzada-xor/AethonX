@@ -1,5 +1,5 @@
-// Package httpx provides an enhanced HTTP client with retry, rate limiting, and timeout support.
-package httpx
+// Package httpclient provides an enhanced HTTP client with retry, rate limiting, and timeout support.
+package httpclient
 
 import (
 	"context"

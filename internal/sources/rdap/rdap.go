@@ -17,7 +17,7 @@ import (
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/cache"
 	"aethonx/internal/platform/errors"
-	"aethonx/internal/platform/httpx"
+	"aethonx/internal/platform/httpclient"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
 )
@@ -70,7 +70,7 @@ const (
 
 // RDAP implements the ports.Source interface for RDAP queries
 type RDAP struct {
-	client      httpx.Client
+	client      httpclient.Client
 	cache       cache.Cache
 	logger      logx.Logger
 	stopCleanup func() // Función para detener el cache cleanup worker
@@ -143,7 +143,7 @@ type rdapLink struct {
 // New creates a new RDAP source
 func New(logger logx.Logger) ports.Source {
 	// Create HTTP client with retry and rate limiting
-	httpConfig := httpx.Config{
+	httpConfig := httpclient.Config{
 		Timeout:         30 * time.Second,
 		MaxRetries:      3,
 		RetryBackoff:    1 * time.Second,
@@ -158,7 +158,7 @@ func New(logger logx.Logger) ports.Source {
 
 	// Create RDAP instance
 	r := &RDAP{
-		client: *httpx.New(httpConfig, logger),
+		client: *httpclient.New(httpConfig, logger),
 		cache:  rdapCache,
 		logger: logger.With("source", sourceName),
 	}

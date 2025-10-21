@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,33 @@ func NewParser(logger logx.Logger, sourceName string) *Parser {
 	}
 }
 
+// extractHostname extracts the hostname from HTTPXResponse.
+// Priority: Input > URL parsing > empty string
+// Note: resp.Host contains the resolved IP, not the hostname.
+func (p *Parser) extractHostname(resp *HTTPXResponse) string {
+	// First priority: Input field (original target)
+	if resp.Input != "" {
+		// Input might be a URL or just a domain
+		// If it starts with http:// or https://, parse it
+		if strings.HasPrefix(resp.Input, "http://") || strings.HasPrefix(resp.Input, "https://") {
+			if parsed, err := url.Parse(resp.Input); err == nil && parsed.Host != "" {
+				return parsed.Host
+			}
+		}
+		// Otherwise, use Input as-is (it's a domain)
+		return resp.Input
+	}
+
+	// Second priority: parse URL field
+	if resp.URL != "" {
+		if parsed, err := url.Parse(resp.URL); err == nil && parsed.Host != "" {
+			return parsed.Host
+		}
+	}
+
+	return ""
+}
+
 // ParseResponse converts an HTTPXResponse into domain Artifacts.
 // Returns multiple artifacts: URL, IP, Technologies, Certificate, Subdomains.
 func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*domain.Artifact {
@@ -35,19 +63,22 @@ func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*dom
 		return artifacts
 	}
 
+	// Extract hostname once (resp.Host contains IP, not hostname)
+	hostname := p.extractHostname(resp)
+
 	// 1. Main artifact: URL with ServiceMetadata
-	urlArtifact := p.createURLArtifact(resp)
+	urlArtifact := p.createURLArtifact(resp, hostname)
 	artifacts = append(artifacts, urlArtifact)
 
-	// 2. Domain artifact marked as alive (NEW)
-	if resp.Host != "" {
-		domainArtifact := p.createAliveDomainArtifact(resp)
+	// 2. Domain artifact marked as alive
+	if hostname != "" {
+		domainArtifact := p.createAliveDomainArtifact(resp, hostname)
 		artifacts = append(artifacts, domainArtifact)
 	}
 
-	// 3. IP artifact (if available)
-	if resp.IP != "" {
-		ipArtifact := p.createIPArtifact(resp)
+	// 3. IP artifact (resp.Host contains resolved IP)
+	if resp.Host != "" {
+		ipArtifact := p.createIPArtifact(resp, hostname)
 		artifacts = append(artifacts, ipArtifact)
 	}
 
@@ -73,16 +104,17 @@ func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*dom
 
 	// 6. Extracted FQDNs (if -extract-fqdn was used)
 	for _, fqdn := range resp.ExtractedFQDNs {
-		if p.isValidDomain(fqdn) && fqdn != resp.Host {
+		if p.isValidDomain(fqdn) && fqdn != hostname {
 			fqdnArtifact := p.createSubdomainArtifact(fqdn, resp.URL)
 			artifacts = append(artifacts, fqdnArtifact)
 		}
 	}
 
-	// 7. CNAME artifact (if different from host)
-	if resp.CNAME != "" && resp.CNAME != resp.Host {
-		cnameArtifact := domain.NewArtifact(domain.ArtifactTypeDNSRecord, resp.CNAME, p.sourceName)
-		targetArtifact := domain.NewArtifact(domain.ArtifactTypeDomain, resp.Host, p.sourceName)
+	// 7. CNAME artifact (if different from hostname)
+	cnameValue := resp.CNAME.String()
+	if !resp.CNAME.IsEmpty() && cnameValue != hostname && hostname != "" {
+		cnameArtifact := domain.NewArtifact(domain.ArtifactTypeDNSRecord, cnameValue, p.sourceName)
+		targetArtifact := domain.NewArtifact(domain.ArtifactTypeDomain, hostname, p.sourceName)
 		cnameArtifact.Relations = []domain.ArtifactRelation{
 			{
 				TargetID: targetArtifact.ID,
@@ -102,7 +134,7 @@ func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*dom
 }
 
 // createURLArtifact creates a URL artifact with ServiceMetadata.
-func (p *Parser) createURLArtifact(resp *HTTPXResponse) *domain.Artifact {
+func (p *Parser) createURLArtifact(resp *HTTPXResponse, hostname string) *domain.Artifact {
 	artifact := domain.NewArtifact(domain.ArtifactTypeURL, resp.URL, p.sourceName)
 
 	// Create ServiceMetadata
@@ -116,7 +148,7 @@ func (p *Parser) createURLArtifact(resp *HTTPXResponse) *domain.Artifact {
 		DetectionMethod: "http_probe",
 		Confidence:      1.0,
 		ScanTool:        "httpx",
-		ParentIP:        resp.IP,
+		ParentIP:        resp.Host, // resp.Host contains the resolved IP
 	}
 
 	// Add SSL info if HTTPS
@@ -129,9 +161,9 @@ func (p *Parser) createURLArtifact(resp *HTTPXResponse) *domain.Artifact {
 	artifact.Confidence = 1.0
 
 	// Add relation to parent domain
-	if resp.Host != "" {
+	if hostname != "" {
 		// Create target artifact to get its ID
-		targetArtifact := domain.NewArtifact(domain.ArtifactTypeDomain, resp.Host, p.sourceName)
+		targetArtifact := domain.NewArtifact(domain.ArtifactTypeDomain, hostname, p.sourceName)
 		artifact.Relations = []domain.ArtifactRelation{
 			{
 				TargetID: targetArtifact.ID,
@@ -144,14 +176,14 @@ func (p *Parser) createURLArtifact(resp *HTTPXResponse) *domain.Artifact {
 }
 
 // createAliveDomainArtifact creates a domain/subdomain artifact marked as alive.
-func (p *Parser) createAliveDomainArtifact(resp *HTTPXResponse) *domain.Artifact {
+func (p *Parser) createAliveDomainArtifact(resp *HTTPXResponse, hostname string) *domain.Artifact {
 	// Determine if it's a subdomain or domain
 	artifactType := domain.ArtifactTypeDomain
-	if strings.Count(resp.Host, ".") > 1 {
+	if strings.Count(hostname, ".") > 1 {
 		artifactType = domain.ArtifactTypeSubdomain
 	}
 
-	artifact := domain.NewArtifact(artifactType, resp.Host, p.sourceName)
+	artifact := domain.NewArtifact(artifactType, hostname, p.sourceName)
 
 	// Create DomainMetadata with alive status
 	domainMeta := metadata.NewDomainMetadata()
@@ -186,7 +218,7 @@ func (p *Parser) createAliveDomainArtifact(resp *HTTPXResponse) *domain.Artifact
 	}
 
 	// Add CDN/WAF information
-	if resp.CDN != "" {
+	if resp.CDN.Bool() {
 		domainMeta.CDN = resp.CDNName
 	}
 
@@ -200,8 +232,8 @@ func (p *Parser) createAliveDomainArtifact(resp *HTTPXResponse) *domain.Artifact
 }
 
 // createIPArtifact creates an IP artifact with network metadata.
-func (p *Parser) createIPArtifact(resp *HTTPXResponse) *domain.Artifact {
-	artifact := domain.NewArtifact(domain.ArtifactTypeIP, resp.IP, p.sourceName)
+func (p *Parser) createIPArtifact(resp *HTTPXResponse, hostname string) *domain.Artifact {
+	artifact := domain.NewArtifact(domain.ArtifactTypeIP, resp.Host, p.sourceName) // resp.Host contains the resolved IP
 
 	ipMeta := metadata.NewIPMetadata()
 
@@ -213,16 +245,16 @@ func (p *Parser) createIPArtifact(resp *HTTPXResponse) *domain.Artifact {
 	}
 
 	// Add CDN info
-	if resp.CDN != "" {
+	if resp.CDN.Bool() {
 		ipMeta.CloudProvider = resp.CDNName
 	}
 
 	artifact.TypedMetadata = ipMeta
 	artifact.Confidence = 1.0
 
-	// Add relation to host
-	if resp.Host != "" {
-		targetArtifact := domain.NewArtifact(domain.ArtifactTypeDomain, resp.Host, p.sourceName)
+	// Add relation to hostname
+	if hostname != "" {
+		targetArtifact := domain.NewArtifact(domain.ArtifactTypeDomain, hostname, p.sourceName)
 		artifact.Relations = []domain.ArtifactRelation{
 			{
 				TargetID: targetArtifact.ID,
@@ -235,10 +267,14 @@ func (p *Parser) createIPArtifact(resp *HTTPXResponse) *domain.Artifact {
 }
 
 // createTechnologyArtifact creates a technology artifact.
+// Parses techName in format "name:version" (e.g., "jQuery:3.6.0") or just "name".
 func (p *Parser) createTechnologyArtifact(techName, detectionURL string) *domain.Artifact {
-	artifact := domain.NewArtifact(domain.ArtifactTypeTechnology, techName, p.sourceName)
+	// Parse tech name and version from format "tech:version"
+	name, version := parseTechNameAndVersion(techName)
 
-	techMeta := metadata.NewTechnologyMetadata(techName, "")
+	artifact := domain.NewArtifact(domain.ArtifactTypeTechnology, name, p.sourceName)
+
+	techMeta := metadata.NewTechnologyMetadata(name, version)
 	techMeta.DetectionMethod = "wappalyzer"
 	techMeta.DetectionLocation = detectionURL
 	techMeta.ConfidenceScore = 0.9
@@ -359,6 +395,28 @@ func extractVersion(banner string) string {
 	}
 
 	return productParts[1]
+}
+
+// parseTechNameAndVersion extracts technology name and version from format "name:version".
+// Examples:
+//   - "jQuery:3.6.0" -> ("jQuery", "3.6.0")
+//   - "jQuery" -> ("jQuery", "")
+//   - "nginx:1.24.0" -> ("nginx", "1.24.0")
+func parseTechNameAndVersion(techName string) (name, version string) {
+	techName = strings.TrimSpace(techName)
+	if techName == "" {
+		return "", ""
+	}
+
+	// Split by colon to separate name and version
+	parts := strings.SplitN(techName, ":", 2)
+	name = parts[0]
+
+	if len(parts) == 2 {
+		version = strings.TrimSpace(parts[1])
+	}
+
+	return name, version
 }
 
 // isValidDomain checks if a string is a valid domain name.
