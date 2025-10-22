@@ -6,10 +6,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/platform/logx"
 )
+
+// sanitizeDomainNameForMerge convierte un nombre de dominio en un nombre de carpeta válido.
+// Ejemplo: "example.com" -> "example_com"
+func sanitizeDomainNameForMerge(domain string) string {
+	// Reemplazar puntos por guiones bajos
+	sanitized := strings.ReplaceAll(domain, ".", "_")
+	// Remover cualquier otro carácter que no sea alfanumérico, guión bajo o guión
+	sanitized = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, sanitized)
+	return sanitized
+}
 
 // MergeService consolida resultados parciales de múltiples archivos JSON.
 // Lee archivos *_partial_*.json y combina sus artifacts, warnings y errors.
@@ -48,8 +64,26 @@ func (m *MergeService) LoadPartialResults(dir, pattern string) ([]PartialScanRes
 		return nil, fmt.Errorf("pattern cannot be empty")
 	}
 
-	// Construir patrón completo
-	fullPattern := filepath.Join(dir, pattern)
+	// Extraer el dominio del patrón (formato: aethonx_<domain>_<timestamp>_partial_*.json)
+	// Para obtener el subdirectorio correcto
+	parts := strings.Split(pattern, "_")
+	var domainSubdir string
+	if len(parts) >= 2 && strings.HasPrefix(pattern, "aethonx_") {
+		// Extraer el dominio del patrón
+		// pattern: aethonx_example.com_20250119_partial_*.json
+		// parts: [aethonx, example.com, 20250119, partial, *.json]
+		domain := parts[1]
+		domainSubdir = sanitizeDomainNameForMerge(domain)
+	}
+
+	// Si se detectó un subdirectorio de dominio, ajustar el directorio base
+	var fullPattern string
+	if domainSubdir != "" {
+		fullPattern = filepath.Join(dir, domainSubdir, pattern)
+	} else {
+		// Fallback: usar el directorio base directamente (para backward compatibility)
+		fullPattern = filepath.Join(dir, pattern)
+	}
 
 	// Buscar archivos que coincidan
 	files, err := filepath.Glob(fullPattern)
@@ -163,7 +197,21 @@ func (m *MergeService) ConsolidateIntoResult(
 
 // ClearPartialFiles elimina archivos parciales después del merge exitoso.
 func (m *MergeService) ClearPartialFiles(dir, pattern string) error {
-	fullPattern := filepath.Join(dir, pattern)
+	// Extraer el dominio del patrón para obtener el subdirectorio correcto
+	parts := strings.Split(pattern, "_")
+	var domainSubdir string
+	if len(parts) >= 2 && strings.HasPrefix(pattern, "aethonx_") {
+		domain := parts[1]
+		domainSubdir = sanitizeDomainNameForMerge(domain)
+	}
+
+	// Construir patrón completo con subdirectorio de dominio si existe
+	var fullPattern string
+	if domainSubdir != "" {
+		fullPattern = filepath.Join(dir, domainSubdir, pattern)
+	} else {
+		fullPattern = filepath.Join(dir, pattern)
+	}
 
 	files, err := filepath.Glob(fullPattern)
 	if err != nil {

@@ -39,7 +39,8 @@ SOURCE OPTIONS:
   --src.httpx.priority int     Set httpx priority (default: 15)
 
 OUTPUT OPTIONS:
-  -q, --quiet              Disable table output, JSON only (default: false)
+  -q, --quiet              Quiet mode: no visual UI, JSON only (default: false)
+  --no-ui                  Disable visual UI, use simple text logs (default: false)
 
 STREAMING OPTIONS:
   -s, --streaming int      Artifact threshold for partial disk writes (default: 1000)
@@ -63,8 +64,11 @@ EXAMPLES:
   Active scan with custom workers:
     aethonx -t example.com -a -w 8
 
-  Quiet mode (JSON output only):
+  Quiet mode (no visual UI, JSON only):
     aethonx -t example.com -q
+
+  Disable visual UI (use simple logs):
+    aethonx -t example.com --no-ui
 
   High-volume target with streaming tuning:
     aethonx -t example.com -s 500 -w 8 -T 120
@@ -105,10 +109,14 @@ SCAN MODES:
     - May trigger IDS/IPS alerts and logging
 
 OUTPUT:
-  AethonX generates JSON output in the specified directory:
-  - Full scan results with artifacts, metadata, and relationships
+  AethonX generates multiple outputs:
+  - Visual UI with spinners, colors, and progress tracking (default)
+  - JSON files with full scan results, artifacts, and relationships
   - Partial streaming files for large datasets (auto-cleanup)
   - Table output to stdout (unless --quiet)
+
+  Use --quiet for headless/CI environments (JSON only)
+  Use --no-ui for simple text logs without visual interface
 
 For more information and documentation:
   https://github.com/yourusername/aethonx

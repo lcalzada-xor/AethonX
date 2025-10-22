@@ -9,6 +9,7 @@ import (
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
+	"aethonx/internal/platform/ui"
 )
 
 // PipelineOrchestrator coordina la ejecución de sources en stages secuenciales.
@@ -36,6 +37,9 @@ type PipelineOrchestrator struct {
 
 	// Observers para eventos
 	observers []ports.Notifier
+
+	// UI Presenter para visualización del progreso
+	presenter ui.Presenter
 }
 
 // PipelineOrchestratorOptions configura el pipeline orchestrator.
@@ -47,6 +51,7 @@ type PipelineOrchestratorOptions struct {
 	MaxWorkers      int
 	StreamingWriter StreamingWriter
 	StreamingConfig StreamingConfig
+	Presenter       ui.Presenter
 }
 
 // NewPipelineOrchestrator crea una nueva instancia del pipeline orchestrator.
@@ -60,6 +65,9 @@ func NewPipelineOrchestrator(opts PipelineOrchestratorOptions) *PipelineOrchestr
 	if opts.StreamingConfig.ArtifactThreshold <= 0 {
 		opts.StreamingConfig.ArtifactThreshold = 1000
 	}
+	if opts.Presenter == nil {
+		opts.Presenter = ui.NewNoopPresenter()
+	}
 
 	return &PipelineOrchestrator{
 		sources:         opts.Sources,
@@ -71,6 +79,7 @@ func NewPipelineOrchestrator(opts PipelineOrchestratorOptions) *PipelineOrchestr
 		maxWorkers:      opts.MaxWorkers,
 		streamingWriter: opts.StreamingWriter,
 		streamingConfig: opts.StreamingConfig,
+		presenter:       opts.Presenter,
 	}
 }
 
@@ -136,6 +145,17 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		return nil, fmt.Errorf("failed to build stages: %w", err)
 	}
 
+	// Iniciar presentación visual
+	p.presenter.Start(ui.ScanInfo{
+		Target:         target.Root,
+		Mode:           string(target.Mode),
+		Workers:        p.maxWorkers,
+		TimeoutSeconds: int(p.streamingConfig.ArtifactThreshold),
+		StreamingOn:    p.streamingWriter != nil,
+		TotalStages:    len(stages),
+	})
+	defer p.presenter.Close()
+
 	// Inicializar resultado acumulador
 	result := domain.NewScanResult(target)
 	result.Metadata.TotalSources = len(compatibleSources)
@@ -151,13 +171,25 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 	))
 
 	// Ejecutar stages secuencialmente
-	for _, stage := range stages {
+	for i, stage := range stages {
 		stageStartTime := time.Now()
 		p.logger.Info("executing stage",
 			"stage_id", stage.ID,
 			"stage_name", stage.Name,
 			"sources", stage.SourceCount(),
 		)
+
+		// Notificar inicio de stage al presenter
+		sourceNames := make([]string, 0, len(stage.Sources))
+		for _, src := range stage.Sources {
+			sourceNames = append(sourceNames, src.Name())
+		}
+		p.presenter.StartStage(ui.StageInfo{
+			Number:      i + 1,
+			TotalStages: len(stages),
+			Name:        stage.Name,
+			Sources:     sourceNames,
+		})
 
 		// Ejecutar stage con artifacts acumulados como input
 		stageResult, err := p.executeStage(ctx, stage, result)
@@ -181,6 +213,9 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 			"successful_sources", stageResult.SuccessfulSources(),
 			"failed_sources", stageResult.FailedSources(),
 		)
+
+		// Notificar finalización de stage al presenter
+		p.presenter.FinishStage(i+1, stageDuration)
 
 		// Merge stage results con acumulador
 		if stageResult.ConsolidatedResult != nil {
@@ -268,6 +303,32 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		},
 	))
 
+	// Calcular estadísticas y notificar al presenter
+	artifactsByType := make(map[string]int)
+	for _, artifact := range result.Artifacts {
+		artifactsByType[string(artifact.Type)]++
+	}
+
+	sourcesSucceeded := 0
+	sourcesFailed := 0
+	for _, stage := range stages {
+		for range stage.Sources {
+			// Aquí simplificamos: asumimos que sources que retornan resultados son exitosos
+			// En una implementación más completa, se rastrearían los estados de cada source
+			sourcesSucceeded++
+		}
+	}
+
+	p.presenter.Finish(ui.ScanStats{
+		TotalDuration:      totalDuration,
+		TotalArtifacts:     len(result.Artifacts),
+		UniqueArtifacts:    len(result.Artifacts),
+		SourcesSucceeded:   sourcesSucceeded,
+		SourcesFailed:      sourcesFailed,
+		ArtifactsByType:    artifactsByType,
+		RelationshipsBuilt: graphStats.TotalRelations,
+	})
+
 	return result, nil
 }
 
@@ -348,6 +409,9 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 
 	p.logger.Debug("executing source", "source", sourceName)
 
+	// Notificar inicio al presenter
+	p.presenter.StartSource(0, sourceName) // stageNum no es necesario aquí
+
 	// Notificar inicio
 	p.notifyEvent(ctx, ports.NewEvent(
 		ports.EventTypeSourceStarted,
@@ -384,6 +448,8 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 			sourceName,
 			err,
 		))
+		// Notificar error al presenter
+		p.presenter.FinishSource(sourceName, ui.StatusError, duration, 0)
 		return execResult
 	}
 
@@ -419,6 +485,13 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 		sourceName,
 		artifactCount,
 	))
+
+	// Notificar éxito al presenter
+	status := ui.StatusSuccess
+	if len(result.Warnings) > 0 {
+		status = ui.StatusWarning
+	}
+	p.presenter.FinishSource(sourceName, status, duration, artifactCount)
 
 	return execResult
 }

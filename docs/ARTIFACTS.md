@@ -1,313 +1,233 @@
-# Arquitectura de Artefactos en AethonX
+# Artifact Architecture in AethonX
 
-## Índice
-- [Visión General](#visión-general)
-- [El Artefacto: Entidad Central](#el-artefacto-entidad-central)
-- [Tipos de Artefactos](#tipos-de-artefactos)
-- [Sistema de Metadata](#sistema-de-metadata)
-- [Sistema de Relaciones](#sistema-de-relaciones)
-- [Ciclo de Vida de un Artefacto](#ciclo-de-vida-de-un-artefacto)
-- [Normalización y Validación](#normalización-y-validación)
-- [Serialización JSON](#serialización-json)
-- [Builders y Helpers](#builders-y-helpers)
-- [Casos de Uso Prácticos](#casos-de-uso-prácticos)
+## Table of Contents
+- [Overview](#overview)
+- [The Artifact Entity](#the-artifact-entity)
+- [Artifact Types](#artifact-types)
+- [Metadata System](#metadata-system)
+- [Relationship System](#relationship-system)
+- [Lifecycle](#lifecycle)
+- [Practical Examples](#practical-examples)
 
 ---
 
-## Visión General
+## Overview
 
-El **Artefacto** (`Artifact`) es la entidad central de datos en AethonX. Representa cualquier **dato descubierto** durante el reconocimiento: dominios, IPs, URLs, certificados, tecnologías, vulnerabilidades, etc.
+The **Artifact** is the central data entity in AethonX. It represents any **discovered data** during reconnaissance: domains, IPs, URLs, certificates, technologies, vulnerabilities, etc.
 
-### Principios de Diseño
+### Design Principles
 
-1. **Type-Safe**: Metadata tipado con interfaces y structs concretos
-2. **Extensible**: Fácil agregar nuevos tipos de artefactos y metadata
-3. **Normalizado**: Validación y normalización automática por tipo
-4. **Relacional**: Graph de relaciones entre artefactos (dominio → IP, subdomain → domain, etc.)
-5. **Trazable**: Múltiples fuentes por artefacto, timestamps, confianza
+1. **Type-Safe**: Typed metadata with interfaces and concrete structs
+2. **Extensible**: Easy to add new artifact types and metadata
+3. **Normalized**: Automatic validation and normalization by type
+4. **Relational**: Graph of relationships between artifacts
+5. **Traceable**: Multiple sources, timestamps, confidence
 
-### Ubicación en la Arquitectura
+### Architecture Location
 
 ```
 internal/core/domain/
-├── artifact.go              # Entidad Artifact + lógica core
-├── artifact_types.go        # 42 tipos de artefactos (enums)
-├── enums.go                 # Enums de modos y tipos
-├── builders.go              # Constructores especializados
-├── scan_result.go           # Contenedor de artifacts
-├── target.go                # Target de escaneo
-└── metadata/                # Sistema de metadata tipado
-    ├── metadata.go          # Interfaz base ArtifactMetadata
-    ├── serializer.go        # Serialización polimórfica
+├── artifact.go              # Artifact entity + core logic
+├── artifact_types.go        # 42 artifact types (enums)
+├── enums.go                 # Mode and type enums
+├── builders.go              # Specialized constructors
+├── scan_result.go           # Artifact container
+├── target.go                # Scan target
+└── metadata/                # Typed metadata system
+    ├── metadata.go          # Base ArtifactMetadata interface
+    ├── serializer.go        # Polymorphic serialization
     ├── domain.go            # DomainMetadata
     ├── certificate.go       # CertificateMetadata
     ├── ip.go                # IPMetadata
     ├── service.go           # ServiceMetadata
-    ├── technology.go        # TechnologyMetadata
-    ├── waf.go               # WAFMetadata
-    ├── backup_file.go       # BackupFileMetadata
-    ├── storage_bucket.go    # StorageBucketMetadata
-    ├── api.go               # APIMetadata
-    ├── repository.go        # RepositoryMetadata
-    ├── webshell.go          # WebshellMetadata
-    ├── registrar.go         # RegistrarMetadata
-    └── contact.go           # ContactMetadata
+    └── ... (9 more types)
 ```
 
 ---
 
-## El Artefacto: Entidad Central
+## The Artifact Entity
 
-### Estructura del Artifact
+### Structure
 
 ```go
 type Artifact struct {
-    // ID único (SHA256 hash de Type + Value)
+    // Unique ID (SHA256 hash of Type + Value)
     ID string
 
-    // Tipo de artefacto (domain, ip, url, certificate, etc.)
+    // Artifact type (domain, ip, url, certificate, etc.)
     Type ArtifactType
 
-    // Valor normalizado del artefacto
+    // Normalized artifact value
     Value string
 
-    // Fuentes que descubrieron este artefacto
+    // Sources that discovered this artifact
     Sources []string
 
-    // Metadata tipado y estructurado (type-safe)
+    // Typed and structured metadata (type-safe)
     TypedMetadata metadata.ArtifactMetadata `json:"-"`
 
-    // Relaciones con otros artifacts (graph)
+    // Relations with other artifacts (graph)
     Relations []ArtifactRelation
 
-    // Confianza del descubrimiento [0.0-1.0]
+    // Discovery confidence [0.0-1.0]
     Confidence float64
 
-    // Timestamp del descubrimiento
+    // Discovery timestamp
     DiscoveredAt time.Time
 
-    // Tags para categorización adicional
+    // Tags for additional categorization
     Tags []string
 }
 ```
 
-### Campos Clave
+### Key Fields
 
-**ID**: Hash SHA256 (primeros 16 caracteres)
-- Generado automáticamente desde `Type:Value`
-- Garantiza unicidad global
-- Usado como clave primaria en el grafo de relaciones
+**ID**: SHA256 hash (first 16 characters)
+- Auto-generated from `Type:Value`
+- Guarantees global uniqueness
+- Used as primary key in relationship graph
 
 **Type**: Enum `ArtifactType`
-- 42 tipos predefinidos (ver sección siguiente)
-- Categorizado en 6 grupos: infrastructure, web, security, cloud, data, contact
-- Valida tipo de metadata esperado
+- 42 predefined types
+- Categorized in 6 groups: infrastructure, web, security, cloud, data, contact
+- Validates expected metadata type
 
-**Value**: String normalizado
-- Normalización automática según tipo (lowercase, trim, etc.)
-- Validación tipo-específica (regex, parsers)
-- Usado como parte de la clave de deduplicación
+**Value**: Normalized string
+- Automatic normalization by type (lowercase, trim, etc.)
+- Type-specific validation (regex, parsers)
+- Used as part of deduplication key
 
 **Sources**: []string
-- Lista de fuentes que descubrieron el artefacto
-- Permite merge de descubrimientos duplicados
-- Ejemplo: `["crtsh", "rdap", "subfinder"]`
+- List of sources that discovered the artifact
+- Allows merging duplicate discoveries
+- Example: `["crtsh", "rdap", "subfinder"]`
 
-**TypedMetadata**: Interface polimórfica
-- Metadata estructurado y type-safe
-- Diferente struct por tipo de artefacto
-- Serialización custom vía MetadataEnvelope
+**TypedMetadata**: Polymorphic interface
+- Structured and type-safe metadata
+- Different struct per artifact type
+- Custom serialization via MetadataEnvelope
 
 **Relations**: []ArtifactRelation
-- Graph de relaciones dirigidas con otros artifacts
-- Tipos de relación: `resolves_to`, `subdomain_of`, `uses_cert`, etc.
-- Metadata adicional por relación (confidence, source, timestamps)
+- Directed graph of relationships with other artifacts
+- Relation types: `resolves_to`, `subdomain_of`, `uses_cert`, etc.
+- Additional metadata per relation
 
 **Confidence**: float64 [0.0-1.0]
-- Indica confianza del descubrimiento
-- Por defecto: 1.0 (alta confianza)
-- Usado en merge (se toma el máximo)
-
-**DiscoveredAt**: time.Time
-- Timestamp del primer descubrimiento
-- En merge, se mantiene el más antiguo
-- Útil para tracking temporal
-
-**Tags**: []string
-- Categorización adicional libre
-- Ejemplo: `["production", "high-value", "external"]`
-- Sin duplicados (AddTag valida)
+- Indicates discovery confidence
+- Default: 1.0 (high confidence)
+- Used in merge (maximum is taken)
 
 ---
 
-## Tipos de Artefactos
+## Artifact Types
 
-AethonX define **42 tipos de artefactos** organizados en **6 categorías**.
+AethonX defines **42 artifact types** organized in **6 categories**.
 
-### 1. Infraestructura de Red (11 tipos)
+### 1. Network Infrastructure (11 types)
 
 ```go
 const (
-    ArtifactTypeDomain       ArtifactType = "domain"        // Dominio principal
-    ArtifactTypeSubdomain    ArtifactType = "subdomain"     // Subdominio
+    ArtifactTypeDomain       ArtifactType = "domain"        // Main domain
+    ArtifactTypeSubdomain    ArtifactType = "subdomain"     // Subdomain
     ArtifactTypeIP           ArtifactType = "ip"            // IPv4
     ArtifactTypeIPv6         ArtifactType = "ipv6"          // IPv6
-    ArtifactTypeCIDR         ArtifactType = "cidr"          // Rango de red
+    ArtifactTypeCIDR         ArtifactType = "cidr"          // Network range
     ArtifactTypeASN          ArtifactType = "asn"           // Autonomous System Number
-    ArtifactTypePort         ArtifactType = "port"          // Puerto abierto
-    ArtifactTypeService      ArtifactType = "service"       // Servicio en puerto
-    ArtifactTypeDNSRecord    ArtifactType = "dns_record"    // Registro DNS
-    ArtifactTypeNameserver   ArtifactType = "nameserver"    // NS autoritativo
+    ArtifactTypePort         ArtifactType = "port"          // Open port
+    ArtifactTypeService      ArtifactType = "service"       // Service on port
+    ArtifactTypeDNSRecord    ArtifactType = "dns_record"    // DNS record
+    ArtifactTypeNameserver   ArtifactType = "nameserver"    // Authoritative NS
     ArtifactTypeMXRecord     ArtifactType = "mx_record"     // Mail Exchange
 )
 ```
 
-**Uso**: Enumeración de infraestructura básica (dominios, IPs, puertos, DNS).
-
-### 2. Aplicaciones Web (11 tipos)
+### 2. Web Applications (11 types)
 
 ```go
 const (
-    ArtifactTypeURL          ArtifactType = "url"           // URL completa
+    ArtifactTypeURL          ArtifactType = "url"           // Full URL
     ArtifactTypeEndpoint     ArtifactType = "endpoint"      // API endpoint
-    ArtifactTypeAPI          ArtifactType = "api"           // API con schema
-    ArtifactTypeTechnology   ArtifactType = "technology"    // Tecnología detectada
-    ArtifactTypeHTTPHeader   ArtifactType = "http_header"   // Header HTTP
-    ArtifactTypeCookie       ArtifactType = "cookie"        // Cookie detectada
-    ArtifactTypeForm         ArtifactType = "form"          // Formulario HTML
-    ArtifactTypeParameter    ArtifactType = "parameter"     // Parámetro URL/POST
-    ArtifactTypeJavaScript   ArtifactType = "javascript"    // Archivo JS
-    ArtifactTypeRedirect     ArtifactType = "redirect"      // Redirección
-    ArtifactTypeWAF          ArtifactType = "waf"           // WAF detectado
+    ArtifactTypeAPI          ArtifactType = "api"           // API with schema
+    ArtifactTypeTechnology   ArtifactType = "technology"    // Detected technology
+    ArtifactTypeHTTPHeader   ArtifactType = "http_header"   // HTTP header
+    ArtifactTypeCookie       ArtifactType = "cookie"        // Detected cookie
+    ArtifactTypeForm         ArtifactType = "form"          // HTML form
+    ArtifactTypeParameter    ArtifactType = "parameter"     // URL/POST parameter
+    ArtifactTypeJavaScript   ArtifactType = "javascript"    // JS file
+    ArtifactTypeRedirect     ArtifactType = "redirect"      // Redirection
+    ArtifactTypeWAF          ArtifactType = "waf"           // Detected WAF
 )
 ```
 
-**Uso**: Enumeración de aplicaciones web y sus componentes.
-
-### 3. Certificados y Seguridad (5 tipos)
+### 3. Certificates and Security (5 types)
 
 ```go
 const (
-    ArtifactTypeCertificate      ArtifactType = "certificate"       // Cert SSL/TLS
-    ArtifactTypeVulnerability    ArtifactType = "vulnerability"     // Vulnerabilidad
-    ArtifactTypeSecurityHeader   ArtifactType = "security_header"   // Header seguridad
-    ArtifactTypeTLSConfig        ArtifactType = "tls_config"        // Config TLS
-    ArtifactTypeSSHKey           ArtifactType = "ssh_key"           // SSH key pública
+    ArtifactTypeCertificate      ArtifactType = "certificate"       // SSL/TLS cert
+    ArtifactTypeVulnerability    ArtifactType = "vulnerability"     // Vulnerability
+    ArtifactTypeSecurityHeader   ArtifactType = "security_header"   // Security header
+    ArtifactTypeTLSConfig        ArtifactType = "tls_config"        // TLS config
+    ArtifactTypeSSHKey           ArtifactType = "ssh_key"           // Public SSH key
 )
 ```
 
-**Uso**: Análisis de seguridad y certificados.
-
-### 4. Cloud (4 tipos)
+### 4. Cloud (4 types)
 
 ```go
 const (
-    ArtifactTypeCloudResource ArtifactType = "cloud_resource"  // Recurso cloud
+    ArtifactTypeCloudResource ArtifactType = "cloud_resource"  // Cloud resource
     ArtifactTypeCDNEndpoint   ArtifactType = "cdn_endpoint"    // CDN endpoint
-    ArtifactTypeContainer     ArtifactType = "container"       // Contenedor Docker
+    ArtifactTypeContainer     ArtifactType = "container"       // Docker container
     ArtifactTypeStorageBucket ArtifactType = "storage_bucket"  // S3/Azure/GCP bucket
 )
 ```
 
-**Uso**: Descubrimiento de recursos cloud.
-
-### 5. Datos y Contenido (6 tipos)
+### 5. Data and Content (6 types)
 
 ```go
 const (
-    ArtifactTypeCredential      ArtifactType = "credential"       // Credenciales expuestas
-    ArtifactTypeSensitiveFile   ArtifactType = "sensitive_file"   // Archivos sensibles
+    ArtifactTypeCredential      ArtifactType = "credential"       // Exposed credentials
+    ArtifactTypeSensitiveFile   ArtifactType = "sensitive_file"   // Sensitive files
     ArtifactTypeBackupFile      ArtifactType = "backup_file"      // Backups (.bak, .old)
-    ArtifactTypeRepository      ArtifactType = "repository"       // Repo de código (.git)
-    ArtifactTypeWebshell        ArtifactType = "webshell"         // Webshell detectada
-    ArtifactTypeMetadata        ArtifactType = "metadata"         // Metadatos extraídos
+    ArtifactTypeRepository      ArtifactType = "repository"       // Code repo (.git)
+    ArtifactTypeWebshell        ArtifactType = "webshell"         // Detected webshell
+    ArtifactTypeMetadata        ArtifactType = "metadata"         // Extracted metadata
 )
 ```
 
-**Uso**: Detección de exposiciones y leaks de datos.
-
-### 6. Información de Contacto (4 tipos)
+### 6. Contact Information (4 types)
 
 ```go
 const (
     ArtifactTypeEmail         ArtifactType = "email"          // Email
-    ArtifactTypePhone         ArtifactType = "phone"          // Teléfono
-    ArtifactTypeSocialMedia   ArtifactType = "social_media"   // Perfil social
-    ArtifactTypeWhoisContact  ArtifactType = "whois_contact"  // Contacto WHOIS
+    ArtifactTypePhone         ArtifactType = "phone"          // Phone
+    ArtifactTypeSocialMedia   ArtifactType = "social_media"   // Social profile
+    ArtifactTypeWhoisContact  ArtifactType = "whois_contact"  // WHOIS contact
 )
-```
-
-**Uso**: Información de contacto y OSINT.
-
-### Métodos de ArtifactType
-
-```go
-// IsValid verifica si el tipo es válido
-func (t ArtifactType) IsValid() bool
-
-// Category retorna la categoría ("infrastructure", "web", "security", etc.)
-func (t ArtifactType) Category() string
-
-// String retorna la representación string
-func (t ArtifactType) String() string
 ```
 
 ---
 
-## Sistema de Metadata
+## Metadata System
 
-El sistema de metadata de AethonX es **type-safe** y **polimórfico**, permitiendo adjuntar información estructurada específica a cada tipo de artefacto.
+The metadata system is **type-safe** and **polymorphic**, allowing structured information specific to each artifact type.
 
-### Arquitectura del Metadata
-
-```
-┌──────────────────────────────────────────────────┐
-│         ArtifactMetadata (Interface)             │
-│  - ToMap() map[string]string                     │
-│  - FromMap(map) error                            │
-│  - IsValid() bool                                │
-│  - Type() string                                 │
-└──────────────────────────────────────────────────┘
-                        ▲
-                        │ implements
-         ┌──────────────┴──────────────┬─────────────────┐
-         │                             │                 │
-┌────────┴──────────┐     ┌───────────┴──────────┐     ...
-│  DomainMetadata   │     │  CertificateMetadata │
-│  - HasSSL         │     │  - Issuer            │
-│  - SSLIssuer      │     │  - SerialNumber      │
-│  - DNSRecords[]   │     │  - NotBefore         │
-│  - Technologies[] │     │  - NotAfter          │
-└───────────────────┘     └──────────────────────┘
-```
-
-### Interface ArtifactMetadata
-
-**Ubicación**: `internal/core/domain/metadata/metadata.go`
+### Metadata Interface
 
 ```go
 type ArtifactMetadata interface {
-    // ToMap convierte el metadata a mapa para serialización
-    ToMap() map[string]string
-
-    // FromMap carga el metadata desde un mapa
-    FromMap(m map[string]string) error
-
-    // IsValid verifica si el metadata es válido
-    IsValid() bool
-
-    // Type retorna el tipo de metadata (para debugging/logging)
-    Type() string
+    ToMap() map[string]string           // Convert to map for serialization
+    FromMap(m map[string]string) error  // Load from map
+    IsValid() bool                      // Validate metadata
+    Type() string                       // Type name (for debugging)
 }
 ```
 
-**Propósito**: Interfaz común para todos los tipos de metadata.
+### Available Metadata Types
 
-### Tipos de Metadata Disponibles
+#### 1. DomainMetadata
 
-#### 1. DomainMetadata (`domain.go`)
-
-Metadata para dominios y subdominios.
+Metadata for domains and subdomains.
 
 ```go
 type DomainMetadata struct {
@@ -322,75 +242,54 @@ type DomainMetadata struct {
     Nameservers    []string
     MXRecords      []string
 
-    // Tecnologías detectadas
+    // Detected technologies
     Technologies   []string
 
-    // Servidor web
+    // Web server
     WebServer      string
     ResponseCode   int
-
-    // Información adicional
     ContentLength  int64
     Title          string
     IsAlive        bool
 }
 ```
 
-**Uso**: Enriquecer artefactos de tipo `domain` y `subdomain`.
+#### 2. CertificateMetadata
 
-#### 2. CertificateMetadata (`certificate.go`)
-
-Metadata para certificados SSL/TLS.
+Metadata for SSL/TLS certificates.
 
 ```go
 type CertificateMetadata struct {
-    // Identificación
     SerialNumber     string
     Fingerprint      string
-
-    // Emisor
     Issuer           string
     IssuerOrg        string
-
-    // Sujeto
     Subject          string
     SubjectOrg       string
-
-    // Validez
     NotBefore        string  // RFC3339
     NotAfter         string  // RFC3339
     IsExpired        bool
     DaysUntilExpiry  int
-
-    // SANs (Subject Alternative Names)
     SANs             []string
-
-    // Algoritmos
     SignatureAlgo    string
     PublicKeyAlgo    string
     KeySize          int
-
-    // Cadena
-    IssuingChain     []string
-    IsSelfSigned     bool
 }
 ```
 
-**Uso**: Análisis de certificados descubiertos por crt.sh, Certificate Transparency logs, etc.
+#### 3. IPMetadata
 
-#### 3. IPMetadata (`ip.go`)
-
-Metadata para direcciones IP.
+Metadata for IP addresses.
 
 ```go
 type IPMetadata struct {
-    // Geolocalización
+    // Geolocation
     Country       string
     City          string
     Latitude      float64
     Longitude     float64
 
-    // Red
+    // Network
     ASN           int
     ASNOrg        string
     ISP           string
@@ -401,321 +300,125 @@ type IPMetadata struct {
     CloudProvider string  // "aws", "azure", "gcp", "cloudflare"
     CloudRegion   string
 
-    // Características
-    IsVPN         bool
-    IsTor         bool
-    IsProxy       bool
-    IsCDN         bool
-
-    // Reputación
-    ThreatScore   float64  // 0.0 (seguro) - 1.0 (peligroso)
+    // Reputation
+    ThreatScore   float64  // 0.0 (safe) - 1.0 (dangerous)
     IsBlacklisted bool
-    Blacklists    []string
 }
 ```
 
-**Uso**: Enriquecimiento de IPs con geolocalización, ASN, cloud providers, reputación.
+#### 4-13. Other Metadata Types
 
-#### 4. ServiceMetadata (`service.go`)
+- **ServiceMetadata**: Network services (port, protocol, version, banner)
+- **TechnologyMetadata**: Web technologies (name, version, category)
+- **WAFMetadata**: WAF detection (name, manufacturer, type)
+- **BackupFileMetadata**: Backup files (filename, size, extension, hash)
+- **StorageBucketMetadata**: Storage buckets (provider, name, public, listable)
+- **APIMetadata**: APIs (type, baseURL, version, auth, endpoints)
+- **RepositoryMetadata**: Code repositories (type, url, exposed, files)
+- **WebshellMetadata**: Webshells (name, type, language)
+- **RegistrarMetadata**: Registrar info (WHOIS)
+- **ContactMetadata**: Contact info (WHOIS, OSINT)
 
-Metadata para servicios de red (puertos).
+### Metadata Serialization
 
-```go
-type ServiceMetadata struct {
-    // Identificación
-    Name          string  // "http", "ssh", "mysql"
-    Port          int
-    Protocol      string  // "tcp", "udp"
+**Problem**: JSON doesn't support direct polymorphism (unknown interface).
 
-    // Versión
-    Version       string
-    ProductName   string
-    OSType        string
-
-    // Banner
-    Banner        string
-    RawBanner     string
-
-    // Estado
-    State         string  // "open", "filtered", "closed"
-    Reason        string
-
-    // Información adicional
-    ExtraInfo     string
-    CPEs          []string  // Common Platform Enumeration
-}
-```
-
-**Uso**: Datos de escaneo de puertos (Nmap, Masscan, Shodan).
-
-#### 5. TechnologyMetadata (`technology.go`)
-
-Metadata para tecnologías web detectadas.
-
-```go
-type TechnologyMetadata struct {
-    // Identificación
-    Name           string
-    Version        string
-    Category       string  // "cms", "framework", "server", "cdn", etc.
-
-    // Detección
-    Confidence     float64
-    DetectionMethod string  // "header", "cookie", "body", "meta", "script"
-
-    // Información adicional
-    Website        string  // URL oficial
-    Icon           string  // URL del icono
-    CPE            string  // Common Platform Enumeration
-
-    // Vulnerabilidades conocidas
-    HasVulns       bool
-    VulnCount      int
-}
-```
-
-**Uso**: Wappalyzer, BuiltWith, detección de CMS/frameworks.
-
-#### 6-13. Otros Metadatas
-
-- **WAFMetadata**: WAF detectado (nombre, fabricante, tipo)
-- **BackupFileMetadata**: Archivos de backup expuestos (filename, size, extension, hash)
-- **StorageBucketMetadata**: Buckets de almacenamiento (provider, name, public, listable)
-- **APIMetadata**: APIs descubiertas (type, baseURL, version, auth, endpoints)
-- **RepositoryMetadata**: Repositorios de código (type, url, exposed, files)
-- **WebshellMetadata**: Webshells detectadas (name, type, language, suspicious patterns)
-- **RegistrarMetadata**: Información del registrar (WHOIS)
-- **ContactMetadata**: Información de contacto (WHOIS, OSINT)
-
-### Serialización de Metadata: MetadataEnvelope
-
-**Problema**: JSON no soporta polimorfismo directo (interface desconocida).
-
-**Solución**: `MetadataEnvelope` wrapper con type discriminator.
-
-**Ubicación**: `internal/core/domain/metadata/serializer.go`
+**Solution**: `MetadataEnvelope` wrapper with type discriminator.
 
 ```go
 type MetadataEnvelope struct {
     Type string          `json:"type"` // "domain", "certificate", "ip", etc.
-    Data json.RawMessage `json:"data"` // Datos específicos del tipo
+    Data json.RawMessage `json:"data"` // Type-specific data
 }
 ```
 
-**TypeRegistry**: Mapea tipos string a factories.
-
-```go
-var TypeRegistry = map[string]func() ArtifactMetadata{
-    "domain":        func() ArtifactMetadata { return &DomainMetadata{} },
-    "certificate":   func() ArtifactMetadata { return &CertificateMetadata{} },
-    "ip":            func() ArtifactMetadata { return &IPMetadata{} },
-    // ... 10 tipos más
-}
-```
-
-**Funciones de serialización**:
-
+**Functions**:
 ```go
 // MarshalMetadata: ArtifactMetadata -> MetadataEnvelope
 func MarshalMetadata(meta ArtifactMetadata) (*MetadataEnvelope, error)
 
-// UnmarshalMetadata: MetadataEnvelope -> ArtifactMetadata concreto
+// UnmarshalMetadata: MetadataEnvelope -> concrete ArtifactMetadata
 func UnmarshalMetadata(envelope *MetadataEnvelope) (ArtifactMetadata, error)
 ```
 
-**Flujo**:
-1. Artifact se serializa a JSON
-2. `MarshalJSON()` custom llama `MarshalMetadata()`
-3. Metadata se wrappea en `MetadataEnvelope` con type discriminator
-4. Al deserializar, `UnmarshalMetadata()` lee el `type` y crea instancia correcta
-
-**Ejemplo JSON**:
-```json
-{
-  "id": "a3f5b2c1d4e6f7g8",
-  "type": "subdomain",
-  "value": "api.example.com",
-  "sources": ["crtsh", "rdap"],
-  "metadata": {
-    "type": "domain",
-    "data": {
-      "has_ssl": true,
-      "ssl_issuer": "Let's Encrypt",
-      "technologies": ["nginx", "nodejs"]
-    }
-  },
-  "relations": [],
-  "confidence": 1.0,
-  "discovered_at": "2025-10-20T12:00:00Z",
-  "tags": []
-}
-```
-
 ---
 
-## Sistema de Relaciones
+## Relationship System
 
-Los artifacts no existen aislados: forman un **grafo dirigido** de relaciones.
+Artifacts form a **directed graph** of relationships.
 
-### Estructura de Relación
+### Relation Structure
 
 ```go
 type ArtifactRelation struct {
-    // Tipo de relación
-    Type RelationType  // "resolves_to", "subdomain_of", etc.
-
-    // ID del artifact relacionado
-    TargetID string
-
-    // Confianza de la relación [0.0-1.0]
-    Confidence float64
-
-    // Timestamp del descubrimiento
-    DiscoveredAt time.Time
-
-    // Fuente que descubrió la relación
-    Source string
-
-    // Metadata adicional específico de la relación
-    Metadata map[string]string
+    Type         RelationType  // "resolves_to", "subdomain_of", etc.
+    TargetID     string        // Related artifact ID
+    Confidence   float64       // Relation confidence [0.0-1.0]
+    DiscoveredAt time.Time     // Discovery timestamp
+    Source       string        // Source that discovered relation
+    Metadata     map[string]string  // Additional metadata
 }
 ```
 
-### Tipos de Relaciones
+### Relation Types
 
-#### Relaciones de Infraestructura
-
+**Infrastructure Relations**:
 ```go
-const (
-    RelationResolvesTo       RelationType = "resolves_to"       // Domain → IP
-    RelationReverseResolves  RelationType = "reverse_resolves"  // IP → Domain
-    RelationOwnedBy          RelationType = "owned_by"          // IP → ASN
-    RelationHostedOn         RelationType = "hosted_on"         // URL → Domain
-    RelationSubdomainOf      RelationType = "subdomain_of"      // Subdomain → Domain
-)
+RelationResolvesTo       // Domain → IP
+RelationReverseResolves  // IP → Domain
+RelationOwnedBy          // IP → ASN
+RelationHostedOn         // URL → Domain
+RelationSubdomainOf      // Subdomain → Domain
 ```
 
-**Uso**: Mapear infraestructura de red.
-
-#### Relaciones de Seguridad
-
+**Security Relations**:
 ```go
-const (
-    RelationUsesCert     RelationType = "uses_cert"     // Domain → Certificate
-    RelationProtectedBy  RelationType = "protected_by"  // Domain → WAF
-    RelationHasVuln      RelationType = "has_vuln"      // Service → Vulnerability
-)
+RelationUsesCert     // Domain → Certificate
+RelationProtectedBy  // Domain → WAF
+RelationHasVuln      // Service → Vulnerability
 ```
 
-**Uso**: Análisis de seguridad.
-
-#### Relaciones de Servicios
-
+**Service Relations**:
 ```go
-const (
-    RelationRunsOn    RelationType = "runs_on"     // Service → Port
-    RelationListensOn RelationType = "listens_on"  // IP → Port
-    RelationServes    RelationType = "serves"      // Port → Service
-)
+RelationRunsOn    // Service → Port
+RelationListensOn // IP → Port
+RelationServes    // Port → Service
 ```
 
-**Uso**: Mapeo de servicios en puertos.
-
-#### Relaciones DNS
-
+**DNS Relations**:
 ```go
-const (
-    RelationHasNameserver RelationType = "has_nameserver"  // Domain → Nameserver
-    RelationHasMX         RelationType = "has_mx"          // Domain → MXRecord
-    RelationHasCNAME      RelationType = "has_cname"       // Domain → Domain
-)
+RelationHasNameserver // Domain → Nameserver
+RelationHasMX         // Domain → MXRecord
+RelationHasCNAME      // Domain → Domain
 ```
 
-**Uso**: Graph DNS.
-
-#### Relaciones de Contacto
+### Relation API
 
 ```go
-const (
-    RelationHasContact RelationType = "has_contact"  // Domain → Email
-    RelationManagedBy  RelationType = "managed_by"   // Domain → WhoisContact
-)
-```
-
-**Uso**: OSINT y puntos de contacto.
-
-#### Relaciones de Tecnología
-
-```go
-const (
-    RelationUsesTech RelationType = "uses_tech"  // URL → Technology
-)
-```
-
-**Uso**: Stack tecnológico.
-
-### API de Relaciones
-
-**Agregar relación**:
-```go
+// Add relation
 artifact.AddRelation(targetID, relType, confidence, source)
-artifact.AddRelationWithMetadata(targetID, relType, confidence, source, metadata)
-```
 
-**Consultar relaciones**:
-```go
-// Todas las relaciones de un tipo
+// Query relations
 rels := artifact.GetRelations(RelationResolvesTo)
-
-// Todas las relaciones
 allRels := artifact.GetAllRelations()
 
-// Verificar existencia
+// Check existence
 exists := artifact.HasRelation(targetID, RelationSubdomainOf)
-```
 
-**Eliminar relación**:
-```go
+// Remove relation
 artifact.RemoveRelation(targetID, relType)
-```
 
-**Conteo**:
-```go
+// Count
 count := artifact.GetRelationCount()
-```
-
-### Ejemplo: Graph de Subdominios
-
-```go
-// Dominio principal
-domain := domain.NewArtifact(ArtifactTypeDomain, "example.com", "manual")
-
-// Subdominios descubiertos
-sub1 := domain.NewArtifact(ArtifactTypeSubdomain, "api.example.com", "crtsh")
-sub2 := domain.NewArtifact(ArtifactTypeSubdomain, "admin.example.com", "crtsh")
-
-// IPs resueltas
-ip1 := domain.NewArtifact(ArtifactTypeIP, "203.0.113.10", "dns")
-ip2 := domain.NewArtifact(ArtifactTypeIP, "203.0.113.20", "dns")
-
-// Crear relaciones
-sub1.AddRelation(domain.ID, RelationSubdomainOf, 1.0, "crtsh")
-sub2.AddRelation(domain.ID, RelationSubdomainOf, 1.0, "crtsh")
-sub1.AddRelation(ip1.ID, RelationResolvesTo, 1.0, "dns")
-sub2.AddRelation(ip2.ID, RelationResolvesTo, 1.0, "dns")
-
-// Graph resultante:
-// example.com <-- subdomain_of --- api.example.com --> resolves_to --> 203.0.113.10
-//             <-- subdomain_of --- admin.example.com -> resolves_to --> 203.0.113.20
 ```
 
 ---
 
-## Ciclo de Vida de un Artefacto
+## Lifecycle
 
-### 1. Creación
+### 1. Creation
 
-**Constructor básico**:
+**Basic constructor**:
 ```go
 artifact := domain.NewArtifact(
     domain.ArtifactTypeSubdomain,
@@ -724,13 +427,7 @@ artifact := domain.NewArtifact(
 )
 ```
 
-**Pasos automáticos**:
-1. Asigna `Type`, `Value`, `Sources`
-2. Llama `Normalize()` para normalizar `Value`
-3. Genera `ID` único vía SHA256
-4. Inicializa campos: `Confidence=1.0`, `DiscoveredAt=now()`, `Relations=[]`, `Tags=[]`
-
-**Constructor con metadata**:
+**With metadata**:
 ```go
 domainMeta := metadata.NewDomainMetadata()
 domainMeta.HasSSL = true
@@ -744,21 +441,17 @@ artifact := domain.NewArtifactWithMetadata(
 )
 ```
 
-### 2. Normalización
+### 2. Normalization
 
-**Automática en creación**: Llama `Normalize()` internamente.
+**Automatic on creation**: Calls `Normalize()` internally.
 
-**Reglas por tipo**:
+**Rules by type**:
 - **Domain/Subdomain**: Lowercase, trim trailing dot, remove `*.`, remove `www.`
 - **Email**: Lowercase, trim spaces
-- **IP**: Parsing canónico vía `net.ParseIP()`
+- **IP**: Canonical parsing via `net.ParseIP()`
 - **URL**: Lowercase scheme/host, remove default ports (80/443), trim trailing slash
 
-**Validación**: Usa `internal/platform/validator` para validación centralizada.
-
-### 3. Validación
-
-**Manual**: Llamar `artifact.IsValid()` antes de usar.
+### 3. Validation
 
 ```go
 if !artifact.IsValid() {
@@ -767,451 +460,90 @@ if !artifact.IsValid() {
 }
 ```
 
-**Validaciones por tipo**:
-- Type no vacío y válido (`ArtifactType.IsValid()`)
-- Value no vacío tras normalización
-- Confidence en rango [0.0-1.0]
-- Validaciones específicas:
-  - IP: `validator.IsIP()`
-  - Email: `validator.IsEmail()`
-  - URL: `validator.IsURL()`
-  - Domain: `validator.IsDomain()`
-  - Port: `validator.IsPort()`
-  - Certificate: `validator.IsCertSerial()`
+**Validations by type**:
+- Type not empty and valid
+- Value not empty after normalization
+- Confidence in range [0.0-1.0]
+- Type-specific validations (IP, email, URL, domain, port, etc.)
 
-### 4. Enriquecimiento
+### 4. Enrichment
 
-**Agregar metadata**:
+**Add metadata**:
 ```go
-// Crear metadata
 domainMeta := metadata.NewDomainMetadata()
 domainMeta.HasSSL = true
-domainMeta.SSLIssuer = "Let's Encrypt"
-domainMeta.Technologies = []string{"nginx", "php"}
-
-// Asignar al artifact
 artifact.SetDomainMetadata(domainMeta)
 ```
 
-**Agregar relaciones**:
+**Add relations**:
 ```go
-// Relación con dominio padre
 artifact.AddRelation(parentDomain.ID, domain.RelationSubdomainOf, 1.0, "crtsh")
-
-// Relación con IP
 artifact.AddRelation(ip.ID, domain.RelationResolvesTo, 1.0, "dns")
 ```
 
-**Agregar tags**:
+**Add tags**:
 ```go
 artifact.AddTag("production")
 artifact.AddTag("external")
-artifact.AddTag("high-value")
 ```
 
-### 5. Merge (Deduplicación)
+### 5. Merge (Deduplication)
 
-Cuando múltiples fuentes descubren el mismo artifact, se hace **merge**.
+When multiple sources discover the same artifact, they are **merged**.
 
 ```go
-// Artifact existente
 existingArtifact := dedupeMap[artifact.Key()]
-
-// Merge
 if err := existingArtifact.Merge(newArtifact); err != nil {
     log.Error("merge failed", "error", err)
 }
 ```
 
-**Lógica de merge**:
-1. Verificar misma `Key()` (Type:Value)
-2. Combinar `Sources` (sin duplicados)
-3. Combinar `Tags` (sin duplicados)
-4. Combinar `Relations` (sin duplicados basado en TargetID + Type)
-5. Merge `TypedMetadata`: Si actual es nil, tomar del otro; si ambos tienen, mantener actual
-6. Confidence: Tomar máximo
-7. DiscoveredAt: Tomar el más antiguo (primer descubrimiento)
+**Merge logic**:
+1. Verify same `Key()` (Type:Value)
+2. Combine `Sources` (no duplicates)
+3. Combine `Tags` (no duplicates)
+4. Combine `Relations` (no duplicates based on TargetID + Type)
+5. Merge `TypedMetadata`: If current is nil, take from other
+6. Confidence: Take maximum
+7. DiscoveredAt: Take oldest (first discovery)
 
-### 6. Serialización
+### 6. Serialization
 
-**JSON custom** vía `MarshalJSON()` y `UnmarshalJSON()`.
+**JSON custom** via `MarshalJSON()` and `UnmarshalJSON()`.
 
-**Serialización**:
 ```go
+// Serialize
 jsonData, err := json.Marshal(artifact)
-```
 
-**Deserialización**:
-```go
+// Deserialize
 var artifact domain.Artifact
 err := json.Unmarshal(jsonData, &artifact)
 ```
 
-**Características**:
-- TypedMetadata se serializa como `MetadataEnvelope` (type + data)
-- Permite deserializar metadata concreto automáticamente
-- Compatible con persistencia JSON (archivos, APIs)
-
-### 7. Persistencia
-
-**En ScanResult**:
-```go
-result := domain.NewScanResult(target)
-result.Artifacts = append(result.Artifacts, artifact)
-```
-
-**Export a JSON**:
-```go
-output.OutputJSON(cfg.OutputDir, result)
-```
-
-**Export a Table**:
-```go
-output.OutputTable(result)
-```
-
 ---
 
-## Normalización y Validación
+## Practical Examples
 
-### Normalización Centralizada
-
-**Ubicación**: `internal/platform/validator/validator.go`
-
-**Funciones de normalización**:
-
-```go
-// Dominios
-validator.NormalizeDomain(domain)  // Lowercase, trim dot/www
-
-// Emails
-validator.NormalizeEmail(email)    // Lowercase
-
-// IPs
-validator.NormalizeIP(ip)          // Canonical parsing
-
-// URLs
-validator.NormalizeURL(url)        // Lowercase scheme/host, remove default ports
-
-// Otros
-validator.NormalizeCertSerial(serial)  // Lowercase, trim
-validator.NormalizeHash(hash)          // Lowercase, trim
-```
-
-### Validación Centralizada
-
-**Funciones de validación**:
-
-```go
-// Dominios
-validator.IsDomain(domain)              // RFC-compliant
-validator.IsSubdomain(sub, base)        // Verifica si sub es subdomain de base
-
-// Red
-validator.IsIP(ip)                      // IPv4 o IPv6
-validator.IsIPv4(ip)                    // IPv4 específico
-validator.IsIPv6(ip)                    // IPv6 específico
-validator.IsPort(port)                  // Rango [1-65535]
-
-// Contacto
-validator.IsEmail(email)                // RFC 5322 simplificado
-
-// URLs
-validator.IsURL(url)                    // Scheme + Host requeridos
-
-// Certificados
-validator.IsCertSerial(serial)          // Hexadecimal
-
-// Hashes
-validator.IsHash(hash)                  // MD5/SHA1/SHA256/SHA512
-```
-
-**Ventajas**:
-- Consistencia en todo el codebase
-- Fácil testing (validators centralizados)
-- No circular imports (platform → core, no inverso)
-
-### Flujo de Normalización en Artifact
-
-```
-1. NewArtifact(type, value, source)
-   ↓
-2. Artifact.Normalize()
-   ↓
-3. Switch por Type
-   ├─ domain/subdomain → normalizeDomain(value)
-   ├─ email → normalizeEmail(value)
-   ├─ ip/ipv6 → normalizeIP(value)
-   └─ url → normalizeURL(value)
-   ↓
-4. Value normalizado asignado
-   ↓
-5. GenerateID() usa Value normalizado
-```
-
----
-
-## Serialización JSON
-
-### Custom Marshaling
-
-**Problema**: `TypedMetadata` es interface, JSON no puede serializar polimórficamente.
-
-**Solución**: Custom `MarshalJSON()` / `UnmarshalJSON()`.
-
-### MarshalJSON (Serialización)
-
-**Código** (`artifact.go:424-451`):
-
-```go
-func (a *Artifact) MarshalJSON() ([]byte, error) {
-    // 1. Serializar metadata tipado a MetadataEnvelope
-    var metaEnvelope *metadata.MetadataEnvelope
-    if a.TypedMetadata != nil {
-        var err error
-        metaEnvelope, err = metadata.MarshalMetadata(a.TypedMetadata)
-        if err != nil {
-            return nil, fmt.Errorf("failed to marshal typed metadata: %w", err)
-        }
-    }
-
-    // 2. Crear estructura auxiliar con envelope
-    aux := artifactJSON{
-        ID:           a.ID,
-        Type:         a.Type,
-        Value:        a.Value,
-        Sources:      a.Sources,
-        Metadata:     metaEnvelope,  // ← MetadataEnvelope
-        Relations:    a.Relations,
-        Confidence:   a.Confidence,
-        DiscoveredAt: a.DiscoveredAt,
-        Tags:         a.Tags,
-    }
-
-    // 3. Marshal estándar
-    return json.Marshal(aux)
-}
-```
-
-**Pasos**:
-1. Convertir `TypedMetadata` (interface) a `MetadataEnvelope` (struct serializable)
-2. Crear struct auxiliar `artifactJSON` con envelope
-3. Marshal estándar a JSON
-
-### UnmarshalJSON (Deserialización)
-
-**Código** (`artifact.go:453-482`):
-
-```go
-func (a *Artifact) UnmarshalJSON(data []byte) error {
-    // 1. Deserializar a estructura auxiliar
-    var aux artifactJSON
-    if err := json.Unmarshal(data, &aux); err != nil {
-        return err
-    }
-
-    // 2. Asignar campos simples
-    a.ID = aux.ID
-    a.Type = aux.Type
-    a.Value = aux.Value
-    a.Sources = aux.Sources
-    a.Relations = aux.Relations
-    a.Confidence = aux.Confidence
-    a.DiscoveredAt = aux.DiscoveredAt
-    a.Tags = aux.Tags
-
-    // 3. Deserializar metadata tipado desde envelope
-    if aux.Metadata != nil {
-        var err error
-        a.TypedMetadata, err = metadata.UnmarshalMetadata(aux.Metadata)
-        if err != nil {
-            return fmt.Errorf("failed to unmarshal typed metadata: %w", err)
-        }
-    }
-
-    return nil
-}
-```
-
-**Pasos**:
-1. Unmarshal JSON a struct auxiliar `artifactJSON`
-2. Asignar campos simples
-3. Convertir `MetadataEnvelope` (struct) a `TypedMetadata` (interface concreto)
-
-### Ejemplo JSON Completo
-
-```json
-{
-  "id": "a3f5b2c1d4e6f7g8",
-  "type": "subdomain",
-  "value": "api.example.com",
-  "sources": ["crtsh", "subfinder"],
-  "metadata": {
-    "type": "domain",
-    "data": {
-      "has_ssl": true,
-      "ssl_issuer": "Let's Encrypt",
-      "ssl_expiry": "2025-12-31T23:59:59Z",
-      "ssl_valid": true,
-      "dns_records": ["A", "AAAA"],
-      "nameservers": ["ns1.example.com", "ns2.example.com"],
-      "technologies": ["nginx", "nodejs", "express"],
-      "web_server": "nginx/1.18.0",
-      "response_code": 200,
-      "content_length": 4567,
-      "title": "API Documentation",
-      "is_alive": true
-    }
-  },
-  "relations": [
-    {
-      "type": "subdomain_of",
-      "target_id": "b4c6d8e1f3a5g7h9",
-      "confidence": 1.0,
-      "discovered_at": "2025-10-20T12:00:00Z",
-      "source": "crtsh",
-      "metadata": {}
-    },
-    {
-      "type": "resolves_to",
-      "target_id": "c5d7e9f1a3b5g7i9",
-      "confidence": 1.0,
-      "discovered_at": "2025-10-20T12:01:00Z",
-      "source": "dns",
-      "metadata": {}
-    }
-  ],
-  "confidence": 1.0,
-  "discovered_at": "2025-10-20T12:00:00Z",
-  "tags": ["production", "api"]
-}
-```
-
----
-
-## Builders y Helpers
-
-### Constructores Especializados
-
-**Ubicación**: `internal/core/domain/builders.go`
-
-**Propósito**: Simplificar creación de artifacts con metadata pre-configurado.
-
-**Ejemplos**:
-
-```go
-// Domain
-artifact := domain.NewDomainArtifact("example.com", "manual")
-
-// Subdomain
-artifact := domain.NewSubdomainArtifact("api.example.com", "crtsh")
-
-// IP
-artifact := domain.NewIPArtifact("203.0.113.10", "dns")
-
-// Technology
-artifact := domain.NewTechnologyArtifact("nginx", "1.18.0", "wappalyzer")
-
-// Service
-artifact := domain.NewServiceArtifact("http", 80, "nmap")
-
-// WAF
-artifact := domain.NewWAFArtifact("Cloudflare", "wafwoof")
-
-// API
-artifact := domain.NewAPIArtifact("rest", "https://api.example.com", "manual")
-
-// Repository
-artifact := domain.NewRepositoryArtifact("git", "https://github.com/user/repo", "manual")
-
-// Backup File
-artifact := domain.NewBackupFileArtifact("database.sql.bak", "crawler")
-
-// Storage Bucket
-artifact := domain.NewStorageBucketArtifact("aws", "my-bucket", "s3scanner")
-
-// Webshell
-artifact := domain.NewWebshellArtifact("c99.php", "php", "scanner")
-```
-
-**Ventajas**:
-- Constructor tipado (no confundir parámetros)
-- Metadata inicializado automáticamente
-- Menos boilerplate en sources
-
-### Getters de Metadata
-
-**Propósito**: Type assertion seguro para obtener metadata concreto.
-
-```go
-// Domain metadata
-if domainMeta := artifact.GetDomainMetadata(); domainMeta != nil {
-    log.Info("SSL Issuer", "issuer", domainMeta.SSLIssuer)
-}
-
-// IP metadata
-if ipMeta := artifact.GetIPMetadata(); ipMeta != nil {
-    log.Info("Country", "country", ipMeta.Country)
-    log.Info("ASN", "asn", ipMeta.ASN)
-}
-
-// Technology metadata
-if techMeta := artifact.GetTechnologyMetadata(); techMeta != nil {
-    log.Info("Version", "version", techMeta.Version)
-    log.Info("Category", "category", techMeta.Category)
-}
-
-// Certificate metadata
-if certMeta := artifact.GetCertificateMetadata(); certMeta != nil {
-    log.Info("Issuer", "issuer", certMeta.Issuer)
-    log.Info("Expires", "expires", certMeta.NotAfter)
-}
-```
-
-### Setters de Metadata
-
-**Propósito**: Asignar metadata tipado a artifact existente.
-
-```go
-// Crear artifact básico
-artifact := domain.NewArtifact(domain.ArtifactTypeDomain, "example.com", "manual")
-
-// Crear y asignar metadata
-domainMeta := metadata.NewDomainMetadata()
-domainMeta.HasSSL = true
-domainMeta.SSLIssuer = "Let's Encrypt"
-domainMeta.Technologies = []string{"nginx", "php"}
-artifact.SetDomainMetadata(domainMeta)
-```
-
----
-
-## Casos de Uso Prácticos
-
-### Caso 1: Source que Descubre Subdominios
-
-**Ejemplo**: Source crt.sh descubre subdominios vía Certificate Transparency.
+### Example 1: Source Discovering Subdomains
 
 ```go
 func (c *CRTsh) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
     result := domain.NewScanResult(target)
 
-    // Consultar crt.sh API
+    // Query crt.sh API
     subdomains, err := c.queryCRTsh(target.Domain)
     if err != nil {
         return result, err
     }
 
-    // Crear artifacts
+    // Create artifacts
     for _, subdomain := range subdomains {
-        // Crear artifact de subdomain
         artifact := domain.NewSubdomainArtifact(subdomain, "crtsh")
 
-        // Agregar relación con dominio padre
+        // Add relation with parent domain
         parentID := generateID(domain.ArtifactTypeDomain, target.Domain)
         artifact.AddRelation(parentID, domain.RelationSubdomainOf, 1.0, "crtsh")
 
-        // Agregar al resultado
         result.Artifacts = append(result.Artifacts, artifact)
     }
 
@@ -1219,85 +551,53 @@ func (c *CRTsh) Run(ctx context.Context, target domain.Target) (*domain.ScanResu
 }
 ```
 
-### Caso 2: Source que Enriquece con Metadata
-
-**Ejemplo**: Source RDAP enriquece dominios con metadata WHOIS.
+### Example 2: Source Enriching with Metadata
 
 ```go
 func (r *RDAP) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
     result := domain.NewScanResult(target)
 
-    // Consultar RDAP
+    // Query RDAP
     whoisData, err := r.queryRDAP(target.Domain)
     if err != nil {
         return result, err
     }
 
-    // Crear artifact de dominio
+    // Create domain artifact
     artifact := domain.NewDomainArtifact(target.Domain, "rdap")
 
-    // Enriquecer con metadata
+    // Enrich with metadata
     domainMeta := artifact.GetDomainMetadata()
     domainMeta.Nameservers = whoisData.Nameservers
     domainMeta.MXRecords = whoisData.MXRecords
 
-    // Crear artifact de registrar
-    registrarArtifact := domain.NewArtifact(
-        domain.ArtifactTypeWhoisContact,
-        whoisData.RegistrarName,
-        "rdap",
-    )
-
-    // Relación: dominio managed_by registrar
-    artifact.AddRelation(registrarArtifact.ID, domain.RelationManagedBy, 1.0, "rdap")
-
-    // Agregar artifacts
-    result.Artifacts = append(result.Artifacts, artifact, registrarArtifact)
-
+    result.Artifacts = append(result.Artifacts, artifact)
     return result, nil
 }
 ```
 
-### Caso 3: Graph Builder
-
-**Ejemplo**: Construir grafo de relaciones automáticamente.
+### Example 3: Graph Builder
 
 ```go
-// GraphService en internal/core/usecases/graph_service.go
 func (gs *GraphService) Build(artifacts []*domain.Artifact) error {
-    // Índice por ID
+    // Index by ID
     index := make(map[string]*domain.Artifact)
     for _, artifact := range artifacts {
         index[artifact.ID] = artifact
     }
 
-    // Detectar relaciones implícitas
+    // Detect implicit relations
     for _, artifact := range artifacts {
         switch artifact.Type {
         case domain.ArtifactTypeSubdomain:
-            // Extraer dominio padre
+            // Extract parent domain
             parentDomain := extractParentDomain(artifact.Value)
 
-            // Buscar artifact del dominio padre
+            // Find parent artifact
             for id, parent := range index {
                 if parent.Type == domain.ArtifactTypeDomain &&
                    parent.Value == parentDomain {
-                    // Crear relación subdomain_of
                     artifact.AddRelation(id, domain.RelationSubdomainOf, 0.9, "graph_service")
-                    break
-                }
-            }
-
-        case domain.ArtifactTypeURL:
-            // Extraer dominio de la URL
-            urlDomain := extractDomainFromURL(artifact.Value)
-
-            // Buscar artifact del dominio
-            for id, parent := range index {
-                if parent.Type == domain.ArtifactTypeDomain &&
-                   parent.Value == urlDomain {
-                    // Crear relación hosted_on
-                    artifact.AddRelation(id, domain.RelationHostedOn, 1.0, "graph_service")
                     break
                 }
             }
@@ -1308,12 +608,9 @@ func (gs *GraphService) Build(artifacts []*domain.Artifact) error {
 }
 ```
 
-### Caso 4: Deduplicación con Merge
-
-**Ejemplo**: DedupeService elimina duplicados y merge sources.
+### Example 4: Deduplication with Merge
 
 ```go
-// DedupeService en internal/core/usecases/dedupe_service.go
 func (ds *DedupeService) Deduplicate(artifacts []*domain.Artifact) []*domain.Artifact {
     dedupeMap := make(map[string]*domain.Artifact)
 
@@ -1321,18 +618,18 @@ func (ds *DedupeService) Deduplicate(artifacts []*domain.Artifact) []*domain.Art
         key := artifact.Key() // "type:value"
 
         if existing, found := dedupeMap[key]; found {
-            // Merge con artifact existente
+            // Merge with existing
             if err := existing.Merge(artifact); err != nil {
                 ds.logger.Warn("merge failed", "key", key, "error", err)
                 continue
             }
         } else {
-            // Primer descubrimiento
+            // First discovery
             dedupeMap[key] = artifact
         }
     }
 
-    // Convertir mapa a slice
+    // Convert map to slice
     unique := make([]*domain.Artifact, 0, len(dedupeMap))
     for _, artifact := range dedupeMap {
         unique = append(unique, artifact)
@@ -1344,66 +641,59 @@ func (ds *DedupeService) Deduplicate(artifacts []*domain.Artifact) []*domain.Art
 
 ---
 
-## Resumen
+## Summary
 
-### Puntos Clave
+### Key Points
 
-1. **Artifact es la entidad central**: Representa cualquier dato descubierto.
-2. **42 tipos organizados en 6 categorías**: Infrastructure, Web, Security, Cloud, Data, Contact.
-3. **Metadata tipado y polimórfico**: 13 tipos de metadata concretos, serialización vía MetadataEnvelope.
-4. **Grafo de relaciones dirigido**: 16 tipos de relaciones entre artifacts.
-5. **Normalización automática**: Delegada a `internal/platform/validator`.
-6. **Validación tipo-específica**: Antes de usar, llamar `IsValid()`.
-7. **Serialización JSON custom**: Maneja polimorfismo de metadata.
-8. **Builders especializados**: Simplifican creación con metadata pre-configurado.
-9. **Merge inteligente**: Combina sources, tags, relations, metadata.
-10. **Trazabilidad completa**: Sources, timestamps, confidence, tags.
+1. **Artifact is the central entity**: Represents any discovered data
+2. **42 types in 6 categories**: Infrastructure, Web, Security, Cloud, Data, Contact
+3. **Typed and polymorphic metadata**: 13 concrete metadata types
+4. **Directed relationship graph**: 16 relation types between artifacts
+5. **Automatic normalization**: Delegated to `internal/platform/validator`
+6. **Type-specific validation**: Call `IsValid()` before use
+7. **Custom JSON serialization**: Handles metadata polymorphism
+8. **Specialized builders**: Simplify creation with pre-configured metadata
+9. **Smart merge**: Combines sources, tags, relations, metadata
+10. **Complete traceability**: Sources, timestamps, confidence, tags
 
-### Archivos Clave
+### Key Files
 
-| Archivo | Propósito |
-|---------|-----------|
-| `artifact.go` | Entidad Artifact + lógica core |
-| `artifact_types.go` | 42 tipos de artefactos (enums) |
-| `enums.go` | Enums de modos (Scan, Source) y tipos (Source) |
-| `builders.go` | Constructores especializados con metadata |
-| `metadata/metadata.go` | Interfaz ArtifactMetadata |
-| `metadata/serializer.go` | MetadataEnvelope + polimorfismo |
-| `metadata/*.go` | 13 tipos concretos de metadata |
+| File | Purpose |
+|------|---------|
+| `artifact.go` | Artifact entity + core logic |
+| `artifact_types.go` | 42 artifact types (enums) |
+| `enums.go` | Mode and type enums |
+| `builders.go` | Specialized constructors |
+| `metadata/metadata.go` | ArtifactMetadata interface |
+| `metadata/serializer.go` | MetadataEnvelope + polymorphism |
+| `metadata/*.go` | 13 concrete metadata types |
 
-### Flujo Típico
+### Typical Flow
 
 ```
-1. Source descubre datos
+1. Source discovers data
    ↓
-2. Crea Artifacts con NewArtifact() o builders
+2. Creates Artifacts (NewArtifact or builders)
    ↓
-3. Normalización automática (Normalize)
+3. Automatic normalization (Normalize)
    ↓
-4. Validación manual (IsValid)
+4. Manual validation (IsValid)
    ↓
-5. Enriquecimiento (metadata, tags, relaciones)
+5. Enrichment (metadata, tags, relations)
    ↓
-6. Agregación en ScanResult
+6. Aggregation in ScanResult
    ↓
-7. Deduplicación (Merge)
+7. Deduplication (Merge)
    ↓
-8. Graph building (relaciones implícitas)
+8. Graph building (implicit relations)
    ↓
-9. Serialización JSON
+9. JSON serialization
    ↓
-10. Export (JSON, Table, DB)
+10. Export (JSON, Table)
 ```
 
 ---
 
-## Referencias
-
-- **Código fuente**: `internal/core/domain/`
-- **CLAUDE.md**: Guía de arquitectura general
-- **ARCHITECTURE.md**: Visión Clean Architecture
-- **Tests**: `internal/core/domain/*_test.go`
-
-**Autor**: Lucas Calzada
-**Fecha**: 2025-10-20
-**Versión**: 1.0.0
+**Author**: Lucas Calzada
+**Date**: 2025-10-22
+**Version**: 2.0.0

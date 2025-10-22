@@ -17,6 +17,7 @@ import (
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
 	"aethonx/internal/platform/resilience"
+	"aethonx/internal/platform/ui"
 
 	// Import sources for auto-registration via init()
 	_ "aethonx/internal/sources/crtsh"
@@ -115,7 +116,20 @@ func main() {
 	// 7. Get source metadata from registry
 	sourceMetadata := registry.Global().GetAllMetadata()
 
-	// 8. Create pipeline orchestrator (stage-based execution)
+	// 8. Create UI presenter based on configuration
+	var presenter ui.Presenter
+	if cfg.Output.QuietMode {
+		// Quiet mode: sin salida visual, solo JSON
+		presenter = ui.NewNoopPresenter()
+	} else if cfg.Output.UIDisabled {
+		// UI deshabilitado: usar NoopPresenter también
+		presenter = ui.NewNoopPresenter()
+	} else {
+		// Modo normal: usar presenter visual con PTerm
+		presenter = ui.NewPTermPresenter()
+	}
+
+	// 9. Create pipeline orchestrator (stage-based execution)
 	orch := usecases.NewPipelineOrchestrator(usecases.PipelineOrchestratorOptions{
 		Sources:         sources,
 		SourceMetadata:  sourceMetadata,
@@ -127,9 +141,10 @@ func main() {
 			ArtifactThreshold: cfg.Streaming.ArtifactThreshold,
 			OutputDir:         cfg.Output.Dir,
 		},
+		Presenter: presenter,
 	})
 
-	// 9. Execute scan workflow
+	// 10. Execute scan workflow
 	start := time.Now()
 	result, runErr := orch.Run(ctx, *target)
 	elapsed := time.Since(start)
@@ -143,13 +158,13 @@ func main() {
 		}
 	}
 
-	// 10. Handle execution errors
+	// 11. Handle execution errors
 	if runErr != nil {
 		logger.Err(runErr, "phase", "run", "elapsed_ms", elapsed.Milliseconds())
 		// Continue to emit partial results (useful in pipelines)
 	}
 
-	// 11. Write outputs
+	// 12. Write outputs
 	if result != nil {
 		outErr := writeOutputs(cfg, result)
 		if outErr != nil {
@@ -229,8 +244,8 @@ func writeOutputs(cfg config.Config, result *domain.ScanResult) error {
 		return fmt.Errorf("json output: %w", err)
 	}
 
-	// Terminal-readable table if not disabled
-	if !cfg.Output.TableDisabled {
+	// Terminal-readable table if not in quiet mode
+	if !cfg.Output.QuietMode {
 		if err := output.OutputTable(result); err != nil {
 			return fmt.Errorf("table output: %w", err)
 		}

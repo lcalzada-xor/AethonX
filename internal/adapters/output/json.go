@@ -6,10 +6,26 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"aethonx/internal/core/domain"
 )
+
+// sanitizeDomainName convierte un nombre de dominio en un nombre de carpeta válido.
+// Ejemplo: "example.com" -> "example_com"
+func sanitizeDomainName(domain string) string {
+	// Reemplazar puntos por guiones bajos
+	sanitized := strings.ReplaceAll(domain, ".", "_")
+	// Remover cualquier otro carácter que no sea alfanumérico, guión bajo o guión
+	sanitized = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, sanitized)
+	return sanitized
+}
 
 // OutputJSON exporta el resultado en formato JSON.
 func OutputJSON(dir string, result *domain.ScanResult) error {
@@ -17,15 +33,19 @@ func OutputJSON(dir string, result *domain.ScanResult) error {
 		dir = "."
 	}
 
-	// Crear directorio si no existe
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Crear subdirectorio específico para el dominio
+	domainDir := sanitizeDomainName(result.Target.Root)
+	fullDir := filepath.Join(dir, domainDir)
+
+	// Crear directorio completo si no existe
+	if err := os.MkdirAll(fullDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
 	// Generar nombre de archivo con timestamp
 	timestamp := time.Now().Format("20060102_150405")
 	filename := fmt.Sprintf("aethonx_%s_%s.json", result.Target.Root, timestamp)
-	filepath := filepath.Join(dir, filename)
+	filepath := filepath.Join(fullDir, filename)
 
 	// Crear archivo
 	f, err := os.Create(filepath)

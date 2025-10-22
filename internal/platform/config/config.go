@@ -42,8 +42,9 @@ type SourceConfig struct {
 
 // OutputConfig contains output-related settings.
 type OutputConfig struct {
-	Dir           string // Output directory
-	TableDisabled bool   // Disable table output (JSON always generated)
+	Dir        string // Output directory
+	QuietMode  bool   // Quiet mode (no visual output, JSON only)
+	UIDisabled bool   // Disable visual UI (use simple text logs)
 }
 
 // StreamingConfig contains memory management settings.
@@ -115,8 +116,9 @@ func DefaultConfig() Config {
 		},
 
 		Output: OutputConfig{
-			Dir:           "aethonx_out",
-			TableDisabled: false,
+			Dir:        "aethonx_out",
+			QuietMode:  false,
+			UIDisabled: false,
 		},
 
 		Streaming: StreamingConfig{
@@ -175,8 +177,11 @@ func loadFromEnv(cfg *Config) {
 	if v := getenv("AETHONX_OUTPUT_DIR", ""); v != "" {
 		cfg.Output.Dir = v
 	}
-	if v := getenv("AETHONX_OUTPUTS_TABLE_DISABLED", ""); v != "" {
-		cfg.Output.TableDisabled = parseBool(v)
+	if v := getenv("AETHONX_QUIET", ""); v != "" {
+		cfg.Output.QuietMode = parseBool(v)
+	}
+	if v := getenv("AETHONX_UI_DISABLED", ""); v != "" {
+		cfg.Output.UIDisabled = parseBool(v)
 	}
 
 	// === NETWORK CONFIG ===
@@ -272,8 +277,10 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 
 	// === OUTPUT FLAGS ===
 	pflag.StringVarP(&cfg.Output.Dir, "out", "o", cfg.Output.Dir, "Output directory")
-	pflag.BoolVarP(&cfg.Output.TableDisabled, "quiet", "q", cfg.Output.TableDisabled,
-		"Quiet mode (JSON only, no table)")
+	pflag.BoolVarP(&cfg.Output.QuietMode, "quiet", "q", cfg.Output.QuietMode,
+		"Quiet mode (JSON only, no visual output)")
+	pflag.BoolVar(&cfg.Output.UIDisabled, "no-ui", cfg.Output.UIDisabled,
+		"Disable visual UI (use simple text logs)")
 
 	// === STREAMING FLAGS ===
 	pflag.IntVarP(&cfg.Streaming.ArtifactThreshold, "streaming", "s", cfg.Streaming.ArtifactThreshold,
@@ -310,17 +317,25 @@ func detectCommonFlagMistakes(cfg *Config) {
 	// Check if target looks truncated (common sign of "-target" mistake)
 	// When user types "-target example.com", the result is often a truncated domain
 	// like "arget" from "target" or "ample.com" from "example.com"
-	// Also check for -active flag being unexpectedly set when it shouldn't be
 
 	target := cfg.Core.Target
 
 	// Heuristics for detecting "-target" mistake:
 	// 1. Target has no dot AND is short (< 8 chars) - likely truncated
-	// 2. Target + active flag both set unexpectedly (common pattern with "-target")
+	// 2. Target starts with invalid chars (common when flags are mangled)
+	//
+	// NOTE: We don't check for active flag + short domain anymore because
+	// legitimate short domains like "uvesa.es" (8 chars) would trigger false positives
 	suspiciousTruncated := target != "" && len(target) < 8 && !strings.Contains(target, ".")
-	suspiciousPattern := target != "" && cfg.Core.Active && len(target) < 10
 
-	if suspiciousTruncated || suspiciousPattern {
+	// Check if target starts with common flag prefixes that got mangled
+	// (e.g., "arget", "ctive", "orkers") - these are clear mistakes
+	suspiciousPrefix := target != "" && !strings.Contains(target, ".") &&
+		(strings.HasPrefix(target, "arget") ||
+		 strings.HasPrefix(target, "ctive") ||
+		 strings.HasPrefix(target, "orkers"))
+
+	if suspiciousTruncated || suspiciousPrefix {
 		fmt.Fprintf(os.Stderr, "\n⚠️  WARNING: Suspicious target detected: %q\n", cfg.Core.Target)
 		fmt.Fprintf(os.Stderr, "   Did you mean to use --target (double dash) instead of -target (single dash)?\n")
 		fmt.Fprintf(os.Stderr, "\n   Common mistake:\n")

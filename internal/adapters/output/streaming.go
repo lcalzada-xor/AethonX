@@ -6,11 +6,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/platform/logx"
 )
+
+// sanitizeDomainNameForStreaming convierte un nombre de dominio en un nombre de carpeta válido.
+// Ejemplo: "example.com" -> "example_com"
+func sanitizeDomainNameForStreaming(domain string) string {
+	// Reemplazar puntos por guiones bajos
+	sanitized := strings.ReplaceAll(domain, ".", "_")
+	// Remover cualquier otro carácter que no sea alfanumérico, guión bajo o guión
+	sanitized = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, sanitized)
+	return sanitized
+}
 
 // StreamingWriter maneja la escritura incremental de resultados parciales por source.
 // Cada source que completa su ejecución escribe un archivo JSON parcial,
@@ -37,14 +53,18 @@ func NewStreamingWriter(baseDir, scanID, targetRoot string, logger logx.Logger) 
 // WritePartial escribe un resultado parcial de una source a disco.
 // Formato: aethonx_{target}_{timestamp}_partial_{source}.json
 func (w *StreamingWriter) WritePartial(sourceName string, result *domain.ScanResult) (string, error) {
-	// Asegurar que el directorio existe
-	if err := os.MkdirAll(w.baseDir, 0o755); err != nil {
+	// Crear subdirectorio específico para el dominio
+	domainDir := sanitizeDomainNameForStreaming(w.targetRoot)
+	fullDir := filepath.Join(w.baseDir, domainDir)
+
+	// Asegurar que el directorio completo existe
+	if err := os.MkdirAll(fullDir, 0o755); err != nil {
 		return "", fmt.Errorf("failed to create output directory: %w", err)
 	}
 
 	// Generar nombre de archivo parcial
 	filename := w.GeneratePartialFilename(sourceName)
-	filepath := filepath.Join(w.baseDir, filename)
+	filepath := filepath.Join(fullDir, filename)
 
 	// Crear archivo
 	f, err := os.Create(filepath)
