@@ -299,6 +299,37 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 	if *showVersion {
 		PrintVersion(version, commit, date)
 	}
+
+	// Detect common mistake: user typed "-target" instead of "--target" or "-t"
+	// This happens because "-target" is interpreted as "-t -a -r -g -e -t"
+	detectCommonFlagMistakes(cfg)
+}
+
+// detectCommonFlagMistakes warns users about common CLI flag errors.
+func detectCommonFlagMistakes(cfg *Config) {
+	// Check if target looks truncated (common sign of "-target" mistake)
+	// When user types "-target example.com", the result is often a truncated domain
+	// like "arget" from "target" or "ample.com" from "example.com"
+	// Also check for -active flag being unexpectedly set when it shouldn't be
+
+	target := cfg.Core.Target
+
+	// Heuristics for detecting "-target" mistake:
+	// 1. Target has no dot AND is short (< 8 chars) - likely truncated
+	// 2. Target + active flag both set unexpectedly (common pattern with "-target")
+	suspiciousTruncated := target != "" && len(target) < 8 && !strings.Contains(target, ".")
+	suspiciousPattern := target != "" && cfg.Core.Active && len(target) < 10
+
+	if suspiciousTruncated || suspiciousPattern {
+		fmt.Fprintf(os.Stderr, "\n⚠️  WARNING: Suspicious target detected: %q\n", cfg.Core.Target)
+		fmt.Fprintf(os.Stderr, "   Did you mean to use --target (double dash) instead of -target (single dash)?\n")
+		fmt.Fprintf(os.Stderr, "\n   Common mistake:\n")
+		fmt.Fprintf(os.Stderr, "     ❌  aethonx -target example.com    (interprets as: -t -a -r -g -e -t)\n")
+		fmt.Fprintf(os.Stderr, "\n   Correct usage:\n")
+		fmt.Fprintf(os.Stderr, "     ✓  aethonx --target example.com   (double dash for long flags)\n")
+		fmt.Fprintf(os.Stderr, "     ✓  aethonx -t example.com         (single dash for short flags)\n\n")
+		os.Exit(2)
+	}
 }
 
 // normalize sanitizes and validates configuration values.

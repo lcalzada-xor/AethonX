@@ -13,6 +13,14 @@ AethonX - Modular Reconnaissance Engine
 USAGE:
   aethonx -t <domain> [options]
 
+IMPORTANT:
+  Use double dash (--) for long flag names: --target, --workers, --active
+  Use single dash (-) for short flags: -t, -w, -a
+
+  ❌ WRONG:  aethonx -target example.com
+  ✓  RIGHT:  aethonx --target example.com
+  ✓  RIGHT:  aethonx -t example.com
+
 CORE OPTIONS:
   -t, --target string      Target domain (required, e.g., example.com)
   -a, --active             Enable active reconnaissance mode (default: false)
@@ -108,7 +116,7 @@ For more information and documentation:
 
 // PrintHelp prints the custom help message and exits.
 func PrintHelp() {
-	fmt.Fprintln(os.Stdout, helpText)
+	fmt.Fprint(os.Stdout, helpText)
 	os.Exit(0)
 }
 

@@ -47,7 +47,7 @@ The codebase follows strict dependency rules:
 │  internal/platform/                     │  ← Infrastructure
 │  ├─ config/     (ENV + flags)           │
 │  ├─ logx/       (Structured logging)    │
-│  ├─ httpx/      (HTTP client w/ retry)  │
+│  ├─ httpclient/ (HTTP client w/ retry)  │
 │  ├─ cache/      (In-memory TTL cache)   │
 │  ├─ rate/       (Token bucket limiter)  │
 │  ├─ errors/     (Error handling)        │
@@ -162,19 +162,79 @@ make lint     # Run golangci-lint
 ```
 
 ### Running
+
+**Important**: AethonX uses `pflag` library for CLI flags. You MUST use:
+- **Double dash (`--`)** for long flag names: `--target`, `--workers`, `--active`
+- **Single dash (`-`)** for short flags: `-t`, `-w`, `-a`
+
+**Common mistake**: Using `-target` (single dash + long name) will be interpreted as multiple short flags (`-t -a -r -g -e -t`) and produce incorrect results. AethonX detects this mistake and shows a helpful error.
+
 ```bash
-# Basic scan
+# ✓ CORRECT: Basic passive scan
+./aethonx -t example.com
+./aethonx --target example.com
+
+# ❌ WRONG: This will fail with a clear error
 ./aethonx -target example.com
 
-# With JSON output
-./aethonx -target example.com -out.json -out results/
+# Active scan with custom workers
+./aethonx -t example.com -a -w 8
 
-# Custom workers and timeout
-./aethonx -target example.com -workers 8 -timeout 60
+# Quiet mode (JSON only, no table output)
+./aethonx -t example.com -q
+
+# Custom timeout and output directory
+./aethonx -t example.com -T 60 -o results/
+
+# High-volume target with streaming tuning
+./aethonx -t example.com -s 500 -w 8 -T 120
+
+# Using a proxy
+./aethonx -t example.com -p http://proxy:8080
+
+# Disable specific sources
+./aethonx -t example.com --src.crtsh=false --src.rdap=false
 
 # Via make
 make run               # Runs with example.com
 make scan-json         # Runs with JSON output
+
+# Help and version
+./aethonx -h           # Show comprehensive help
+./aethonx -v           # Show version information
+```
+
+**Available Flags** (short and long forms):
+
+**Core Options:**
+- `-t, --target` - Target domain (required)
+- `-a, --active` - Enable active reconnaissance mode
+- `-w, --workers` - Number of concurrent workers (default: 4)
+- `-T, --timeout` - Global timeout in seconds (default: 30, 0=no timeout)
+- `-o, --out` - Output directory (default: "aethonx_out")
+
+**Source Options:**
+- `--src.crtsh` - Enable/disable crt.sh source (default: true)
+- `--src.rdap` - Enable/disable RDAP source (default: true)
+- `--src.httpx` - Enable/disable httpx source (default: true)
+- `--src.<name>.priority` - Set source priority (higher=first)
+
+**Output Options:**
+- `-q, --quiet` - Disable table output, JSON only
+
+**Streaming Options:**
+- `-s, --streaming` - Artifact threshold for partial writes (default: 1000)
+
+**Resilience Options:**
+- `-r, --retries` - Max retries per source (default: 3)
+- `--circuit-breaker` - Enable circuit breaker (default: true)
+
+**Network Options:**
+- `-p, --proxy` - HTTP(S) proxy URL
+
+**Info:**
+- `-v, --version` - Print version and exit
+- `-h, --help` - Show help message
 ```
 
 ## Critical Import Cycle Prevention
@@ -223,14 +283,14 @@ internal/sources/mytool/
 package mytool
 
 type MyTool struct {
-    client httpx.Client
+    client httpclient.Client
     cache  cache.Cache
     logger logx.Logger
 }
 
 func New(logger logx.Logger) ports.Source {
     return &MyTool{
-        client: httpx.NewClient(httpx.DefaultConfig()),
+        client: httpclient.NewClient(httpclient.DefaultConfig()),
         cache:  cache.New(),
         logger: logger.With("source", "mytool"),
     }
@@ -540,6 +600,8 @@ func TestArtifact_Normalize(t *testing.T) {
 
 ## Configuration System
 
+AethonX uses **pflag** library for enhanced CLI flag parsing with support for both short and long flag names.
+
 Configuration is loaded from **ENV variables first**, then **CLI flags** override them.
 
 **Priority**: CLI flags > ENV vars > defaults
@@ -551,26 +613,117 @@ export AETHONX_TARGET=example.com
 export AETHONX_WORKERS=8
 ./aethonx
 
-# Via flags (overrides ENV)
-./aethonx -target example.com -workers 8
+# Via short flags (overrides ENV)
+./aethonx -t example.com -w 8
 
-# Mixed
+# Via long flags (same as short)
+./aethonx --target example.com --workers 8
+
+# Mixed environment and flags
 export AETHONX_TIMEOUT=60
-./aethonx -target example.com -workers 8  # timeout from ENV, others from flags
+./aethonx -t example.com -w 8  # timeout from ENV, others from flags
+
+# Combining multiple short flags
+./aethonx -t example.com -a -w 8 -q  # active, 8 workers, quiet mode
 ```
+
+**Flag Mapping** (short → long):
+- `-t` → `--target`
+- `-a` → `--active`
+- `-w` → `--workers`
+- `-T` → `--timeout` (note: capital T to avoid conflict with -t)
+- `-o` → `--out`
+- `-q` → `--quiet`
+- `-s` → `--streaming`
+- `-r` → `--retries`
+- `-p` → `--proxy`
+- `-v` → `--version`
+- `-h` → `--help`
 
 **Config structure** (`internal/platform/config/config.go`):
+
+The configuration is organized into **6 functional categories** for better organization and maintainability:
+
 ```go
+// Main config structure with categorized sub-configs
 type Config struct {
-    Target       string
-    Active       bool
-    Workers      int
-    TimeoutS     int
-    OutputDir    string
-    Sources      Sources
-    Outputs      Outputs
+    Core       CoreConfig       // Fundamental scan parameters
+    Source     SourceConfig     // Source-specific configurations
+    Output     OutputConfig     // Output-related settings
+    Streaming  StreamingConfig  // Memory management settings
+    Resilience ResilienceConfig // Fault tolerance settings
+    Network    NetworkConfig    // Network-related settings
+}
+
+// === CORE CONFIG ===
+type CoreConfig struct {
+    Target   string // Target domain (required)
+    Active   bool   // Enable active reconnaissance mode
+    Workers  int    // Number of concurrent workers
+    TimeoutS int    // Global timeout in seconds (0 = no timeout)
+}
+
+// === SOURCE CONFIG ===
+type SourceConfig struct {
+    Sources map[string]ports.SourceConfig // Dynamic source configurations
+}
+
+// === OUTPUT CONFIG ===
+type OutputConfig struct {
+    Dir           string // Output directory
+    TableDisabled bool   // Disable table output (JSON always generated)
+}
+
+// === STREAMING CONFIG ===
+type StreamingConfig struct {
+    ArtifactThreshold int // Artifact count threshold for partial disk writes
+}
+
+// === RESILIENCE CONFIG ===
+type ResilienceConfig struct {
+    MaxRetries                int           // Max retries per source
+    BackoffBase               time.Duration // Base backoff duration
+    BackoffMultiplier         float64       // Exponential backoff multiplier
+    CircuitBreakerEnabled     bool          // Enable circuit breaker
+    CircuitBreakerThreshold   int           // Failures before opening circuit
+    CircuitBreakerTimeout     time.Duration // How long circuit stays open
+    CircuitBreakerHalfOpenMax int           // Max requests in half-open state
+}
+
+// === NETWORK CONFIG ===
+type NetworkConfig struct {
+    ProxyURL string // HTTP(S) proxy URL for outbound requests
 }
 ```
+
+**Accessing Configuration Values**:
+```go
+// Core parameters
+target := cfg.Core.Target
+workers := cfg.Core.Workers
+
+// Source configurations
+sources := cfg.Source.Sources
+
+// Output settings
+outputDir := cfg.Output.Dir
+quietMode := cfg.Output.TableDisabled
+
+// Streaming settings
+threshold := cfg.Streaming.ArtifactThreshold
+
+// Resilience settings
+retries := cfg.Resilience.MaxRetries
+
+// Network settings
+proxy := cfg.Network.ProxyURL
+```
+
+**Custom Help System** (`internal/platform/config/help.go`):
+- Categorized help output with examples
+- Includes environment variable documentation
+- Explains passive vs active scanning modes
+- Comprehensive usage examples
 
 ## Deduplication Logic
 
@@ -726,7 +879,7 @@ ls -la aethonx_out/*_partial_*.json
 
 ### Core Platform Modules
 
-**httpx Client** (`internal/platform/httpx/`)
+**httpclient Client** (`internal/platform/httpclient/`)
 - HTTP client with automatic retry logic (exponential backoff)
 - Configurable timeouts, max retries, and backoff delays
 - Context-aware requests for cancellation support
@@ -880,7 +1033,7 @@ To understand the architecture, read in this order:
 
 ### Source Examples
 5. `internal/sources/crtsh/crtsh.go` - Simple passive source example
-6. `internal/sources/rdap/rdap.go` - Advanced source with caching and httpx client
+6. `internal/sources/rdap/rdap.go` - Advanced source with caching and httpclient client
 
 ### Data Processing
 7. `internal/core/usecases/dedupe_service.go` - Deduplication and normalization
@@ -894,7 +1047,7 @@ To understand the architecture, read in this order:
 13. `internal/platform/registry/source_registry.go` - Source registry and factory
 14. `internal/platform/adaptive/streaming_config.go` - Adaptive memory management
 15. `internal/platform/validator/validator.go` - Validation and normalization utilities
-16. `internal/platform/httpx/httpx.go` - HTTP client with retry logic
+16. `internal/platform/httpclient/httpx.go` - HTTP client with retry logic
 
 ## Resilience and Fault Tolerance
 
