@@ -154,7 +154,7 @@ func (p *PTermPresenter) StartSource(stageNum int, sourceName string) {
 
 	// Crear spinner dinámico con brasas pulsantes (temática infernal)
 	// El texto debe ser plano sin colores pre-aplicados para que el spinner pueda actualizarlo
-	spinnerText := fmt.Sprintf("  🔥 Running %s...", sourceName)
+	spinnerText := fmt.Sprintf("  ▸ Running %s...", sourceName)
 
 	spinner, _ := pterm.DefaultSpinner.
 		WithDelay(80 * time.Millisecond).                          // Velocidad más rápida y dinámica
@@ -178,8 +178,9 @@ func (p *PTermPresenter) UpdateSource(sourceName string, artifactCount int) {
 
 			// Actualizar spinner si existe con contador de artifacts (texto plano para que se actualice dinámicamente)
 			if spinner, exists := p.spinners[sourceName]; exists {
-				spinner.UpdateText(fmt.Sprintf("  🔥 Running %s... 💎 %d artifacts",
+				spinner.UpdateText(fmt.Sprintf("  ▸ Running %s... %s %d artifacts",
 					sourceName,
+					IconArtifacts,
 					artifactCount,
 				))
 			}
@@ -235,7 +236,8 @@ func (p *PTermPresenter) FinishStage(stageNum int, duration time.Duration) {
 	}
 
 	pterm.Println()
-	StyleSuccess.Printf("%s Stage %d completed in %s\n", IconSuccess, stageNum, p.formatDuration(duration))
+	completedMsg := fmt.Sprintf("%s Stage %d completed in %s", IconSuccess, stageNum, p.formatDuration(duration))
+	StyleSuccess.Println(completedMsg)
 	StyleSecondary.Println(SeparatorLight)
 	pterm.Println()
 }
@@ -349,7 +351,7 @@ func (p *PTermPresenter) Finish(stats ScanStats) {
 	// Footer con identidad temática
 	StyleSecondary.Print("  AethonX ")
 	StyleSecondary.Print("— Illuminating the Digital Underworld ")
-	StylePrimary.Println("🔥")
+	StylePrimary.Println("▲")
 	pterm.Println()
 }
 

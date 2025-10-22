@@ -76,20 +76,21 @@ func (s Status) Style() pterm.RGBStyle {
 }
 
 // Iconos temáticos - Mitología griega + infierno
+// Usando Unicode + algunos emojis seguros para máxima compatibilidad
 var (
 	// Elementos de navegación y estructura
-	IconTarget    = "▸" // Apuntando al objetivo
-	IconStage     = "🌀" // Vórtice infernal
-	IconInfo      = "💡" // Iluminación
-	IconWarning   = "🔥" // Fuego de advertencia
-	IconError     = "💀" // Muerte/fallo crítico
-	IconSuccess   = "⚡" // Iluminación instantánea
-	IconStats     = "📊" // Estadísticas
-	IconTime      = "⏳" // Arena del tiempo
-	IconArtifacts = "💎" // Tesoros descubiertos
-	IconSources   = "🔮" // Oráculos/fuentes místicas
-	IconWorkers   = "🐴" // Caballos de Helios
-	IconMode      = "🔱" // Tridente de Hades
+	IconTarget    = "►" // Apuntando al objetivo (Unicode seguro)
+	IconStage     = "◈" // Diamante de etapa (Unicode)
+	IconInfo      = "ℹ" // Información (Unicode seguro)
+	IconWarning   = "⚠" // Advertencia (Unicode universal)
+	IconError     = "✖" // Error crítico (Unicode seguro)
+	IconSuccess   = "✓" // Éxito (Unicode universal)
+	IconStats     = "≡" // Estadísticas (Unicode barras)
+	IconTime      = "◷" // Tiempo (Unicode reloj)
+	IconArtifacts = "◆" // Tesoros/diamante (Unicode seguro)
+	IconSources   = "◉" // Fuentes (Unicode círculo)
+	IconWorkers   = "≣" // Workers/procesos (Unicode)
+	IconMode      = "⊕" // Modo (Unicode circled plus)
 )
 
 // Separadores temáticos con caracteres Unicode dobles
