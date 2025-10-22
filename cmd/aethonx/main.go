@@ -48,17 +48,27 @@ func main() {
 		os.Exit(2)
 	}
 
-	// 2. Shared logger
-	logger := logx.New()
+	// 2. Determine UI mode and create appropriate logger
+	// Visual mode (PTerm): Use silent logger (only errors)
+	// Quiet/Debug mode: Use regular logger
+	usingVisualUI := !cfg.Output.QuietMode && !cfg.Output.UIDisabled
 
-	logger.Info("AethonX starting",
-		"version", version,
-		"commit", commit,
-		"date", date,
-		"target", cfg.Core.Target,
-		"active", cfg.Core.Active,
-		"workers", cfg.Core.Workers,
-	)
+	var logger logx.Logger
+	if usingVisualUI {
+		// Visual UI mode: silent logger (only critical errors go to stderr)
+		logger = logx.NewSilent()
+	} else {
+		// Non-visual mode: regular logger respecting AETHONX_LOG_LEVEL
+		logger = logx.New()
+		logger.Info("AethonX starting",
+			"version", version,
+			"commit", commit,
+			"date", date,
+			"target", cfg.Core.Target,
+			"active", cfg.Core.Active,
+			"workers", cfg.Core.Workers,
+		)
+	}
 
 	// 3. Context and signals for clean shutdown
 	ctx, cancel := rootContextWithSignals(cfg.Core.TimeoutS)
@@ -94,24 +104,31 @@ func main() {
 	defer func() {
 		for _, src := range sources {
 			if err := src.Close(); err != nil {
-				logger.Warn("failed to close source",
-					"source", src.Name(),
-					"error", err.Error(),
-				)
+				// Only log cleanup errors if not in visual mode
+				if !usingVisualUI {
+					logger.Warn("failed to close source",
+						"source", src.Name(),
+						"error", err.Error(),
+					)
+				}
 			}
 		}
 	}()
 
-	logger.Info("sources built", "count", len(sources))
+	if !usingVisualUI {
+		logger.Info("sources built", "count", len(sources))
+	}
 
 	// 6. Create streaming writer
 	scanID := fmt.Sprintf("scan-%d", time.Now().Unix())
 	streamingWriter := output.NewStreamingWriter(cfg.Output.Dir, scanID, cfg.Core.Target, logger)
 
-	logger.Info("streaming configured",
-		"threshold", cfg.Streaming.ArtifactThreshold,
-		"output_dir", cfg.Output.Dir,
-	)
+	if !usingVisualUI {
+		logger.Info("streaming configured",
+			"threshold", cfg.Streaming.ArtifactThreshold,
+			"output_dir", cfg.Output.Dir,
+		)
+	}
 
 	// 7. Get source metadata from registry
 	sourceMetadata := registry.Global().GetAllMetadata()
@@ -173,8 +190,8 @@ func main() {
 		}
 	}
 
-	// 12. Summary
-	if result != nil {
+	// 12. Summary (only in non-visual mode)
+	if result != nil && !usingVisualUI {
 		logger.Info("AethonX finished",
 			"elapsed_ms", elapsed.Milliseconds(),
 			"artifacts", result.TotalArtifacts(),

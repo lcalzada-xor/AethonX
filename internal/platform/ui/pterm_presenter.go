@@ -47,35 +47,41 @@ func (p *PTermPresenter) Start(info ScanInfo) {
 	p.totalStages = info.TotalStages
 	p.scanStartTime = time.Now()
 
-	// Header principal
-	pterm.DefaultHeader.
-		WithBackgroundStyle(pterm.NewStyle(pterm.BgCyan)).
-		WithTextStyle(pterm.NewStyle(pterm.FgBlack)).
-		Println("AethonX - Reconnaissance Pipeline")
+	// Header principal con ASCII art del caballo Aethon
+	pterm.Println() // Espacio inicial
 
+	// Banner con colores aplicados correctamente
+	EmberOrange.Println("════════════════════════════════════════════════════════════")
 	pterm.Println()
 
-	// Información del scan
-	pterm.DefaultSection.Println("Scan Configuration")
-
-	infoPanel := pterm.DefaultBox.
-		WithTitle("Target Information").
-		WithTitleTopCenter().
-		WithRightPadding(4).
-		WithLeftPadding(4).
-		WithBoxStyle(pterm.NewStyle(pterm.FgCyan))
-
-	targetInfo := fmt.Sprintf("%s Target: %s\n", IconTarget, pterm.Cyan(info.Target))
-	targetInfo += fmt.Sprintf("   Mode: %s\n", pterm.Yellow(info.Mode))
-	targetInfo += fmt.Sprintf("%s Workers: %d\n", IconWorkers, info.Workers)
-	targetInfo += fmt.Sprintf("%s Timeout: %ds\n", IconTime, info.TimeoutSeconds)
-	targetInfo += fmt.Sprintf("   Streaming: %s\n", p.boolToString(info.StreamingOn))
-	targetInfo += fmt.Sprintf("%s Total Stages: %d", IconStage, info.TotalStages)
-
-	infoPanel.Println(targetInfo)
-
+	StylePrimary.Println("    █████╗ ███████╗████████╗██╗  ██╗ ██████╗ ███╗   ██╗")
+	StylePrimary.Println("   ██╔══██╗██╔════╝╚══██╔══╝██║  ██║██╔═══██╗████╗  ██║")
+	StylePrimary.Println("   ███████║█████╗     ██║   ███████║██║   ██║██╔██╗ ██║")
+	StylePrimary.Println("   ██╔══██║██╔══╝     ██║   ██╔══██║██║   ██║██║╚██╗██║")
+	StylePrimary.Println("   ██║  ██║███████╗   ██║   ██║  ██║╚██████╔╝██║ ╚████║")
+	StylePrimary.Println("   ╚═╝  ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝")
 	pterm.Println()
-	pterm.Println(pterm.LightBlue(SeparatorHeavy))
+
+	// Tagline centrado con color ember
+	EmberOrange.Println("          Illuminating the Digital Underworld")
+	pterm.Println()
+	EmberOrange.Println("════════════════════════════════════════════════════════════")
+	pterm.Println()
+
+	// Información del scan con diseño limpio
+	StylePrimary.Println("▸ SCAN CONFIGURATION")
+	pterm.Println()
+
+	targetInfo := fmt.Sprintf("  %s TARGET      %s\n", IconTarget, StyleText.Sprint(info.Target))
+	targetInfo += fmt.Sprintf("  %s MODE        %s\n", IconMode, StyleAccent.Sprint(info.Mode))
+	targetInfo += fmt.Sprintf("  %s WORKERS     %s\n", IconWorkers, StyleText.Sprintf("%d", info.Workers))
+	targetInfo += fmt.Sprintf("  %s TIMEOUT     %s\n", IconTime, StyleText.Sprintf("%ds", info.TimeoutSeconds))
+	targetInfo += fmt.Sprintf("  %s STREAMING   %s\n", IconInfo, p.boolToString(info.StreamingOn))
+	targetInfo += fmt.Sprintf("  %s STAGES      %s", IconStage, StyleText.Sprintf("%d", info.TotalStages))
+
+	pterm.Println(targetInfo)
+	pterm.Println()
+	StyleSecondary.Println(SeparatorLight)
 	pterm.Println()
 }
 
@@ -105,15 +111,16 @@ func (p *PTermPresenter) StartStage(stage StageInfo) {
 
 	p.stages[stage.Number] = stageProgress
 
-	// Mostrar header del stage
-	stageTitle := fmt.Sprintf("%s Stage %d/%d: %s",
+	// Mostrar header del stage con nuevo diseño
+	stageTitle := fmt.Sprintf("%s STAGE %d/%d: %s",
 		IconStage,
 		stage.Number,
 		stage.TotalStages,
-		pterm.Cyan(stage.Name),
+		stage.Name,
 	)
 
-	pterm.DefaultSection.WithLevel(2).Println(stageTitle)
+	StylePrimary.Println(stageTitle)
+	pterm.Println()
 
 	// Mostrar sources del stage
 	for _, sourceName := range stage.Sources {
@@ -145,14 +152,16 @@ func (p *PTermPresenter) StartSource(stageNum int, sourceName string) {
 	srcProgress.Status = StatusRunning
 	srcProgress.StartTime = time.Now()
 
-	// Crear spinner para este source
+	// Crear spinner dinámico con brasas pulsantes (temática infernal)
+	// El texto debe ser plano sin colores pre-aplicados para que el spinner pueda actualizarlo
+	spinnerText := fmt.Sprintf("  🔥 Running %s...", sourceName)
+
 	spinner, _ := pterm.DefaultSpinner.
-		WithStyle(pterm.NewStyle(pterm.FgCyan)).
-		WithSequence("⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷").
-		Start(fmt.Sprintf("  %s Running %s...",
-			StatusRunning.Symbol(),
-			pterm.Cyan(sourceName),
-		))
+		WithDelay(80 * time.Millisecond).                          // Velocidad más rápida y dinámica
+		WithSequence("◉ ", "◎ ", "◉ ", "◎ ", "○ ", "◎ ").         // Brasas pulsantes con espacios
+		WithStyle(pterm.NewStyle(pterm.FgLightRed, pterm.Bold)).   // Color rojo brillante + bold
+		WithRemoveWhenDone(true).                                  // Limpiar cuando termine
+		Start(spinnerText)
 
 	p.spinners[sourceName] = spinner
 }
@@ -167,12 +176,10 @@ func (p *PTermPresenter) UpdateSource(sourceName string, artifactCount int) {
 		if srcProgress, exists := stage.Sources[sourceName]; exists {
 			srcProgress.ArtifactCount = artifactCount
 
-			// Actualizar spinner si existe
+			// Actualizar spinner si existe con contador de artifacts (texto plano para que se actualice dinámicamente)
 			if spinner, exists := p.spinners[sourceName]; exists {
-				spinner.UpdateText(fmt.Sprintf("  %s Running %s... (%s %d artifacts)",
-					StatusRunning.Symbol(),
-					pterm.Cyan(sourceName),
-					IconArtifacts,
+				spinner.UpdateText(fmt.Sprintf("  🔥 Running %s... 💎 %d artifacts",
+					sourceName,
 					artifactCount,
 				))
 			}
@@ -228,8 +235,8 @@ func (p *PTermPresenter) FinishStage(stageNum int, duration time.Duration) {
 	}
 
 	pterm.Println()
-	pterm.Info.Printf("Stage %d completed in %s\n", stageNum, p.formatDuration(duration))
-	pterm.Println(pterm.Gray(SeparatorLight))
+	StyleSuccess.Printf("%s Stage %d completed in %s\n", IconSuccess, stageNum, p.formatDuration(duration))
+	StyleSecondary.Println(SeparatorLight)
 	pterm.Println()
 }
 
@@ -238,7 +245,7 @@ func (p *PTermPresenter) Info(msg string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	pterm.Info.Println(msg)
+	StyleInfo.Printf("%s %s\n", IconInfo, msg)
 }
 
 // Warning muestra una advertencia
@@ -246,7 +253,7 @@ func (p *PTermPresenter) Warning(msg string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	pterm.Warning.Println(msg)
+	StyleWarning.Printf("%s %s\n", IconWarning, msg)
 }
 
 // Error muestra un error
@@ -254,7 +261,7 @@ func (p *PTermPresenter) Error(msg string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	pterm.Error.Println(msg)
+	StyleError.Printf("%s %s\n", IconError, msg)
 }
 
 // Finish finaliza la presentación con estadísticas finales
@@ -268,60 +275,53 @@ func (p *PTermPresenter) Finish(stats ScanStats) {
 	}
 
 	pterm.Println()
-	pterm.Println(pterm.LightBlue(SeparatorHeavy))
+	EmberOrange.Println(SeparatorHeavy)
 	pterm.Println()
 
-	// Header de resultados
-	pterm.DefaultHeader.
-		WithBackgroundStyle(pterm.NewStyle(pterm.BgGreen)).
-		WithTextStyle(pterm.NewStyle(pterm.FgBlack)).
-		Println("Scan Completed")
-
+	// Header de resultados con diseño impactante
+	StyleSuccess.Print("  ⚡ SCAN COMPLETE")
+	pterm.Println()
 	pterm.Println()
 
-	// Panel de estadísticas
-	statsPanel := pterm.DefaultBox.
-		WithTitle("Scan Statistics").
-		WithTitleTopCenter().
-		WithRightPadding(4).
-		WithLeftPadding(4).
-		WithBoxStyle(pterm.NewStyle(pterm.FgGreen))
+	// Estadísticas con diseño limpio
+	StylePrimary.Println("▸ SCAN RESULTS")
+	pterm.Println()
 
-	statsContent := fmt.Sprintf("%s Total Duration: %s\n",
+	statsContent := fmt.Sprintf("  %s DURATION       %s\n",
 		IconTime,
-		pterm.Green(p.formatDuration(stats.TotalDuration)),
+		StyleSuccess.Sprint(p.formatDuration(stats.TotalDuration)),
 	)
-	statsContent += fmt.Sprintf("%s Total Artifacts: %s\n",
+	statsContent += fmt.Sprintf("  %s ARTIFACTS     %s total, %s unique\n",
 		IconArtifacts,
-		pterm.Cyan(fmt.Sprintf("%d", stats.TotalArtifacts)),
+		StyleAccent.Sprintf("%d", stats.TotalArtifacts),
+		StyleWarning.Sprintf("%d", stats.UniqueArtifacts),
 	)
-	statsContent += fmt.Sprintf("   Unique Artifacts: %s\n",
-		pterm.Yellow(fmt.Sprintf("%d", stats.UniqueArtifacts)),
-	)
-	statsContent += fmt.Sprintf("%s Sources Succeeded: %s\n",
-		IconSuccess,
-		pterm.Green(fmt.Sprintf("%d", stats.SourcesSucceeded)),
+	statsContent += fmt.Sprintf("  %s SOURCES       %s succeeded",
+		IconSources,
+		StyleSuccess.Sprintf("%d", stats.SourcesSucceeded),
 	)
 
 	if stats.SourcesFailed > 0 {
-		statsContent += fmt.Sprintf("%s Sources Failed: %s\n",
-			IconError,
-			pterm.Red(fmt.Sprintf("%d", stats.SourcesFailed)),
+		statsContent += fmt.Sprintf(", %s failed",
+			StyleError.Sprintf("%d", stats.SourcesFailed),
 		)
 	}
+	statsContent += "\n"
 
 	if stats.RelationshipsBuilt > 0 {
-		statsContent += fmt.Sprintf("   Relationships: %s",
-			pterm.Magenta(fmt.Sprintf("%d", stats.RelationshipsBuilt)),
+		statsContent += fmt.Sprintf("  %s RELATIONS     %s\n",
+			IconInfo,
+			StyleInfo.Sprintf("%d", stats.RelationshipsBuilt),
 		)
 	}
 
-	statsPanel.Println(statsContent)
+	pterm.Println(statsContent)
 
 	// Tabla de artifacts por tipo (si hay datos)
 	if len(stats.ArtifactsByType) > 0 {
 		pterm.Println()
-		pterm.DefaultSection.WithLevel(2).Println("Artifacts by Type")
+		StylePrimary.Println("▸ ARTIFACTS BY TYPE")
+		pterm.Println()
 
 		tableData := pterm.TableData{
 			{"Type", "Count"},
@@ -329,18 +329,27 @@ func (p *PTermPresenter) Finish(stats ScanStats) {
 
 		for artifactType, count := range stats.ArtifactsByType {
 			tableData = append(tableData, []string{
-				artifactType,
-				fmt.Sprintf("%d", count),
+				StyleText.Sprint(artifactType),
+				StyleAccent.Sprintf("%d", count),
 			})
 		}
 
 		pterm.DefaultTable.
 			WithHasHeader().
 			WithBoxed().
+			WithHeaderStyle(pterm.NewStyle(pterm.FgLightRed)).
 			WithData(tableData).
 			Render()
 	}
 
+	pterm.Println()
+	StyleSecondary.Println(SeparatorLight)
+	pterm.Println()
+
+	// Footer con identidad temática
+	StyleSecondary.Print("  AethonX ")
+	StyleSecondary.Print("— Illuminating the Digital Underworld ")
+	StylePrimary.Println("🔥")
 	pterm.Println()
 }
 
@@ -361,30 +370,29 @@ func (p *PTermPresenter) Close() error {
 // renderSourceLine renderiza una línea con el estado de un source
 func (p *PTermPresenter) renderSourceLine(sourceName string, status Status, duration time.Duration, artifactCount int) {
 	symbol := status.Symbol()
-	styledName := status.Style().Sprint(sourceName)
+	style := status.Style()
 
-	line := fmt.Sprintf("  %s %s", symbol, styledName)
+	line := fmt.Sprintf("  %s %s", symbol, style.Sprint(sourceName))
 
 	if status == StatusRunning {
-		line += " (running...)"
+		line += style.Sprint(" (running...)")
 	} else if status == StatusPending {
-		line += status.Style().Sprint(" (pending...)")
+		line += style.Sprint(" (pending...)")
 	} else {
 		// Completado con detalles
 		if duration > 0 {
-			line += fmt.Sprintf(" (%s)", p.formatDuration(duration))
+			line += fmt.Sprintf(" %s", StyleSecondary.Sprintf("(%s)", p.formatDuration(duration)))
 		}
 
 		if artifactCount > 0 {
-			line += fmt.Sprintf(" %s %s artifacts",
+			line += fmt.Sprintf(" %s %s",
 				IconArtifacts,
-				pterm.Cyan(fmt.Sprintf("%d", artifactCount)),
+				StyleAccent.Sprintf("%d artifacts", artifactCount),
 			)
 		}
 	}
 
-	// Usar el color apropiado
-	status.Style().Println(line)
+	pterm.Println(line)
 }
 
 // formatDuration formatea una duración de manera legible
@@ -398,7 +406,7 @@ func (p *PTermPresenter) formatDuration(d time.Duration) string {
 // boolToString convierte booleano a string visual
 func (p *PTermPresenter) boolToString(b bool) string {
 	if b {
-		return pterm.Green("ON")
+		return StyleSuccess.Sprint("ON")
 	}
-	return pterm.Gray("OFF")
+	return StyleSecondary.Sprint("OFF")
 }

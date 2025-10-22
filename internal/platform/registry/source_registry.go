@@ -171,7 +171,8 @@ func (r *SourceRegistry) Build(configs map[string]ports.SourceConfig, logger log
 		return nil, fmt.Errorf("no sources could be built")
 	}
 
-	r.logger.Info("sources built", "count", len(sources), "requested", len(configs))
+	// Use the provided logger (respects visual mode) instead of registry's logger
+	logger.Info("sources built", "count", len(sources), "requested", len(configs))
 	return sources, nil
 }
 

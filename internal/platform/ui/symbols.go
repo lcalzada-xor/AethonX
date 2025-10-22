@@ -35,68 +35,86 @@ func (s Status) String() string {
 	}
 }
 
-// Symbol retorna el símbolo Unicode para cada estado
+// Symbol retorna el símbolo Unicode para cada estado (temática infernal)
 func (s Status) Symbol() string {
 	switch s {
 	case StatusPending:
-		return "⏸"
+		return "○" // Luna nueva (oscuridad, esperando)
 	case StatusRunning:
-		return "⣾"
+		return "◉" // Brasa ardiendo (será animado)
 	case StatusSuccess:
-		return "✓"
+		return "⚡" // Rayo de iluminación
 	case StatusWarning:
-		return "⚠"
+		return "🔶" // Advertencia flamígera
 	case StatusError:
-		return "✗"
+		return "✖" // Cruz de muerte
 	case StatusSkipped:
-		return "⊘"
+		return "〰" // Río Aqueronte (omitido)
 	default:
 		return "?"
 	}
 }
 
-// Color retorna el color pterm para cada estado
-func (s Status) Color() pterm.Color {
+// Style retorna un pterm.RGBStyle configurado para el estado
+func (s Status) Style() pterm.RGBStyle {
 	switch s {
 	case StatusPending:
-		return pterm.FgGray
+		return StyleSecondary
 	case StatusRunning:
-		return pterm.FgCyan
+		return StyleActive
 	case StatusSuccess:
-		return pterm.FgGreen
+		return StyleSuccess
 	case StatusWarning:
-		return pterm.FgYellow
+		return StyleWarning
 	case StatusError:
-		return pterm.FgRed
+		return StyleError
 	case StatusSkipped:
-		return pterm.FgGray
+		return StyleSecondary
 	default:
-		return pterm.FgDefault
+		return StyleText
 	}
 }
 
-// Style retorna un pterm.Style configurado para el estado
-func (s Status) Style() *pterm.Style {
-	return pterm.NewStyle(s.Color())
-}
-
-// Icons globales para diferentes elementos de la UI
+// Iconos temáticos - Mitología griega + infierno
 var (
-	IconTarget    = "🎯"
-	IconStage     = "🔄"
-	IconInfo      = "ℹ"
-	IconWarning   = "⚠"
-	IconError     = "✗"
-	IconSuccess   = "✓"
-	IconStats     = "📊"
-	IconTime      = "⏱"
-	IconArtifacts = "📦"
-	IconSources   = "🔌"
-	IconWorkers   = "⚙️"
+	// Elementos de navegación y estructura
+	IconTarget    = "▸" // Apuntando al objetivo
+	IconStage     = "🌀" // Vórtice infernal
+	IconInfo      = "💡" // Iluminación
+	IconWarning   = "🔥" // Fuego de advertencia
+	IconError     = "💀" // Muerte/fallo crítico
+	IconSuccess   = "⚡" // Iluminación instantánea
+	IconStats     = "📊" // Estadísticas
+	IconTime      = "⏳" // Arena del tiempo
+	IconArtifacts = "💎" // Tesoros descubiertos
+	IconSources   = "🔮" // Oráculos/fuentes místicas
+	IconWorkers   = "🐴" // Caballos de Helios
+	IconMode      = "🔱" // Tridente de Hades
 )
 
-// Separadores y bordes
+// Separadores temáticos con caracteres Unicode dobles
 var (
-	SeparatorHeavy = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	SeparatorLight = "────────────────────────────────────────────"
+	// SeparatorHeavy - Separador principal (estilo infernal)
+	SeparatorHeavy = "════════════════════════════════════════════════════════════"
+
+	// SeparatorLight - Separador secundario
+	SeparatorLight = "────────────────────────────────────────────────────────────"
+
+	// SeparatorFlame - Separador con efecto de llama
+	SeparatorFlame = "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰"
+)
+
+// Caracteres de borde para boxes (estilo double-line Unicode)
+var (
+	BorderTopLeft     = "╔"
+	BorderTopRight    = "╗"
+	BorderBottomLeft  = "╚"
+	BorderBottomRight = "╝"
+	BorderHorizontal  = "═"
+	BorderVertical    = "║"
+	BorderTeeDown     = "╦"
+	BorderTeeUp       = "╩"
+	BorderTeeRight    = "╠"
+	BorderTeeLeft     = "╣"
+	BorderCross       = "╬"
 )

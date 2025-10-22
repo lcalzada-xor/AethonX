@@ -40,6 +40,9 @@ type PipelineOrchestrator struct {
 
 	// UI Presenter para visualización del progreso
 	presenter ui.Presenter
+
+	// stageResults almacena resultados de todos los stages para estadísticas
+	stageResults []StageResult
 }
 
 // PipelineOrchestratorOptions configura el pipeline orchestrator.
@@ -132,6 +135,9 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		return nil, domain.ErrNoSourcesAvailable
 	}
 
+	// Resetear stageResults para esta ejecución
+	p.stageResults = nil
+
 	p.logger.Info("starting pipeline execution",
 		"target", target.Root,
 		"mode", target.Mode,
@@ -213,6 +219,9 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 			"successful_sources", stageResult.SuccessfulSources(),
 			"failed_sources", stageResult.FailedSources(),
 		)
+
+		// Almacenar resultado del stage para estadísticas
+		p.stageResults = append(p.stageResults, *stageResult)
 
 		// Notificar finalización de stage al presenter
 		p.presenter.FinishStage(i+1, stageDuration)
@@ -309,13 +318,16 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		artifactsByType[string(artifact.Type)]++
 	}
 
+	// Calcular sources succeeded/failed de los resultados reales
 	sourcesSucceeded := 0
 	sourcesFailed := 0
-	for _, stage := range stages {
-		for range stage.Sources {
-			// Aquí simplificamos: asumimos que sources que retornan resultados son exitosos
-			// En una implementación más completa, se rastrearían los estados de cada source
-			sourcesSucceeded++
+	for _, stageResult := range p.stageResults {
+		for _, sourceResult := range stageResult.SourceResults {
+			if sourceResult.Error == nil {
+				sourcesSucceeded++
+			} else {
+				sourcesFailed++
+			}
 		}
 	}
 

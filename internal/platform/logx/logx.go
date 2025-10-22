@@ -25,6 +25,7 @@ type Logger interface {
 	Warn(msg string, kv ...any)
 	Err(err error, kv ...any)
 	With(kv ...any) Logger
+	SetLevel(lvl Level)
 }
 
 type simpleLogger struct {
@@ -42,10 +43,30 @@ func New() Logger {
 	return l
 }
 
+// NewWithLevel creates a logger with a specific log level
+func NewWithLevel(lvl Level) Logger {
+	l := &simpleLogger{
+		lvl: lvl,
+		lg:  log.New(os.Stderr, "", 0),
+	}
+	return l
+}
+
+// NewSilent creates a logger that only outputs errors (silent mode for UI)
+func NewSilent() Logger {
+	return NewWithLevel(LevelError)
+}
+
 func (s *simpleLogger) With(kv ...any) Logger {
 	clone := *s
 	clone.scope = append(append([]string{}, s.scope...), kvPairs(kv...)...)
 	return &clone
+}
+
+func (s *simpleLogger) SetLevel(lvl Level) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lvl = lvl
 }
 
 func (s *simpleLogger) Debug(msg string, kv ...any) { s.log(LevelDebug, "DBG", msg, kv...) }
