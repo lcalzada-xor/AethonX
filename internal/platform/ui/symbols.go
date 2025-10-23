@@ -119,3 +119,26 @@ var (
 	BorderTeeLeft     = "╣"
 	BorderCross       = "╬"
 )
+
+// Progress bar characters
+var (
+	ProgressFull  = "█"
+	ProgressEmpty = "░"
+	ProgressTip   = "▶"
+)
+
+// Spinner sequences temáticas
+var SpinnerSequences = map[string][]string{
+	"ember":   {"◉", "◎", "○", "◎"},                     // Brasas pulsantes (default)
+	"flame":   {"▰", "▱", "▰", "▱"},                     // Llama oscilante
+	"pulse":   {"●", "◉", "○", "◉"},                     // Pulso
+	"scroll":  {"◐", "◓", "◑", "◒"},                     // Pergamino girando
+}
+
+// GetSpinnerSequence obtiene la secuencia de spinner por nombre
+func GetSpinnerSequence(name string) []string {
+	if seq, exists := SpinnerSequences[name]; exists {
+		return seq
+	}
+	return SpinnerSequences["ember"] // Default
+}

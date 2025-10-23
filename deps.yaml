@@ -1,0 +1,33 @@
+# AethonX Dependencies Configuration
+# This file defines all required dependencies for AethonX
+
+go:
+  min_version: "1.24.0"
+  modules_required: true
+
+external_tools:
+  - name: httpx
+    description: "Project Discovery's HTTP probing tool"
+    required: true
+    type: binary
+    install:
+      github:
+        repo: projectdiscovery/httpx
+        asset_patterns:
+          linux_amd64: "httpx_*_linux_amd64.zip"
+          linux_arm64: "httpx_*_linux_arm64.zip"
+          darwin_amd64: "httpx_*_macOS_amd64.zip"
+          darwin_arm64: "httpx_*_macOS_arm64.zip"
+          windows_amd64: "httpx_*_windows_amd64.zip"
+        binary_name: "httpx"
+    health_check:
+      command: "httpx"
+      args: ["-version"]
+      expected_contains: "Current Version"
+    min_version: "1.6.0"
+
+# External binary tools install directory (httpx, etc.)
+install_directory: "$HOME/go/bin"
+add_to_path: true
+
+# Go will automatically install to $GOPATH/bin or $HOME/go/bin

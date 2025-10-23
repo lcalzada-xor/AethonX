@@ -40,6 +40,7 @@ type PipelineOrchestrator struct {
 
 	// UI Presenter para visualización del progreso
 	presenter ui.Presenter
+	uiConfig  UIConfig
 
 	// stageResults almacena resultados de todos los stages para estadísticas
 	stageResults []StageResult
@@ -55,6 +56,15 @@ type PipelineOrchestratorOptions struct {
 	StreamingWriter StreamingWriter
 	StreamingConfig StreamingConfig
 	Presenter       ui.Presenter
+	UIConfig        UIConfig
+}
+
+// UIConfig contiene configuración de UI
+type UIConfig struct {
+	Mode        ui.UIMode
+	ShowMetrics bool
+	ShowPhases  bool
+	TimeoutS    int
 }
 
 // NewPipelineOrchestrator crea una nueva instancia del pipeline orchestrator.
@@ -83,6 +93,7 @@ func NewPipelineOrchestrator(opts PipelineOrchestratorOptions) *PipelineOrchestr
 		streamingWriter: opts.StreamingWriter,
 		streamingConfig: opts.StreamingConfig,
 		presenter:       opts.Presenter,
+		uiConfig:        opts.UIConfig,
 	}
 }
 
@@ -156,9 +167,12 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		Target:         target.Root,
 		Mode:           string(target.Mode),
 		Workers:        p.maxWorkers,
-		TimeoutSeconds: int(p.streamingConfig.ArtifactThreshold),
+		TimeoutSeconds: p.uiConfig.TimeoutS,
 		StreamingOn:    p.streamingWriter != nil,
 		TotalStages:    len(stages),
+		UIMode:         p.uiConfig.Mode,
+		ShowMetrics:    p.uiConfig.ShowMetrics,
+		ShowPhases:     p.uiConfig.ShowPhases,
 	})
 	defer p.presenter.Close()
 
@@ -575,7 +589,12 @@ func (p *PipelineOrchestrator) listenToProgress(ctx context.Context, source port
 		case <-ticker.C:
 			// Emitir actualización con debouncing solo si hay cambios
 			if lastUpdate.ArtifactCount > 0 && lastUpdate.ArtifactCount != lastEmitted {
-				p.presenter.UpdateSource(sourceName, lastUpdate.ArtifactCount)
+				p.presenter.UpdateSource(sourceName, ui.ProgressMetrics{
+					Current:    lastUpdate.ArtifactCount,
+					Total:      0, // Indeterminado
+					Percentage: -1,
+					Phase:      lastUpdate.Message,
+				})
 				p.logger.Debug("progress update",
 					"source", sourceName,
 					"artifacts", lastUpdate.ArtifactCount,
@@ -587,7 +606,12 @@ func (p *PipelineOrchestrator) listenToProgress(ctx context.Context, source port
 		case <-done:
 			// Source terminó, emitir última actualización si hay
 			if lastUpdate.ArtifactCount > 0 && lastUpdate.ArtifactCount != lastEmitted {
-				p.presenter.UpdateSource(sourceName, lastUpdate.ArtifactCount)
+				p.presenter.UpdateSource(sourceName, ui.ProgressMetrics{
+					Current:    lastUpdate.ArtifactCount,
+					Total:      0,
+					Percentage: -1,
+					Phase:      lastUpdate.Message,
+				})
 			}
 			return
 

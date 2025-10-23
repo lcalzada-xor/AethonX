@@ -2,6 +2,7 @@
 
 # Variables
 BINARY_NAME=aethonx
+INSTALLER_NAME=install-deps
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
 DATE=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -9,6 +10,7 @@ LDFLAGS=-ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.da
 
 # Paths
 CMD_PATH=./cmd/aethonx
+INSTALLER_PATH=./cmd/install-deps
 BUILD_DIR=./build
 
 # Colors for output
@@ -42,6 +44,19 @@ install: build ## Install binary to $GOPATH/bin
 	@echo "$(GREEN)Installing $(BINARY_NAME)...$(NC)"
 	@go install $(LDFLAGS) $(CMD_PATH)
 	@echo "$(GREEN)✓ Installed to $(shell go env GOPATH)/bin/$(BINARY_NAME)$(NC)"
+
+build-installer: ## Build the dependency installer
+	@echo "$(GREEN)Building $(INSTALLER_NAME)...$(NC)"
+	@go build -o $(INSTALLER_NAME) $(INSTALLER_PATH)
+	@echo "$(GREEN)✓ Build complete: ./$(INSTALLER_NAME)$(NC)"
+
+install-deps: build-installer ## Install all AethonX dependencies
+	@echo "$(GREEN)Installing AethonX dependencies...$(NC)"
+	@./$(INSTALLER_NAME)
+
+check-deps: build-installer ## Check AethonX dependencies status
+	@echo "$(GREEN)Checking AethonX dependencies...$(NC)"
+	@./$(INSTALLER_NAME) --check
 
 test: ## Run tests
 	@echo "$(GREEN)Running tests...$(NC)"
@@ -97,7 +112,7 @@ tidy: ## Tidy go modules
 
 clean: ## Clean build artifacts
 	@echo "$(GREEN)Cleaning...$(NC)"
-	@rm -rf $(BINARY_NAME) $(BUILD_DIR) coverage.out coverage.html aethonx_out/
+	@rm -rf $(BINARY_NAME) $(INSTALLER_NAME) $(BUILD_DIR) coverage.out coverage.html aethonx_out/
 	@echo "$(GREEN)✓ Clean complete$(NC)"
 
 run: build ## Build and run with example

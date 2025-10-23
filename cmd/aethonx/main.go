@@ -159,6 +159,12 @@ func main() {
 			OutputDir:         cfg.Output.Dir,
 		},
 		Presenter: presenter,
+		UIConfig: usecases.UIConfig{
+			Mode:        ui.UIMode(cfg.Output.UIMode),
+			ShowMetrics: cfg.Output.ShowMetrics,
+			ShowPhases:  cfg.Output.ShowPhases,
+			TimeoutS:    cfg.Core.TimeoutS,
+		},
 	})
 
 	// 10. Execute scan workflow

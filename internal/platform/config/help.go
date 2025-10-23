@@ -37,15 +37,22 @@ ADVANCED
       --no-ui              Disable visual UI, use plain logs
       --circuit-breaker    Enable circuit breaker (default: true)
 
+UI OPTIONS
+      --ui-mode <mode>     UI mode: compact (default), dashboard, minimal
+      --show-metrics       Show system metrics (CPU, memory, goroutines)
+      --show-phases        Show execution phases for each source
+
 INFO
   -h, --help               Show this help
   -v, --version            Version information
 
 EXAMPLES
-  aethonx -t example.com                    # Passive scan
-  aethonx -t example.com -a -w 8            # Active scan, 8 workers
-  aethonx -t example.com -q                 # Quiet mode (CI/CD)
-  aethonx -t example.com --src.httpx=false  # Disable httpx source
+  aethonx -t example.com                        # Passive scan (compact UI)
+  aethonx -t example.com -a -w 8                # Active scan, 8 workers
+  aethonx -t example.com -q                     # Quiet mode (CI/CD)
+  aethonx -t example.com --src.httpx=false      # Disable httpx source
+  aethonx -t example.com --ui-mode=dashboard    # Full dashboard with metrics
+  aethonx -t example.com --show-metrics         # Show system resource usage
 
 ENVIRONMENT VARIABLES
   All flags support AETHONX_ prefix: AETHONX_TARGET, AETHONX_ACTIVE, etc.

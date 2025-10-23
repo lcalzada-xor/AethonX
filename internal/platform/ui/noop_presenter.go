@@ -25,11 +25,17 @@ func (n *NoopPresenter) FinishStage(stageNum int, duration time.Duration) {}
 func (n *NoopPresenter) StartSource(stageNum int, sourceName string) {}
 
 // UpdateSource no hace nada
-func (n *NoopPresenter) UpdateSource(sourceName string, artifactCount int) {}
+func (n *NoopPresenter) UpdateSource(sourceName string, metrics ProgressMetrics) {}
+
+// UpdateSourcePhase no hace nada
+func (n *NoopPresenter) UpdateSourcePhase(sourceName string, phase string) {}
 
 // FinishSource no hace nada
 func (n *NoopPresenter) FinishSource(sourceName string, status Status, duration time.Duration, artifactCount int) {
 }
+
+// UpdateDiscoveries no hace nada
+func (n *NoopPresenter) UpdateDiscoveries(discoveries DiscoveryStats) {}
 
 // Info no hace nada
 func (n *NoopPresenter) Info(msg string) {}

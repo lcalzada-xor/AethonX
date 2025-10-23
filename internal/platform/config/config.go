@@ -42,9 +42,12 @@ type SourceConfig struct {
 
 // OutputConfig contains output-related settings.
 type OutputConfig struct {
-	Dir        string // Output directory
-	QuietMode  bool   // Quiet mode (no visual output, JSON only)
-	UIDisabled bool   // Disable visual UI (use simple text logs)
+	Dir         string // Output directory
+	QuietMode   bool   // Quiet mode (no visual output, JSON only)
+	UIDisabled  bool   // Disable visual UI (use simple text logs)
+	UIMode      string // UI mode: compact, dashboard, minimal (default: compact)
+	ShowMetrics bool   // Show system metrics (CPU, memory, etc.)
+	ShowPhases  bool   // Show execution phases for each source
 }
 
 // StreamingConfig contains memory management settings.
@@ -116,9 +119,12 @@ func DefaultConfig() Config {
 		},
 
 		Output: OutputConfig{
-			Dir:        "aethonx_out",
-			QuietMode:  false,
-			UIDisabled: false,
+			Dir:         "aethonx_out",
+			QuietMode:   false,
+			UIDisabled:  false,
+			UIMode:      "compact",
+			ShowMetrics: false,
+			ShowPhases:  false,
 		},
 
 		Streaming: StreamingConfig{
@@ -182,6 +188,15 @@ func loadFromEnv(cfg *Config) {
 	}
 	if v := getenv("AETHONX_UI_DISABLED", ""); v != "" {
 		cfg.Output.UIDisabled = parseBool(v)
+	}
+	if v := getenv("AETHONX_UI_MODE", ""); v != "" {
+		cfg.Output.UIMode = v
+	}
+	if v := getenv("AETHONX_SHOW_METRICS", ""); v != "" {
+		cfg.Output.ShowMetrics = parseBool(v)
+	}
+	if v := getenv("AETHONX_SHOW_PHASES", ""); v != "" {
+		cfg.Output.ShowPhases = parseBool(v)
 	}
 
 	// === NETWORK CONFIG ===
@@ -281,6 +296,12 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 		"Quiet mode (JSON only, no visual output)")
 	pflag.BoolVar(&cfg.Output.UIDisabled, "no-ui", cfg.Output.UIDisabled,
 		"Disable visual UI (use simple text logs)")
+	pflag.StringVar(&cfg.Output.UIMode, "ui-mode", cfg.Output.UIMode,
+		"UI mode: compact (default), dashboard, minimal")
+	pflag.BoolVar(&cfg.Output.ShowMetrics, "show-metrics", cfg.Output.ShowMetrics,
+		"Show system metrics (CPU, memory, goroutines)")
+	pflag.BoolVar(&cfg.Output.ShowPhases, "show-phases", cfg.Output.ShowPhases,
+		"Show execution phases for each source")
 
 	// === STREAMING FLAGS ===
 	pflag.IntVarP(&cfg.Streaming.ArtifactThreshold, "streaming", "s", cfg.Streaming.ArtifactThreshold,
