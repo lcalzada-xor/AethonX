@@ -42,12 +42,21 @@ type AdvancedSource interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// ProgressUpdate representa una actualización de progreso durante la ejecución de un source.
+type ProgressUpdate struct {
+	ArtifactCount int    // Número actual de artifacts descubiertos
+	Message       string // Mensaje opcional de estado
+}
+
 // StreamingSource permite a las fuentes emitir artefactos en tiempo real.
 type StreamingSource interface {
 	Source
 
 	// Stream ejecuta la fuente y emite artefactos a medida que los descubre
 	Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error)
+
+	// ProgressChannel retorna un canal para emitir actualizaciones de progreso
+	ProgressChannel() <-chan ProgressUpdate
 }
 
 // RateLimitedSource indica que la fuente implementa rate limiting.

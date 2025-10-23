@@ -52,8 +52,9 @@ func init() {
 // CRT implementa una fuente que consulta la base de datos crt.sh
 // para descubrir certificados SSL/TLS y subdominios asociados.
 type CRT struct {
-	client httpclient.Client
-	logger logx.Logger
+	client     httpclient.Client
+	logger     logx.Logger
+	progressCh chan ports.ProgressUpdate
 }
 
 // New crea una nueva instancia de la fuente crt.sh con resilience completa.
@@ -70,8 +71,9 @@ func New(logger logx.Logger) ports.Source {
 	}
 
 	return &CRT{
-		client: *httpclient.New(httpConfig, logger),
-		logger: logger.With("source", "crtsh"),
+		client:     *httpclient.New(httpConfig, logger),
+		logger:     logger.With("source", "crtsh"),
+		progressCh: make(chan ports.ProgressUpdate, 10), // Buffered channel
 	}
 }
 
@@ -119,8 +121,8 @@ func (c *CRT) Run(ctx context.Context, target domain.Target) (*domain.ScanResult
 
 	c.logger.Debug("parsed crtsh records", "count", len(records))
 
-	// Procesar records y extraer subdominios
-	artifacts := c.processRecords(records, target)
+	// Procesar records y extraer subdominios CON PROGRESO INCREMENTAL
+	artifacts := c.processRecordsWithProgress(ctx, records, target)
 
 	// Añadir artifacts al resultado
 	for _, a := range artifacts {
@@ -135,11 +137,21 @@ func (c *CRT) Run(ctx context.Context, target domain.Target) (*domain.ScanResult
 	return result, nil
 }
 
-// processRecords procesa los registros de certificados y extrae artifacts.
-func (c *CRT) processRecords(records []certRecord, target domain.Target) []*domain.Artifact {
+// processRecordsWithProgress procesa los registros de certificados y extrae artifacts
+// emitiendo actualizaciones de progreso en tiempo real.
+func (c *CRT) processRecordsWithProgress(ctx context.Context, records []certRecord, target domain.Target) []*domain.Artifact {
 	artifacts := make([]*domain.Artifact, 0)
+	artifactCount := 0
 
 	for _, record := range records {
+		// Verificar cancelación de contexto
+		select {
+		case <-ctx.Done():
+			c.logger.Debug("processRecords cancelled by context")
+			return artifacts
+		default:
+		}
+
 		// name_value puede contener múltiples dominios separados por \n
 		hosts := strings.Split(record.NameValue, "\n")
 
@@ -156,9 +168,9 @@ func (c *CRT) processRecords(records []certRecord, target domain.Target) []*doma
 
 			// Crear metadata de certificado
 			certMeta := &metadata.CertificateMetadata{
-				IssuerCN:    record.IssuerName,
-				ValidUntil:  record.NotAfter,
-				ValidFrom:   record.NotBefore,
+				IssuerCN:     record.IssuerName,
+				ValidUntil:   record.NotAfter,
+				ValidFrom:    record.NotBefore,
 				SerialNumber: record.SerialNumber,
 			}
 
@@ -200,10 +212,53 @@ func (c *CRT) processRecords(records []certRecord, target domain.Target) []*doma
 
 			artifacts = append(artifacts, artifact)
 			artifacts = append(artifacts, certArtifact)
+			artifactCount += 2
+
+			// Emitir progreso (non-blocking)
+			select {
+			case c.progressCh <- ports.ProgressUpdate{
+				ArtifactCount: artifactCount,
+				Message:       fmt.Sprintf("Processing %s", host),
+			}:
+			default:
+				// Canal lleno, skip update para no bloquear
+			}
 		}
 	}
 
 	return artifacts
+}
+
+// ProgressChannel implementa ports.StreamingSource
+func (c *CRT) ProgressChannel() <-chan ports.ProgressUpdate {
+	return c.progressCh
+}
+
+// Stream implementa ports.StreamingSource (no usado actualmente pero requerido por interfaz)
+func (c *CRT) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
+	artifactCh := make(chan *domain.Artifact, 100)
+	errorCh := make(chan error, 1)
+
+	go func() {
+		defer close(artifactCh)
+		defer close(errorCh)
+
+		result, err := c.Run(ctx, target)
+		if err != nil {
+			errorCh <- err
+			return
+		}
+
+		for _, artifact := range result.Artifacts {
+			select {
+			case artifactCh <- artifact:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return artifactCh, errorCh
 }
 
 // Close implements ports.Source

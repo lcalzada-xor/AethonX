@@ -7,119 +7,49 @@ import (
 	"runtime"
 )
 
-const helpText = `
-AethonX - Modular Reconnaissance Engine
+const helpText = `AethonX - Modular Reconnaissance Engine
 
-USAGE:
+USAGE
   aethonx -t <domain> [options]
 
-IMPORTANT:
-  Use double dash (--) for long flag names: --target, --workers, --active
-  Use single dash (-) for short flags: -t, -w, -a
+  Note: Use double dash (--) for long flags, single dash (-) for short flags
+        Example: --target or -t (not -target)
 
-  ❌ WRONG:  aethonx -target example.com
-  ✓  RIGHT:  aethonx --target example.com
-  ✓  RIGHT:  aethonx -t example.com
+CORE OPTIONS
+  -t, --target <domain>    Target domain (required)
+  -a, --active             Active reconnaissance mode (default: passive)
+  -w, --workers <int>      Concurrent workers (default: 4)
+  -o, --out <path>         Output directory (default: aethonx_out)
+  -q, --quiet              JSON only, no visual UI
 
-CORE OPTIONS:
-  -t, --target string      Target domain (required, e.g., example.com)
-  -a, --active             Enable active reconnaissance mode (default: false)
-  -w, --workers int        Number of concurrent workers (default: 4)
-  -T, --timeout int        Global timeout in seconds, 0=no timeout (default: 30)
-  -o, --out string         Output directory (default: "aethonx_out")
+SOURCES
+  --src.crtsh              Certificate Transparency logs (default: enabled)
+  --src.rdap               RDAP/WHOIS queries (default: enabled)
+  --src.httpx              HTTP probing (default: enabled)
 
-SOURCE OPTIONS:
-  --src.crtsh                  Enable crt.sh certificate transparency source (default: true)
-  --src.crtsh.priority int     Set crt.sh priority (default: 10)
+  Disable with: --src.<name>=false
 
-  --src.rdap                   Enable RDAP WHOIS source (default: true)
-  --src.rdap.priority int      Set RDAP priority (default: 8)
+ADVANCED
+  -T, --timeout <sec>      Global timeout in seconds (default: 30, 0=none)
+  -s, --streaming <int>    Memory threshold for disk writes (default: 1000)
+  -r, --retries <int>      Max retries per source (default: 3)
+  -p, --proxy <url>        HTTP/S proxy URL
+      --no-ui              Disable visual UI, use plain logs
+      --circuit-breaker    Enable circuit breaker (default: true)
 
-  --src.httpx                  Enable httpx active probing source (default: true)
-  --src.httpx.priority int     Set httpx priority (default: 15)
+INFO
+  -h, --help               Show this help
+  -v, --version            Version information
 
-OUTPUT OPTIONS:
-  -q, --quiet              Quiet mode: no visual UI, JSON only (default: false)
-  --no-ui                  Disable visual UI, use simple text logs (default: false)
+EXAMPLES
+  aethonx -t example.com                    # Passive scan
+  aethonx -t example.com -a -w 8            # Active scan, 8 workers
+  aethonx -t example.com -q                 # Quiet mode (CI/CD)
+  aethonx -t example.com --src.httpx=false  # Disable httpx source
 
-STREAMING OPTIONS:
-  -s, --streaming int      Artifact threshold for partial disk writes (default: 1000)
-                           Higher values = more memory usage, fewer disk writes
-
-RESILIENCE OPTIONS:
-  -r, --retries int        Max retries per source on failure (default: 3)
-  --circuit-breaker        Enable circuit breaker for failing sources (default: true)
-
-NETWORK OPTIONS:
-  -p, --proxy string       HTTP(S) proxy URL for outbound requests (optional)
-
-INFO:
-  -v, --version            Print version information and exit
-  -h, --help               Show this help message
-
-EXAMPLES:
-  Basic passive scan:
-    aethonx -t example.com
-
-  Active scan with custom workers:
-    aethonx -t example.com -a -w 8
-
-  Quiet mode (no visual UI, JSON only):
-    aethonx -t example.com -q
-
-  Disable visual UI (use simple logs):
-    aethonx -t example.com --no-ui
-
-  High-volume target with streaming tuning:
-    aethonx -t example.com -s 500 -w 8 -T 120
-
-  Using a proxy:
-    aethonx -t example.com -p http://proxy.example.com:8080
-
-  Disable specific sources:
-    aethonx -t example.com --src.crtsh=false --src.rdap=false
-
-ENVIRONMENT VARIABLES:
-  Most flags can be set via environment variables with AETHONX_ prefix:
-
-  AETHONX_TARGET                    Target domain
-  AETHONX_ACTIVE=true               Enable active mode
-  AETHONX_WORKERS=8                 Number of workers
-  AETHONX_TIMEOUT=60                Timeout in seconds
-  AETHONX_OUTPUT_DIR=/path          Output directory
-  AETHONX_STREAMING_THRESHOLD=500   Streaming threshold
-  AETHONX_RESILIENCE_MAX_RETRIES=5  Max retries
-  AETHONX_PROXY_URL=http://...      Proxy URL
-
-  Source-specific (replace CRTSH with source name):
-  AETHONX_SOURCES_CRTSH_ENABLED=false
-  AETHONX_SOURCES_CRTSH_PRIORITY=20
-
-  Note: CLI flags override environment variables.
-
-SCAN MODES:
-  Passive Mode (default):
-    - No direct contact with target infrastructure
-    - Queries public data sources (crt.sh, RDAP, etc.)
-    - Safe for stealth reconnaissance
-
-  Active Mode (-a, --active):
-    - Direct probing of target infrastructure
-    - HTTP requests, port scanning, service detection
-    - May trigger IDS/IPS alerts and logging
-
-OUTPUT:
-  AethonX generates multiple outputs:
-  - Visual UI with spinners, colors, and progress tracking (default)
-  - JSON files with full scan results, artifacts, and relationships
-  - Partial streaming files for large datasets (auto-cleanup)
-  - Table output to stdout (unless --quiet)
-
-  Use --quiet for headless/CI environments (JSON only)
-  Use --no-ui for simple text logs without visual interface
-
-For more information and documentation:
-  https://github.com/yourusername/aethonx
+ENVIRONMENT VARIABLES
+  All flags support AETHONX_ prefix: AETHONX_TARGET, AETHONX_ACTIVE, etc.
+  CLI flags override environment variables.
 `
 
 // PrintHelp prints the custom help message and exits.

@@ -434,6 +434,13 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 	var result *domain.ScanResult
 	var err error
 
+	// Verificar si la source implementa StreamingSource para escuchar progreso
+	var progressDone chan struct{}
+	if streamingSource, ok := source.(ports.StreamingSource); ok {
+		progressDone = make(chan struct{})
+		go p.listenToProgress(ctx, streamingSource, sourceName, progressDone)
+	}
+
 	// Verificar si la source implementa InputConsumer
 	if consumer, ok := source.(ports.InputConsumer); ok {
 		// Filtrar artifacts según InputArtifacts declarados
@@ -442,6 +449,11 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 	} else {
 		// Fallback: ejecutar sin inputs (source legacy)
 		result, err = source.Run(ctx, inputArtifacts.Target)
+	}
+
+	// Detener goroutine de progreso si existe
+	if progressDone != nil {
+		close(progressDone)
 	}
 
 	duration := time.Since(startTime)
@@ -538,6 +550,52 @@ func (p *PipelineOrchestrator) filterInputArtifacts(source ports.Source, input *
 	)
 
 	return filtered
+}
+
+// listenToProgress escucha el canal de progreso de un StreamingSource y actualiza el presenter.
+func (p *PipelineOrchestrator) listenToProgress(ctx context.Context, source ports.StreamingSource, sourceName string, done chan struct{}) {
+	progressCh := source.ProgressChannel()
+	ticker := time.NewTicker(100 * time.Millisecond) // Debouncing: actualizar cada 100ms
+	defer ticker.Stop()
+
+	p.logger.Debug("progress listener started", "source", sourceName)
+
+	var lastUpdate ports.ProgressUpdate
+	var lastEmitted int
+
+	for {
+		select {
+		case update, ok := <-progressCh:
+			if !ok {
+				// Canal cerrado, salir
+				return
+			}
+			lastUpdate = update
+
+		case <-ticker.C:
+			// Emitir actualización con debouncing solo si hay cambios
+			if lastUpdate.ArtifactCount > 0 && lastUpdate.ArtifactCount != lastEmitted {
+				p.presenter.UpdateSource(sourceName, lastUpdate.ArtifactCount)
+				p.logger.Debug("progress update",
+					"source", sourceName,
+					"artifacts", lastUpdate.ArtifactCount,
+					"message", lastUpdate.Message,
+				)
+				lastEmitted = lastUpdate.ArtifactCount
+			}
+
+		case <-done:
+			// Source terminó, emitir última actualización si hay
+			if lastUpdate.ArtifactCount > 0 && lastUpdate.ArtifactCount != lastEmitted {
+				p.presenter.UpdateSource(sourceName, lastUpdate.ArtifactCount)
+			}
+			return
+
+		case <-ctx.Done():
+			// Contexto cancelado, salir
+			return
+		}
+	}
 }
 
 // notifyEvent envía una notificación a todos los observers de forma asíncrona.

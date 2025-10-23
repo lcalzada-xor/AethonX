@@ -74,6 +74,7 @@ type RDAP struct {
 	cache       cache.Cache
 	logger      logx.Logger
 	stopCleanup func() // Función para detener el cache cleanup worker
+	progressCh  chan ports.ProgressUpdate
 }
 
 // rdapResponse representa la respuesta de RDAP (simplificada)
@@ -158,9 +159,10 @@ func New(logger logx.Logger) ports.Source {
 
 	// Create RDAP instance
 	r := &RDAP{
-		client: *httpclient.New(httpConfig, logger),
-		cache:  rdapCache,
-		logger: logger.With("source", sourceName),
+		client:     *httpclient.New(httpConfig, logger),
+		cache:      rdapCache,
+		logger:     logger.With("source", sourceName),
+		progressCh: make(chan ports.ProgressUpdate, 10), // Buffered channel
 	}
 
 	// Iniciar cleanup worker (limpieza cada 1 hora)
@@ -265,8 +267,10 @@ func (r *RDAP) queryRDAP(ctx context.Context, domain string) (*rdapResponse, err
 	return &rdapData, nil
 }
 
-// extractArtifacts extracts artifacts from RDAP response
+// extractArtifacts extracts artifacts from RDAP response with progress reporting
 func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapResponse, domainName string) {
+	artifactCount := 0
+
 	// Create registrar metadata
 	regMeta := r.extractRegistrarMetadata(rdapData)
 
@@ -281,6 +285,16 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 		)
 		domainArtifact.Confidence = 1.0
 		result.AddArtifact(domainArtifact)
+		artifactCount++
+
+		// Emit progress
+		select {
+		case r.progressCh <- ports.ProgressUpdate{
+			ArtifactCount: artifactCount,
+			Message:       fmt.Sprintf("Found domain: %s", domainName),
+		}:
+		default:
+		}
 	}
 
 	// Extract nameservers and create relations
@@ -293,6 +307,16 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 			)
 			nsArtifact.Confidence = 1.0
 			result.AddArtifact(nsArtifact)
+			artifactCount++
+
+			// Emit progress
+			select {
+			case r.progressCh <- ports.ProgressUpdate{
+				ArtifactCount: artifactCount,
+				Message:       fmt.Sprintf("Found nameserver: %s", ns.LDHName),
+			}:
+			default:
+			}
 
 			// Establecer relación: domain has_nameserver nameserver
 			if domainArtifact != nil {
@@ -302,7 +326,7 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 	}
 
 	// Extract emails and contacts with relations
-	r.extractContacts(result, rdapData.Entities, domainArtifact)
+	r.extractContactsWithProgress(result, rdapData.Entities, domainArtifact, &artifactCount)
 }
 
 // extractRegistrarMetadata creates RegistrarMetadata from RDAP response
@@ -361,8 +385,8 @@ func (r *RDAP) extractRegistrarMetadata(rdapData *rdapResponse) *metadata.Regist
 	return regMeta
 }
 
-// extractContacts extracts contact information from entities
-func (r *RDAP) extractContacts(result *domain.ScanResult, entities []rdapEntity, domainArtifact *domain.Artifact) {
+// extractContactsWithProgress extracts contact information from entities with progress reporting
+func (r *RDAP) extractContactsWithProgress(result *domain.ScanResult, entities []rdapEntity, domainArtifact *domain.Artifact, artifactCount *int) {
 	for _, entity := range entities {
 		// Extract emails
 		if email := r.extractVCardField(entity.VCardArray, "email"); email != "" {
@@ -380,6 +404,16 @@ func (r *RDAP) extractContacts(result *domain.ScanResult, entities []rdapEntity,
 			}
 
 			result.AddArtifact(emailArtifact)
+			*artifactCount++
+
+			// Emit progress
+			select {
+			case r.progressCh <- ports.ProgressUpdate{
+				ArtifactCount: *artifactCount,
+				Message:       fmt.Sprintf("Found email: %s", email),
+			}:
+			default:
+			}
 
 			// Establecer relación: domain has_contact email
 			if domainArtifact != nil {
@@ -389,7 +423,7 @@ func (r *RDAP) extractContacts(result *domain.ScanResult, entities []rdapEntity,
 
 		// Recursively process nested entities
 		if len(entity.Entities) > 0 {
-			r.extractContacts(result, entity.Entities, domainArtifact)
+			r.extractContactsWithProgress(result, entity.Entities, domainArtifact, artifactCount)
 		}
 	}
 }
@@ -540,6 +574,38 @@ func (r *RDAP) hasRole(roles []string, role string) bool {
 		}
 	}
 	return false
+}
+
+// ProgressChannel implementa ports.StreamingSource
+func (r *RDAP) ProgressChannel() <-chan ports.ProgressUpdate {
+	return r.progressCh
+}
+
+// Stream implementa ports.StreamingSource (no usado actualmente pero requerido por interfaz)
+func (r *RDAP) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
+	artifactCh := make(chan *domain.Artifact, 100)
+	errorCh := make(chan error, 1)
+
+	go func() {
+		defer close(artifactCh)
+		defer close(errorCh)
+
+		result, err := r.Run(ctx, target)
+		if err != nil {
+			errorCh <- err
+			return
+		}
+
+		for _, artifact := range result.Artifacts {
+			select {
+			case artifactCh <- artifact:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return artifactCh, errorCh
 }
 
 // Close implements ports.Source

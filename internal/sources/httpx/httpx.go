@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"aethonx/internal/core/domain"
+	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
 )
 
@@ -36,6 +37,7 @@ type HTTPXSource struct {
 	rateLimit   int
 	customFlags []string
 	parser      *Parser
+	progressCh  chan ports.ProgressUpdate
 
 	// Process management
 	mu  sync.Mutex
@@ -53,6 +55,7 @@ func New(logger logx.Logger) *HTTPXSource {
 		rateLimit:   defaultRateLimit,
 		customFlags: []string{},
 		parser:      NewParser(logger, sourceName),
+		progressCh:  make(chan ports.ProgressUpdate, 10),
 	}
 }
 
@@ -67,6 +70,7 @@ func NewWithConfig(logger logx.Logger, execPath string, profile ScanProfile, tim
 		rateLimit:   rateLimit,
 		customFlags: []string{},
 		parser:      NewParser(logger, sourceName),
+		progressCh:  make(chan ports.ProgressUpdate, 10),
 	}
 }
 
@@ -132,6 +136,7 @@ func (h *HTTPXSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024) // 1MB max token size
 
+	artifactCount := 0
 	for scanner.Scan() {
 		line := scanner.Text()
 
@@ -142,6 +147,17 @@ func (h *HTTPXSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 		}
 
 		responses = append(responses, &resp)
+		artifactCount++
+
+		// Emit progress (non-blocking)
+		select {
+		case h.progressCh <- ports.ProgressUpdate{
+			ArtifactCount: artifactCount,
+			Message:       fmt.Sprintf("Probing %s", resp.URL),
+		}:
+		default:
+			// Canal lleno, skip update
+		}
 
 		h.logger.Debug("parsed httpx response",
 			"url", resp.URL,
@@ -188,6 +204,38 @@ func (h *HTTPXSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 	)
 
 	return result, nil
+}
+
+// ProgressChannel implementa ports.StreamingSource
+func (h *HTTPXSource) ProgressChannel() <-chan ports.ProgressUpdate {
+	return h.progressCh
+}
+
+// Stream implementa ports.StreamingSource (no usado actualmente pero requerido por interfaz)
+func (h *HTTPXSource) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
+	artifactCh := make(chan *domain.Artifact, 100)
+	errorCh := make(chan error, 1)
+
+	go func() {
+		defer close(artifactCh)
+		defer close(errorCh)
+
+		result, err := h.Run(ctx, target)
+		if err != nil {
+			errorCh <- err
+			return
+		}
+
+		for _, artifact := range result.Artifacts {
+			select {
+			case artifactCh <- artifact:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return artifactCh, errorCh
 }
 
 // Close terminates the httpx process and cleans up resources.
