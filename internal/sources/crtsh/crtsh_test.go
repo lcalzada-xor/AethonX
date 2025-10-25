@@ -2,6 +2,7 @@
 package crtsh
 
 import (
+	"context"
 	"testing"
 
 	"aethonx/internal/core/domain"
@@ -125,7 +126,7 @@ func TestProcessRecords(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			artifacts := crt.processRecords(tt.records, target)
+			artifacts := crt.processRecordsWithProgress(context.Background(), tt.records, target)
 
 			testutil.AssertEqual(t, len(artifacts), tt.expectedCount,
 				"should have expected number of artifacts")
@@ -169,7 +170,7 @@ func TestProcessRecords_MetadataAndRelations(t *testing.T) {
 		},
 	}
 
-	artifacts := crt.processRecords(records, target)
+	artifacts := crt.processRecordsWithProgress(context.Background(), records, target)
 
 	// Debería tener 2 artifacts: 1 subdomain + 1 certificate
 	testutil.AssertEqual(t, len(artifacts), 2, "should have 2 artifacts")

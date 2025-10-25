@@ -30,14 +30,15 @@ func TestOutputJSON(t *testing.T) {
 		t.Fatalf("OutputJSON() failed: %v", err)
 	}
 
-	// Verify file was created
-	files, err := os.ReadDir(tmpDir)
+	// Verify subdirectory was created
+	domainDir := filepath.Join(tmpDir, "example_com")
+	files, err := os.ReadDir(domainDir)
 	if err != nil {
-		t.Fatalf("failed to read temp dir: %v", err)
+		t.Fatalf("failed to read domain subdirectory: %v", err)
 	}
 
 	if len(files) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(files))
+		t.Fatalf("expected 1 file in subdirectory, got %d", len(files))
 	}
 
 	// Verify filename format
@@ -50,7 +51,7 @@ func TestOutputJSON(t *testing.T) {
 	}
 
 	// Verify file content
-	filePath := filepath.Join(tmpDir, filename)
+	filePath := filepath.Join(domainDir, filename)
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		t.Fatalf("failed to read output file: %v", err)
@@ -93,10 +94,11 @@ func TestOutputJSON_EmptyDir(t *testing.T) {
 		t.Fatalf("OutputJSON() with empty dir failed: %v", err)
 	}
 
-	// Verify file was created in current directory
-	files, err := os.ReadDir(".")
+	// Verify subdirectory was created in current directory
+	domainDir := "./example_com"
+	files, err := os.ReadDir(domainDir)
 	if err != nil {
-		t.Fatalf("failed to read current dir: %v", err)
+		t.Fatalf("failed to read domain subdirectory in current dir: %v", err)
 	}
 
 	found := false
@@ -108,7 +110,7 @@ func TestOutputJSON_EmptyDir(t *testing.T) {
 	}
 
 	if !found {
-		t.Error("expected JSON file to be created in current directory")
+		t.Error("expected JSON file to be created in current directory subdirectory")
 	}
 }
 
@@ -166,9 +168,11 @@ func TestOutputJSON_TimestampFormat(t *testing.T) {
 		t.Fatalf("OutputJSON() failed: %v", err)
 	}
 
-	files, err := os.ReadDir(tmpDir)
+	// Read subdirectory
+	domainDir := filepath.Join(tmpDir, "test_com")
+	files, err := os.ReadDir(domainDir)
 	if err != nil {
-		t.Fatalf("failed to read temp dir: %v", err)
+		t.Fatalf("failed to read domain subdirectory: %v", err)
 	}
 
 	filename := files[0].Name()
@@ -213,13 +217,14 @@ func TestOutputJSON_WithComplexData(t *testing.T) {
 		t.Fatalf("OutputJSON() failed: %v", err)
 	}
 
-	// Read and decode
-	files, err := os.ReadDir(tmpDir)
+	// Read and decode from subdirectory
+	domainDir := filepath.Join(tmpDir, "example_com")
+	files, err := os.ReadDir(domainDir)
 	if err != nil {
-		t.Fatalf("failed to read temp dir: %v", err)
+		t.Fatalf("failed to read domain subdirectory: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(tmpDir, files[0].Name()))
+	data, err := os.ReadFile(filepath.Join(domainDir, files[0].Name()))
 	if err != nil {
 		t.Fatalf("failed to read file: %v", err)
 	}

@@ -168,7 +168,7 @@ func (r *RawPresenter) UpdateSourcePhase(sourceName string, phase string) {
 func (r *RawPresenter) FinishSource(sourceName string, status Status, duration time.Duration, artifactCount int) {
 	r.log("INFO", "source_completed", map[string]interface{}{
 		"source":    sourceName,
-		"status":    string(status),
+		"status":    status.String(),
 		"duration":  duration,
 		"artifacts": artifactCount,
 	})

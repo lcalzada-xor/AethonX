@@ -9,27 +9,30 @@ import (
 	"aethonx/internal/platform/ui/terminal"
 )
 
-// CustomPresenter implementa Presenter con sistema de renderizado custom
+// CustomPresenter implementa Presenter con sistema de renderizado simple
 type CustomPresenter struct {
-	renderer   *terminal.Renderer
-	progressBars map[string]*terminal.ProgressBar
-	spinners     map[string]*terminal.AnimatedSpinner
-	lineCounter  int
+	mu             sync.RWMutex
+	stages         map[int]*StageProgress
+	scanInfo       ScanInfo
+	startTime      time.Time
+	currentResults []sourceResult  // Acumular resultados del stage actual
+	globalProgress *GlobalProgress // Barra de progreso global
+}
 
-	mu         sync.RWMutex
-	stages     map[int]*StageProgress
-	scanInfo   ScanInfo
-	startTime  time.Time
+// sourceResult almacena el resultado de un source para mostrar al final del stage
+type sourceResult struct {
+	name     string
+	status   Status
+	duration time.Duration
+	count    int
 }
 
 // NewCustomPresenter crea un nuevo presenter custom
 func NewCustomPresenter() *CustomPresenter {
 	return &CustomPresenter{
-		renderer:     terminal.NewRenderer(),
-		progressBars: make(map[string]*terminal.ProgressBar),
-		spinners:     make(map[string]*terminal.AnimatedSpinner),
-		stages:       make(map[int]*StageProgress),
-		lineCounter:  0,
+		stages:         make(map[int]*StageProgress),
+		currentResults: make([]sourceResult, 0),
+		globalProgress: NewGlobalProgress(),
 	}
 }
 
@@ -42,9 +45,6 @@ func (c *CustomPresenter) Start(info ScanInfo) {
 
 	// Renderizar header
 	c.renderHeader(info)
-
-	// Iniciar renderer
-	c.renderer.Start(100 * time.Millisecond)
 }
 
 // StartStage inicia un nuevo stage
@@ -80,6 +80,12 @@ func (c *CustomPresenter) StartStage(stage StageInfo) {
 		terminal.Reset,
 	)
 	fmt.Println()
+
+	// Iniciar GlobalProgress con el número total de sources
+	c.globalProgress.Start(len(stage.Sources))
+
+	// Renderizar línea inicial de progreso
+	c.globalProgress.Render()
 }
 
 // FinishStage finaliza un stage
@@ -101,8 +107,36 @@ func (c *CustomPresenter) FinishStage(stageNum int, duration time.Duration) {
 			break
 		}
 	}
+
+	// Copiar resultados para impresión
+	results := make([]sourceResult, len(c.currentResults))
+	copy(results, c.currentResults)
+
+	// Limpiar para siguiente stage
+	c.currentResults = nil
+
 	c.mu.Unlock()
 
+	// Detener y limpiar GlobalProgress
+	c.globalProgress.Stop()
+	c.globalProgress.Render() // Renderizar estado final (100%)
+	time.Sleep(200 * time.Millisecond) // Dar tiempo para ver el 100%
+	c.globalProgress.Clear()
+
+	// Mostrar TODOS los resultados acumulados
+	fmt.Println()
+	for _, result := range results {
+		symbol := result.status.Symbol()
+		color := result.status.Color()
+		fmt.Printf("  %s %s %s ◆ %d artifacts\n",
+			terminal.Colorize(symbol, color),
+			terminal.Colorize(result.name, terminal.BrightCyan),
+			terminal.Colorize(fmt.Sprintf("(%s)", formatDuration(result.duration)), terminal.Gray),
+			result.count,
+		)
+	}
+
+	// Mostrar resumen del stage
 	fmt.Println()
 	fmt.Printf("%s Stage %d completed in %s\n",
 		terminal.Colorize(IconSuccess, terminal.BrightGreen),
@@ -135,40 +169,19 @@ func (c *CustomPresenter) StartSource(stageNum int, sourceName string) {
 	srcProgress.Status = StatusRunning
 	srcProgress.StartTime = time.Now()
 
-	// Crear spinner animado
-	spinner := terminal.NewAnimatedSpinner("ember")
-	spinner.Start(50 * time.Millisecond)
-	c.spinners[sourceName] = spinner
-
-	// Crear progress bar
-	pb := terminal.NewProgressBar(sourceName, 100)
-	pb.SetSpinner(spinner)
-	c.progressBars[sourceName] = pb
-
-	lineID := c.lineCounter
-	c.lineCounter++
-
 	c.mu.Unlock()
 
-	// Registrar con renderer (sin lock)
-	c.renderer.RegisterLine(lineID, pb)
+	// Actualizar GlobalProgress con el source actual
+	c.globalProgress.UpdateCurrent(sourceName)
+	c.globalProgress.Render()
 }
 
 // UpdateSource actualiza el progreso de un source
 func (c *CustomPresenter) UpdateSource(sourceName string, metrics ProgressMetrics) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Actualizar progress bar si existe
-	if pb, exists := c.progressBars[sourceName]; exists {
-		// Actualizar progreso basado en current
-		if metrics.Total > 0 {
-			percentage := (metrics.Current * 100) / metrics.Total
-			pb.Update(percentage)
-		}
-	}
 
 	// Actualizar métricas en state
+	totalArtifacts := 0
 	for _, stage := range c.stages {
 		if srcProgress, exists := stage.Sources[sourceName]; exists {
 			srcProgress.ArtifactCount = metrics.Current
@@ -176,9 +189,18 @@ func (c *CustomPresenter) UpdateSource(sourceName string, metrics ProgressMetric
 				srcProgress.Metrics = &ProgressMetrics{}
 			}
 			*srcProgress.Metrics = metrics
-			break
+		}
+		// Sumar artifacts de todas las sources
+		for _, src := range stage.Sources {
+			totalArtifacts += src.ArtifactCount
 		}
 	}
+
+	c.mu.Unlock()
+
+	// Actualizar contador de artifacts en GlobalProgress
+	c.globalProgress.UpdateArtifactCount(totalArtifacts)
+	// No llamar Render() aquí porque el spinner ya lo hace cada 250ms
 }
 
 // UpdateSourcePhase actualiza solo la fase de un source
@@ -200,37 +222,19 @@ func (c *CustomPresenter) FinishSource(sourceName string, status Status, duratio
 		}
 	}
 
-	// Completar progress bar
-	if pb, exists := c.progressBars[sourceName]; exists {
-		pb.Complete()
-	}
-
-	// Detener spinner
-	if spinner, exists := c.spinners[sourceName]; exists {
-		spinner.Stop()
-		delete(c.spinners, sourceName)
-	}
+	// Acumular resultado para mostrar al final del stage
+	c.currentResults = append(c.currentResults, sourceResult{
+		name:     sourceName,
+		status:   status,
+		duration: duration,
+		count:    artifactCount,
+	})
 
 	c.mu.Unlock()
 
-	// Esperar a que renderer muestre el estado final
-	time.Sleep(150 * time.Millisecond)
-
-	// Limpiar línea del renderer
-	c.renderer.Clear()
-
-	// Renderizar línea final
-	symbol := status.Symbol()
-	color := status.Color()
-
-	fmt.Printf("  %s %s %s ◆ %s%d artifacts%s\n",
-		terminal.Colorize(symbol, color),
-		terminal.Colorize(sourceName, terminal.BrightCyan),
-		terminal.Colorize(fmt.Sprintf("(%s)", formatDuration(duration)), terminal.Gray),
-		terminal.Colorize("", color),
-		artifactCount,
-		terminal.Reset,
-	)
+	// Incrementar contador y actualizar progreso
+	c.globalProgress.IncrementCompleted()
+	c.globalProgress.Render()
 }
 
 // UpdateDiscoveries actualiza estadísticas de descubrimiento
@@ -255,9 +259,6 @@ func (c *CustomPresenter) Error(msg string) {
 
 // Finish finaliza la presentación
 func (c *CustomPresenter) Finish(stats ScanStats) {
-	// Detener renderer
-	c.renderer.Stop()
-
 	fmt.Println()
 	fmt.Println(terminal.Colorize(SeparatorHeavy, terminal.RGB(255, 107, 53)))
 	fmt.Printf("%s  %s\n", terminal.Colorize("⚡", terminal.BrightCyan), terminal.BoldText("SCAN COMPLETE"))
@@ -301,15 +302,10 @@ func (c *CustomPresenter) Finish(stats ScanStats) {
 
 // Close limpia recursos
 func (c *CustomPresenter) Close() error {
-	c.renderer.Stop()
-
-	// Detener todos los spinners
-	c.mu.Lock()
-	for _, spinner := range c.spinners {
-		spinner.Stop()
+	// Limpiar GlobalProgress si hay línea renderizada
+	if c.globalProgress != nil {
+		c.globalProgress.Clear()
 	}
-	c.mu.Unlock()
-
 	return nil
 }
 

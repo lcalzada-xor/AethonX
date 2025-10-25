@@ -549,17 +549,30 @@ retryable := resilience.NewRetryableSource(source, resilience.RetryConfig{
 
 ## Visual UI System
 
-AethonX implements a **user-friendly visual interface** with spinners, colors, and real-time progress tracking using the **Presenter Pattern**.
+AethonX implements a **user-friendly visual interface** with a global progress bar, animated spinner, and real-time progress tracking using the **Presenter Pattern**.
 
 ### Architecture
 
 ```
 internal/platform/ui/
-├── presenter.go         # Presenter interface
-├── pterm_presenter.go   # Visual implementation (PTerm)
-├── noop_presenter.go    # Silent implementation (quiet mode)
-├── symbols.go           # Status symbols and colors
+├── presenter.go          # Presenter interface
+├── custom_presenter.go   # Visual implementation (custom renderer)
+├── raw_presenter.go      # Log-based implementation (text/JSON)
+├── global_progress.go    # Global progress bar with integrated spinner
+├── symbols.go            # Status symbols and colors
+├── metrics.go            # Progress metrics structures
+└── terminal/
+    └── ansi.go           # ANSI escape codes and terminal utilities
 ```
+
+### Key Design Principles
+
+**Simplicity over complexity:**
+- **Single global progress bar** instead of per-source bars
+- **No goroutines for UI rendering** - synchronous updates triggered by orchestrator
+- **Accumulate results** and display at stage completion (not during execution)
+- **In-place updates** using ANSI cursor control (MoveCursorUp + ClearLine)
+- **Integrated spinner** advances frame on each Render() call (no background goroutine)
 
 ### Presenter Interface
 
@@ -583,16 +596,20 @@ type Presenter interface {
 
 ### Implementations
 
-**1. PTermPresenter** (Default - Visual Mode)
-- Uses [pterm](https://github.com/pterm/pterm) for terminal UI
-- Animated spinners for each source
-- Color-coded status symbols (⏸ ⣾ ✓ ⚠ ✗)
-- Progress tracking with artifact counts
-- Beautiful headers and summary tables
+**1. CustomPresenter** (Default - Pretty Mode)
+- Beautiful ASCII art header with scan configuration
+- **Global progress bar**: `◓ [████████░░] 50% | rdap (1/2 sources) | 342ms`
+- **Animated spinner** (◐ → ◓ → ◑ → ◒) that advances on each Render() call
+- **Color-coded progress**: cyan (0-49%) → yellow (50-99%) → green (100%)
+- **Accumulates source results** in memory and displays all together at stage completion
+- **Clean summary** with artifact counts and execution times
+- **Thread-safe**: Uses mutex to protect shared state from concurrent source updates
 
-**2. NoopPresenter** (Quiet Mode)
-- No-op implementation for headless/CI environments
-- Used when `-q/--quiet` or `--no-ui` flags are set
+**2. RawPresenter** (Raw Mode)
+- Log-based output for headless/CI environments
+- Supports both logfmt (text) and JSON formats
+- Structured logging with timestamps and metadata
+- Used when `--ui-mode=raw` flag is set
 
 ### Status Symbols
 
@@ -626,10 +643,11 @@ The Presenter is injected into `PipelineOrchestrator`:
 // main.go
 var presenter ui.Presenter
 if cfg.Output.QuietMode {
-    presenter = ui.NewNoopPresenter()
+    presenter = ui.NewRawPresenter(ui.LogFormatText)
 } else {
-    presenter = ui.NewPTermPresenter()
+    presenter = ui.NewCustomPresenter()
 }
+defer presenter.Close()
 
 orch := usecases.NewPipelineOrchestrator(usecases.PipelineOrchestratorOptions{
     // ... other options
@@ -643,13 +661,53 @@ The orchestrator notifies the presenter at key lifecycle events:
 - Source start/update/finish
 - Info/warning/error messages
 
+### GlobalProgress Component
+
+**Key features**:
+- **Thread-safe**: Uses sync.RWMutex for concurrent access
+- **In-place rendering**: Uses ANSI codes to update same line
+- **Independent spinner**: Goroutine with 250ms ticker for smooth animation
+- **ETA calculation**: Estimates remaining time based on average source duration
+- **Slow source detection**: Shows ⏱ indicator for sources taking >5 seconds
+- **Artifact tracking**: Displays real-time artifact count
+- **Smart coloring**: Progress bar changes color at 50%, 75%, and 100%
+- **Stateful**: Tracks totalSources, completedSources, currentSource, artifacts, timings
+- **Clean API**: Start(), UpdateCurrent(), IncrementCompleted(), UpdateArtifactCount(), Render(), Stop(), Clear()
+
+**Spinner Animation**:
+- Uses Unicode Braille patterns: ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏
+- Updates every 250ms via independent goroutine
+- Smooth, professional animation
+- Changes to ✓ when scan completes
+
+**Visual Enhancements**:
+- **Progress colors**: Cyan (0-49%) → Yellow (50-74%) → Bright Yellow (75-99%) → Green (100%)
+- **ETA display**: Shows estimated time remaining (e.g., "ETA 2s")
+- **Artifact counter**: Shows total artifacts discovered (e.g., "• 42 artifacts")
+- **Slow indicator**: Yellow ⏱ appears if source takes >5s
+- **Bold current source**: Active source name is highlighted with bold
+
+**Rendering Flow**:
+```
+StartStage → globalProgress.Start(len(sources)) → startSpinner() → ticker updates every 250ms
+StartSource → globalProgress.UpdateCurrent(name) → sourceStartTime reset
+UpdateSource → globalProgress.UpdateArtifactCount(total) → (spinner auto-renders)
+FinishSource → globalProgress.IncrementCompleted() → (spinner auto-renders)
+FinishStage → globalProgress.Stop() → stopSpinner() → Clear()
+```
+
+**Example Output**:
+```
+⠋ [████████░░] 75% | crtsh (2/3) ⏱ • ETA 2s • 42 artifacts | 1.5s
+```
+
 ### Scalability
 
 The Presenter system is **designed for future expansion**:
-- **Multi-stage support**: Track multiple stages with different sources
-- **Real-time updates**: Update artifact counts as sources discover data
-- **Extensible**: Add new Presenter implementations (e.g., web UI, TUI, etc.)
-- **Thread-safe**: Safe for concurrent updates from multiple sources
+- **Multi-stage support**: Already tracks stage numbers, ready for multi-stage pipelines
+- **Real-time updates**: UpdateSource() allows sources to emit progress metrics
+- **Extensible**: Easy to add new Presenter implementations (e.g., web UI, TUI, etc.)
+- **Thread-safe**: All methods protected by mutexes for concurrent source execution
 
 ## Common Pitfalls
 
@@ -691,9 +749,10 @@ The Presenter system is **designed for future expansion**:
 
 **Visual UI**:
 16. `internal/platform/ui/presenter.go` - Presenter interface
-17. `internal/platform/ui/pterm_presenter.go` - Visual implementation
-18. `internal/platform/ui/noop_presenter.go` - Silent implementation
-19. `internal/platform/ui/symbols.go` - Status symbols and colors
+17. `internal/platform/ui/custom_presenter.go` - Visual implementation (pretty mode)
+18. `internal/platform/ui/raw_presenter.go` - Log-based implementation (raw mode)
+19. `internal/platform/ui/global_progress.go` - Global progress bar with integrated spinner
+20. `internal/platform/ui/symbols.go` - Status symbols and colors
 
 ## Code References
 

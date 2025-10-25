@@ -62,9 +62,9 @@ func main() {
 	// Initialize presenter
 	var presenter ui.Presenter
 	if cfg.Quiet {
-		presenter = ui.NewNoopPresenter()
+		presenter = ui.NewRawPresenter(ui.LogFormatText)
 	} else {
-		presenter = ui.NewPTermPresenter()
+		presenter = ui.NewCustomPresenter()
 	}
 	defer presenter.Close()
 
@@ -119,7 +119,7 @@ func run(ctx context.Context, cfg Config, logger logx.Logger, presenter ui.Prese
 		Workers:        1,
 		TimeoutSeconds: 300,
 		TotalStages:    1,
-		UIMode:         ui.UIModeCompact,
+		UIMode:         ui.UIModePretty,
 	})
 
 	// Initialize orchestrator

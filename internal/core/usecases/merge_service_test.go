@@ -16,6 +16,12 @@ func TestMergeService_LoadPartialResults(t *testing.T) {
 	// Crear directorio temporal
 	tmpDir := t.TempDir()
 
+	// Crear subdirectorio para el dominio (como lo hace OutputJSON)
+	domainDir := filepath.Join(tmpDir, "example_com")
+	if err := os.MkdirAll(domainDir, 0o755); err != nil {
+		t.Fatalf("failed to create domain subdirectory: %v", err)
+	}
+
 	// Crear algunos archivos parciales de prueba
 	partial1 := PartialScanResult{
 		Source: "crtsh",
@@ -38,9 +44,9 @@ func TestMergeService_LoadPartialResults(t *testing.T) {
 		ArtifactCount: 1,
 	}
 
-	// Escribir archivos
-	writePartialFile(t, tmpDir, "aethonx_example.com_20250119_partial_crtsh.json", partial1)
-	writePartialFile(t, tmpDir, "aethonx_example.com_20250119_partial_rdap.json", partial2)
+	// Escribir archivos en el subdirectorio
+	writePartialFile(t, domainDir, "aethonx_example.com_20250119_partial_crtsh.json", partial1)
+	writePartialFile(t, domainDir, "aethonx_example.com_20250119_partial_rdap.json", partial2)
 
 	// Crear servicio
 	logger := logx.New()
@@ -146,12 +152,18 @@ func TestMergeService_ConsolidateIntoResult_NilResult(t *testing.T) {
 func TestMergeService_ClearPartialFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Crear algunos archivos parciales
-	file1 := filepath.Join(tmpDir, "aethonx_example.com_20250119_partial_crtsh.json")
-	file2 := filepath.Join(tmpDir, "aethonx_example.com_20250119_partial_rdap.json")
+	// Crear subdirectorio para el dominio (como lo hace OutputJSON)
+	domainDir := filepath.Join(tmpDir, "example_com")
+	if err := os.MkdirAll(domainDir, 0o755); err != nil {
+		t.Fatalf("failed to create domain subdirectory: %v", err)
+	}
 
-	_ = os.WriteFile(file1, []byte("{}"), 0o644)
-	_ = os.WriteFile(file2, []byte("{}"), 0o644)
+	// Crear algunos archivos parciales en el subdirectorio
+	file1 := filepath.Join(domainDir, "aethonx_example.com_20250119_partial_crtsh.json")
+	file2 := filepath.Join(domainDir, "aethonx_example.com_20250119_partial_rdap.json")
+
+	_ = os.WriteFile(file1, []byte(`{"source":"crtsh"}`), 0o644)
+	_ = os.WriteFile(file2, []byte(`{"source":"rdap"}`), 0o644)
 
 	// Verificar que existen
 	_, err1 := os.Stat(file1)
