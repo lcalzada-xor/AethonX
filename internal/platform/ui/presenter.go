@@ -9,10 +9,8 @@ import (
 type UIMode string
 
 const (
-	UIModeCompact   UIMode = "compact"   // Barras de progreso compactas (default)
-	UIModeDashboard UIMode = "dashboard" // Dashboard completo con paneles
-	UIModeMinimal   UIMode = "minimal"   // Solo símbolos y contadores
-	UIModeQuiet     UIMode = "quiet"     // Sin UI visual
+	UIModePretty UIMode = "pretty" // Modo visual con formato mejorado (default)
+	UIModeRaw    UIMode = "raw"    // Logs en texto plano sin formato
 )
 
 // Presenter define la interfaz para presentar el progreso de la ejecución

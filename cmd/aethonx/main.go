@@ -49,13 +49,13 @@ func main() {
 	}
 
 	// 2. Determine UI mode and create appropriate logger
-	// Visual mode (PTerm): Use silent logger (only errors)
-	// Quiet/Debug mode: Use regular logger
-	usingVisualUI := !cfg.Output.QuietMode && !cfg.Output.UIDisabled
+	// Pretty mode: Use silent logger (only errors)
+	// Raw mode: Use regular logger
+	usingVisualUI := cfg.Output.UIMode == "pretty" || cfg.Output.UIMode == ""
 
 	var logger logx.Logger
 	if usingVisualUI {
-		// Visual UI mode: silent logger (only critical errors go to stderr)
+		// Pretty mode: silent logger (only critical errors go to stderr)
 		logger = logx.NewSilent()
 	} else {
 		// Non-visual mode: regular logger respecting AETHONX_LOG_LEVEL
@@ -135,15 +135,20 @@ func main() {
 
 	// 8. Create UI presenter based on configuration
 	var presenter ui.Presenter
-	if cfg.Output.QuietMode {
-		// Quiet mode: sin salida visual, solo JSON
-		presenter = ui.NewNoopPresenter()
-	} else if cfg.Output.UIDisabled {
-		// UI deshabilitado: usar NoopPresenter también
-		presenter = ui.NewNoopPresenter()
-	} else {
-		// Modo normal: usar presenter visual con PTerm
-		presenter = ui.NewPTermPresenter()
+	switch cfg.Output.UIMode {
+	case "raw":
+		// Raw mode: plain logs (text or JSON format)
+		logFormat := ui.LogFormatText
+		if cfg.Output.LogFormat == "json" {
+			logFormat = ui.LogFormatJSON
+		}
+		presenter = ui.NewRawPresenter(logFormat)
+	case "pretty":
+		// Pretty mode: visual UI with custom renderer
+		presenter = ui.NewCustomPresenter()
+	default:
+		// Default to pretty mode
+		presenter = ui.NewCustomPresenter()
 	}
 
 	// 9. Create pipeline orchestrator (stage-based execution)
@@ -267,8 +272,8 @@ func writeOutputs(cfg config.Config, result *domain.ScanResult) error {
 		return fmt.Errorf("json output: %w", err)
 	}
 
-	// Terminal-readable table if not in quiet mode
-	if !cfg.Output.QuietMode {
+	// Terminal-readable table only in pretty mode
+	if cfg.Output.UIMode == "pretty" || cfg.Output.UIMode == "" {
 		if err := output.OutputTable(result); err != nil {
 			return fmt.Errorf("table output: %w", err)
 		}

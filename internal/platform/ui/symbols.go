@@ -1,8 +1,6 @@
 // internal/platform/ui/symbols.go
 package ui
 
-import "github.com/pterm/pterm"
-
 // Status representa el estado de un source o stage
 type Status int
 
@@ -55,23 +53,23 @@ func (s Status) Symbol() string {
 	}
 }
 
-// Style retorna un pterm.RGBStyle configurado para el estado
-func (s Status) Style() pterm.RGBStyle {
+// Color retorna el color ANSI para el estado
+func (s Status) Color() string {
 	switch s {
 	case StatusPending:
-		return StyleSecondary
+		return "\033[90m" // Gray
 	case StatusRunning:
-		return StyleActive
+		return "\033[96m" // Bright Cyan
 	case StatusSuccess:
-		return StyleSuccess
+		return "\033[92m" // Bright Green
 	case StatusWarning:
-		return StyleWarning
+		return "\033[93m" // Bright Yellow
 	case StatusError:
-		return StyleError
+		return "\033[91m" // Bright Red
 	case StatusSkipped:
-		return StyleSecondary
+		return "\033[90m" // Gray
 	default:
-		return StyleText
+		return "\033[97m" // Bright White
 	}
 }
 

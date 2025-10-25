@@ -79,7 +79,7 @@ func NewPipelineOrchestrator(opts PipelineOrchestratorOptions) *PipelineOrchestr
 		opts.StreamingConfig.ArtifactThreshold = 1000
 	}
 	if opts.Presenter == nil {
-		opts.Presenter = ui.NewNoopPresenter()
+		opts.Presenter = ui.NewRawPresenter(ui.LogFormatText)
 	}
 
 	return &PipelineOrchestrator{

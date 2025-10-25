@@ -43,9 +43,8 @@ type SourceConfig struct {
 // OutputConfig contains output-related settings.
 type OutputConfig struct {
 	Dir         string // Output directory
-	QuietMode   bool   // Quiet mode (no visual output, JSON only)
-	UIDisabled  bool   // Disable visual UI (use simple text logs)
-	UIMode      string // UI mode: compact, dashboard, minimal (default: compact)
+	UIMode      string // UI mode: pretty (default), raw
+	LogFormat   string // Log format for raw mode: text (default), json
 	ShowMetrics bool   // Show system metrics (CPU, memory, etc.)
 	ShowPhases  bool   // Show execution phases for each source
 }
@@ -120,9 +119,8 @@ func DefaultConfig() Config {
 
 		Output: OutputConfig{
 			Dir:         "aethonx_out",
-			QuietMode:   false,
-			UIDisabled:  false,
-			UIMode:      "compact",
+			UIMode:      "pretty",
+			LogFormat:   "text",
 			ShowMetrics: false,
 			ShowPhases:  false,
 		},
@@ -183,14 +181,11 @@ func loadFromEnv(cfg *Config) {
 	if v := getenv("AETHONX_OUTPUT_DIR", ""); v != "" {
 		cfg.Output.Dir = v
 	}
-	if v := getenv("AETHONX_QUIET", ""); v != "" {
-		cfg.Output.QuietMode = parseBool(v)
-	}
-	if v := getenv("AETHONX_UI_DISABLED", ""); v != "" {
-		cfg.Output.UIDisabled = parseBool(v)
-	}
 	if v := getenv("AETHONX_UI_MODE", ""); v != "" {
 		cfg.Output.UIMode = v
+	}
+	if v := getenv("AETHONX_LOG_FORMAT", ""); v != "" {
+		cfg.Output.LogFormat = v
 	}
 	if v := getenv("AETHONX_SHOW_METRICS", ""); v != "" {
 		cfg.Output.ShowMetrics = parseBool(v)
@@ -292,12 +287,10 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 
 	// === OUTPUT FLAGS ===
 	pflag.StringVarP(&cfg.Output.Dir, "out", "o", cfg.Output.Dir, "Output directory")
-	pflag.BoolVarP(&cfg.Output.QuietMode, "quiet", "q", cfg.Output.QuietMode,
-		"Quiet mode (JSON only, no visual output)")
-	pflag.BoolVar(&cfg.Output.UIDisabled, "no-ui", cfg.Output.UIDisabled,
-		"Disable visual UI (use simple text logs)")
 	pflag.StringVar(&cfg.Output.UIMode, "ui-mode", cfg.Output.UIMode,
-		"UI mode: compact (default), dashboard, minimal")
+		"UI mode: pretty (default, visual), raw (plain logs)")
+	pflag.StringVar(&cfg.Output.LogFormat, "log-format", cfg.Output.LogFormat,
+		"Log format for raw mode: text (default, logfmt), json (structured)")
 	pflag.BoolVar(&cfg.Output.ShowMetrics, "show-metrics", cfg.Output.ShowMetrics,
 		"Show system metrics (CPU, memory, goroutines)")
 	pflag.BoolVar(&cfg.Output.ShowPhases, "show-phases", cfg.Output.ShowPhases,
