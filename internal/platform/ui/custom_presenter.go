@@ -81,6 +81,9 @@ func (c *CustomPresenter) StartStage(stage StageInfo) {
 	)
 	fmt.Println()
 
+	// Inicializar lista de sources en GlobalProgress
+	c.globalProgress.InitializeSources(stage.Sources)
+
 	// Iniciar GlobalProgress con el número total de sources
 	c.globalProgress.Start(len(stage.Sources))
 
@@ -151,29 +154,30 @@ func (c *CustomPresenter) FinishStage(stageNum int, duration time.Duration) {
 func (c *CustomPresenter) StartSource(stageNum int, sourceName string) {
 	c.mu.Lock()
 
-	// Actualizar state
-	stage, exists := c.stages[stageNum]
-	if !exists {
+	// Buscar en qué stage está este source (ignorar stageNum que puede ser incorrecto)
+	var stage *StageProgress
+	for _, s := range c.stages {
+		if _, exists := s.Sources[sourceName]; exists {
+			stage = s
+			break
+		}
+	}
+
+	if stage == nil {
 		c.mu.Unlock()
+		// Aún así actualizar GlobalProgress para que se vea el spinner
+		c.globalProgress.UpdateCurrent(sourceName)
 		return
 	}
 
-	srcProgress, exists := stage.Sources[sourceName]
-	if !exists {
-		srcProgress = &SourceProgress{
-			Name: sourceName,
-		}
-		stage.Sources[sourceName] = srcProgress
-	}
-
+	srcProgress := stage.Sources[sourceName]
 	srcProgress.Status = StatusRunning
 	srcProgress.StartTime = time.Now()
 
 	c.mu.Unlock()
 
-	// Actualizar GlobalProgress con el source actual
+	// Actualizar GlobalProgress con el source actual (UpdateCurrent ya renderiza)
 	c.globalProgress.UpdateCurrent(sourceName)
-	c.globalProgress.Render()
 }
 
 // UpdateSource actualiza el progreso de un source
@@ -232,9 +236,11 @@ func (c *CustomPresenter) FinishSource(sourceName string, status Status, duratio
 
 	c.mu.Unlock()
 
-	// Incrementar contador y actualizar progreso
+	// Actualizar status del source en GlobalProgress
+	c.globalProgress.UpdateSourceStatus(sourceName, status)
+
+	// Incrementar contador (UpdateSourceStatus ya renderizó)
 	c.globalProgress.IncrementCompleted()
-	c.globalProgress.Render()
 }
 
 // UpdateDiscoveries actualiza estadísticas de descubrimiento

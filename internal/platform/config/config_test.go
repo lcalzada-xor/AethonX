@@ -442,8 +442,8 @@ func TestLoad_FromEnv(t *testing.T) {
 	if rdapCfg, exists := cfg.Source.Sources["rdap"]; !exists || rdapCfg.Enabled != true {
 		t.Errorf("Sources[\"rdap\"].Enabled: expected true, got %v", rdapCfg.Enabled)
 	}
-	if cfg.Output.UIDisabled != false {
-		t.Errorf("Output.UIDisabled: expected false, got %v", cfg.Output.UIDisabled)
+	if cfg.Output.UIMode != "pretty" {
+		t.Errorf("Output.UIMode: expected %q, got %q", "pretty", cfg.Output.UIMode)
 	}
 	if cfg.Network.ProxyURL != "http://proxy.example.com:8080" {
 		t.Errorf("ProxyURL: expected %q, got %q", "http://proxy.example.com:8080", cfg.Network.ProxyURL)
@@ -492,8 +492,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Core.Active != false {
 		t.Errorf("Active: expected false, got %v", cfg.Core.Active)
 	}
-	if cfg.Core.Workers != 4 {
-		t.Errorf("Workers: expected 4, got %d", cfg.Core.Workers)
+	if cfg.Core.Workers != 16 {
+		t.Errorf("Workers: expected 16, got %d", cfg.Core.Workers)
 	}
 	if cfg.Core.TimeoutS != 30 {
 		t.Errorf("TimeoutS: expected 30, got %d", cfg.Core.TimeoutS)
@@ -507,8 +507,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if rdapCfg, exists := cfg.Source.Sources["rdap"]; !exists || rdapCfg.Enabled != true {
 		t.Errorf("Sources[\"rdap\"].Enabled: expected true, got %v", rdapCfg.Enabled)
 	}
-	if cfg.Output.UIDisabled != false {
-		t.Errorf("Output.UIDisabled: expected false, got %v", cfg.Output.UIDisabled)
+	if cfg.Output.UIMode != "pretty" {
+		t.Errorf("Output.UIMode: expected %q, got %q", "pretty", cfg.Output.UIMode)
 	}
 	if cfg.Network.ProxyURL != "" {
 		t.Errorf("ProxyURL: expected empty, got %q", cfg.Network.ProxyURL)

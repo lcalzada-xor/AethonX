@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	sourceName     = "httpx"
-	defaultTimeout = 120 * time.Second
-	defaultThreads = 50
+	sourceName       = "httpx"
+	defaultTimeout   = 120 * time.Second
+	defaultThreads   = 75
 	defaultRateLimit = 150
 )
 

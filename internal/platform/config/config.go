@@ -79,7 +79,7 @@ func DefaultConfig() Config {
 		Core: CoreConfig{
 			Target:   "",
 			Active:   false,
-			Workers:  4,
+			Workers:  16,
 			TimeoutS: 30,
 		},
 
@@ -101,6 +101,20 @@ func DefaultConfig() Config {
 					Priority:  8,
 					Custom:    make(map[string]interface{}),
 				},
+				"subfinder": {
+					Enabled:   true,
+					Timeout:   200 * time.Second, // subfinder with all sources
+					Retries:   2,
+					RateLimit: 0, // Managed internally by subfinder
+					Priority:  10, // High priority - passive discovery
+					Custom: map[string]interface{}{
+						"all_sources": true,
+						"sources":     []string{},
+						"threads":     10,
+						"rate_limit":  0,
+						"exec_path":   "subfinder",
+					},
+				},
 				"httpx": {
 					Enabled:   true,
 					Timeout:   120 * time.Second, // httpx can be slow with tech detection
@@ -109,7 +123,7 @@ func DefaultConfig() Config {
 					Priority:  15, // High priority after passive sources
 					Custom: map[string]interface{}{
 						"profile":    "full",
-						"threads":    50,
+						"threads":    75,
 						"rate_limit": 150,
 						"exec_path":  "httpx",
 					},
@@ -230,10 +244,26 @@ func loadFromEnv(cfg *Config) {
 				sourceCfg.Custom["profile"] = v
 			}
 			if v := getenv(prefix+"THREADS", ""); v != "" {
-				sourceCfg.Custom["threads"] = parseInt(v, 50)
+				sourceCfg.Custom["threads"] = parseInt(v, 75)
 			}
 			if v := getenv(prefix+"RATE_LIMIT", ""); v != "" {
 				sourceCfg.Custom["rate_limit"] = parseInt(v, 150)
+			}
+			if v := getenv(prefix+"EXEC_PATH", ""); v != "" {
+				sourceCfg.Custom["exec_path"] = v
+			}
+		}
+
+		// Subfinder-specific custom config
+		if name == "subfinder" {
+			if v := getenv(prefix+"ALL_SOURCES", ""); v != "" {
+				sourceCfg.Custom["all_sources"] = parseBool(v)
+			}
+			if v := getenv(prefix+"THREADS", ""); v != "" {
+				sourceCfg.Custom["threads"] = parseInt(v, 10)
+			}
+			if v := getenv(prefix+"RATE_LIMIT", ""); v != "" {
+				sourceCfg.Custom["rate_limit"] = parseInt(v, 0)
 			}
 			if v := getenv(prefix+"EXEC_PATH", ""); v != "" {
 				sourceCfg.Custom["exec_path"] = v
