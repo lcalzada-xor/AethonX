@@ -3,6 +3,7 @@
 package subfinder
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -11,12 +12,33 @@ import (
 	"aethonx/internal/platform/logx"
 )
 
+// StringOrArray is a custom type that can unmarshal both string and []string from JSON
+type StringOrArray []string
+
+// UnmarshalJSON implements custom unmarshaling to handle both string and array
+func (sa *StringOrArray) UnmarshalJSON(data []byte) error {
+	// Try unmarshaling as array first
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*sa = StringOrArray(arr)
+		return nil
+	}
+
+	// If that fails, try as string
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	*sa = StringOrArray([]string{str})
+	return nil
+}
+
 // SubfinderResponse represents a single JSON record from subfinder output.
 // Subfinder outputs JSONL format (one JSON object per line).
 type SubfinderResponse struct {
-	Host      string   `json:"host"`
-	Source    []string `json:"source"`
-	Timestamp string   `json:"timestamp,omitempty"`
+	Host      string        `json:"host"`
+	Source    StringOrArray `json:"source"`
+	Timestamp string        `json:"timestamp,omitempty"`
 }
 
 // Parser handles parsing of subfinder JSON output into domain artifacts.

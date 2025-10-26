@@ -80,12 +80,19 @@ All reconnaissance sources must implement:
 ```go
 type Source interface {
     Name() string
-    Mode() domain.SourceMode  // passive, active, or hybrid
+    Mode() domain.SourceMode  // passive, active, or both (hybrid)
     Type() domain.SourceType  // API, CLI, or builtin
     Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error)
     Close() error             // MANDATORY: cleanup resources
 }
 ```
+
+**Source Modes**:
+- `SourceModePassive` - Only passive reconnaissance (OSINT, APIs, no direct target contact)
+- `SourceModeActive` - Requires active probing (HTTP, DNS resolution, port scanning)
+- `SourceModeBoth` - **Hybrid mode**: Adapts behavior based on global `--active` flag
+  - Example: Amass runs `amass enum -d target.com` (passive) or `amass enum -d target.com -active` (active)
+  - Active mode flag injected via `Custom["active_mode"]` in source config
 
 **Optional Extended Interfaces**:
 - `AdvancedSource`: Adds `Initialize()`, `Validate()`, `HealthCheck()`
@@ -148,13 +155,14 @@ make coverage          # Coverage summary
 **Core Options:**
 - `-t, --target` - Target domain (required)
 - `-a, --active` - Enable active reconnaissance
-- `-w, --workers` - Concurrent workers (default: 4)
+- `-w, --workers` - Concurrent workers (default: 16)
 - `-T, --timeout` - Global timeout in seconds (default: 30)
 - `-o, --out` - Output directory (default: "aethonx_out")
 
 **Source Options:**
 - `--src.crtsh` - Enable/disable crt.sh (default: true)
 - `--src.rdap` - Enable/disable RDAP (default: true)
+- `--src.subfinder` - Enable/disable subfinder (default: true)
 - `--src.httpx` - Enable/disable httpx (default: true)
 
 **Output Options:**
@@ -184,6 +192,14 @@ make coverage          # Coverage summary
 - Returns: `ArtifactTypeDomain`, `ArtifactTypeEmail`, `ArtifactTypeNameserver`
 - Includes metadata: registrar, registration dates, nameservers, contacts
 
+**subfinder** (`internal/sources/subfinder/`)
+- Executes Project Discovery's subfinder CLI tool as subprocess
+- Multi-source subdomain discovery (aggregates 30+ sources)
+- Passive reconnaissance (requires subfinder binary in PATH)
+- Returns: `ArtifactTypeSubdomain`
+- Sources: Certificate Transparency, Censys, Shodan, VirusTotal, etc.
+- Configurable: all sources (-all) or specific sources (-s)
+
 **httpx** (`internal/sources/httpx/`)
 - Executes Project Discovery's httpx CLI tool as subprocess
 - HTTP probing and fingerprinting
@@ -191,6 +207,15 @@ make coverage          # Coverage summary
 - Returns: `ArtifactTypeURL`, `ArtifactTypeDomain`, `ArtifactTypeTechnology`
 - Scan profiles: Fast, Standard, Full
 - Flexible JSON parsing with type normalization
+
+**amass** (`internal/sources/amass/`)
+- Executes OWASP Amass CLI tool as subprocess
+- In-depth subdomain enumeration and network mapping
+- **Hybrid mode**: Passive by default, active with `--active` flag
+- Returns: `ArtifactTypeSubdomain`, `ArtifactTypeIP`, `ArtifactTypeCIDR`, `ArtifactTypeASN`
+- Rich metadata: IP addresses with ASN, AS organization, CIDR ranges
+- Configurable: brute force (`--src.amass.brute`), alterations (`--src.amass.alts`), DNS rate limiting
+- Priority: 15 (medium-high, after crtsh, before subfinder)
 
 ## Adding New Sources
 
@@ -598,8 +623,15 @@ type Presenter interface {
 
 **1. CustomPresenter** (Default - Pretty Mode)
 - Beautiful ASCII art header with scan configuration
-- **Global progress bar**: `◓ [████████░░] 50% | rdap (1/2 sources) | 342ms`
-- **Animated spinner** (◐ → ◓ → ◑ → ◒) that advances on each Render() call
+- **Global progress bar with source dashboard**:
+  - Format: `⠋ [██████████▓░░░░░] 50% | (1/3) | 2.4s | [httpx ⠋] [rdap ✓] [crtsh ○]`
+  - Components:
+    - Main spinner (rotates every 250ms)
+    - Progress bar with animated growing edge
+    - Percentage and source completion counter
+    - Elapsed time
+    - Mini-dashboard showing each source's current status with individual spinners
+- **Animated spinner** (⠋ → ⠙ → ⠹ → ⠸ → ⠼ → ⠴ → ⠦ → ⠧ → ⠇ → ⠏) that updates every 250ms
 - **Color-coded progress**: cyan (0-49%) → yellow (50-99%) → green (100%)
 - **Accumulates source results** in memory and displays all together at stage completion
 - **Clean summary** with artifact counts and execution times
@@ -669,37 +701,70 @@ The orchestrator notifies the presenter at key lifecycle events:
 - **Independent spinner**: Goroutine with 250ms ticker for smooth animation
 - **ETA calculation**: Estimates remaining time based on average source duration
 - **Slow source detection**: Shows ⏱ indicator for sources taking >5 seconds
-- **Artifact tracking**: Displays real-time artifact count
+- **Artifact tracking**: Displays real-time artifact count with velocity (artifacts/second)
 - **Smart coloring**: Progress bar changes color at 50%, 75%, and 100%
-- **Stateful**: Tracks totalSources, completedSources, currentSource, artifacts, timings
-- **Clean API**: Start(), UpdateCurrent(), IncrementCompleted(), UpdateArtifactCount(), Render(), Stop(), Clear()
+- **Per-source status tracking**: Maintains status (pending/running/success/error) for each source
+- **Individual source spinners**: Each running source has its own animated spinner
+- **Stateful**: Tracks totalSources, completedSources, currentSource, artifacts, timings, source statuses
+- **Clean API**: InitializeSources(), Start(), UpdateCurrent(), UpdateSourceStatus(), IncrementCompleted(), UpdateArtifactCount(), Render(), Stop(), Clear()
 
 **Spinner Animation**:
 - Uses Unicode Braille patterns: ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏
-- Updates every 250ms via independent goroutine
+- Updates every 100ms via independent goroutine
 - Smooth, professional animation
 - Changes to ✓ when scan completes
 
 **Visual Enhancements**:
 - **Progress colors**: Cyan (0-49%) → Yellow (50-74%) → Bright Yellow (75-99%) → Green (100%)
-- **ETA display**: Shows estimated time remaining (e.g., "ETA 2s")
-- **Artifact counter**: Shows total artifacts discovered (e.g., "• 42 artifacts")
+- **Animated progress bar**: Growing edge pulses with characters `▓▒░` rotating every 250ms
+- **ETA display**: Shows estimated time remaining (e.g., "• ETA 2s")
+- **Artifact counter with velocity**: Shows total and rate (e.g., "• 42 artifacts (15/s)")
 - **Slow indicator**: Yellow ⏱ appears if source takes >5s
-- **Bold current source**: Active source name is highlighted with bold
+- **Source status dashboard**: Real-time mini-dashboard showing all sources with individual status indicators
+  - Format: `| [httpx ⠋] [rdap ✓] [crtsh ✖]`
+  - Each source displays its name with current status:
+    - Pending: `○` (gray circle)
+    - Running: Animated spinner (cyan Braille pattern)
+    - Success: `✓` (green checkmark)
+    - Error: `✖` (red X)
+    - Warning: `⚠` (yellow warning)
+  - Running sources have individual animated spinners that rotate every 100ms
+  - Provides at-a-glance view of all source execution status
 
 **Rendering Flow**:
 ```
-StartStage → globalProgress.Start(len(sources)) → startSpinner() → ticker updates every 250ms
-StartSource → globalProgress.UpdateCurrent(name) → sourceStartTime reset
-UpdateSource → globalProgress.UpdateArtifactCount(total) → (spinner auto-renders)
-FinishSource → globalProgress.IncrementCompleted() → (spinner auto-renders)
+StartStage → globalProgress.InitializeSources(names) → globalProgress.Start(len(sources)) → startSpinner()
+  → Ticker goroutine updates every 100ms:
+    - Advances main spinner frame
+    - Advances growing edge frame
+    - Advances spinner frames for all running sources
+    - Calls renderUnsafe()
+
+StartSource → globalProgress.UpdateCurrent(name) → UpdateSourceStatus(name, StatusRunning) → renderUnsafe()
+UpdateSource → globalProgress.UpdateArtifactCount(total) → (no manual render, ticker handles it)
+FinishSource → globalProgress.UpdateSourceStatus(name, status) → renderUnsafe() → IncrementCompleted()
 FinishStage → globalProgress.Stop() → stopSpinner() → Clear()
 ```
 
-**Example Output**:
+**Example Outputs**:
 ```
-⠋ [████████░░] 75% | crtsh (2/3) ⏱ • ETA 2s • 42 artifacts | 1.5s
+# Initial state - all sources pending
+⠋ [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0% | (0/3) | 0.1s | [httpx ○] [rdap ○] [crtsh ○]
+
+# First source (rdap) running
+⠙ [▓░░░░░░░░░░░░░░░░░░░░░░░░░░░░░] 0% | (0/3) | 0.3s | [httpx ○] [rdap ⠙] [crtsh ○]
+
+# rdap completed, crtsh running
+⠹ [██████████▒░░░░░░░░░░░░░░░░░░░] 33% | (1/3) • ETA 1.2s | 0.8s | [httpx ○] [rdap ✓] [crtsh ⠹]
+
+# crtsh slow (>5s), httpx running
+⠸ [████████████████████▓░░░░░░░░░] 66% | (2/3) ⏱ • ETA 3s • 42 artifacts (15/s) | 6.2s | [httpx ⠸] [rdap ✓] [crtsh ✓]
+
+# All completed
+✓ [██████████████████████████████] 100% | (3/3) • 58 artifacts | 8.5s | [httpx ✓] [rdap ✓] [crtsh ✓]
 ```
+
+Note: The growing edge character (`▓▒░`) animates only when progress is between 1-99%
 
 ### Scalability
 
@@ -733,26 +798,27 @@ The Presenter system is **designed for future expansion**:
 **Source Examples**:
 5. `internal/sources/crtsh/crtsh.go` - Simple passive source
 6. `internal/sources/rdap/rdap.go` - Advanced source with caching
-7. `internal/sources/httpx/httpx.go` - CLI wrapper source
+7. `internal/sources/subfinder/subfinder.go` - Multi-source CLI wrapper
+8. `internal/sources/httpx/httpx.go` - CLI wrapper source
 
 **Data Processing**:
-8. `internal/core/usecases/dedupe_service.go` - Deduplication
-9. `internal/adapters/output/streaming.go` - Streaming writer
-10. `internal/core/usecases/merge_service.go` - Merge service
+9. `internal/core/usecases/dedupe_service.go` - Deduplication
+10. `internal/adapters/output/streaming.go` - Streaming writer
+11. `internal/core/usecases/merge_service.go` - Merge service
 
 **Platform**:
-11. `internal/platform/workerpool/worker_pool.go` - Task scheduler
-12. `internal/platform/resilience/circuit_breaker.go` - Circuit breaker
-13. `internal/platform/registry/source_registry.go` - Source registry
-14. `internal/platform/validator/validator.go` - Validation utilities
-15. `internal/platform/config/config.go` - Configuration management
+12. `internal/platform/workerpool/worker_pool.go` - Task scheduler
+13. `internal/platform/resilience/circuit_breaker.go` - Circuit breaker
+14. `internal/platform/registry/source_registry.go` - Source registry
+15. `internal/platform/validator/validator.go` - Validation utilities
+16. `internal/platform/config/config.go` - Configuration management
 
 **Visual UI**:
-16. `internal/platform/ui/presenter.go` - Presenter interface
-17. `internal/platform/ui/custom_presenter.go` - Visual implementation (pretty mode)
-18. `internal/platform/ui/raw_presenter.go` - Log-based implementation (raw mode)
-19. `internal/platform/ui/global_progress.go` - Global progress bar with integrated spinner
-20. `internal/platform/ui/symbols.go` - Status symbols and colors
+17. `internal/platform/ui/presenter.go` - Presenter interface
+18. `internal/platform/ui/custom_presenter.go` - Visual implementation (pretty mode)
+19. `internal/platform/ui/raw_presenter.go` - Log-based implementation (raw mode)
+20. `internal/platform/ui/global_progress.go` - Global progress bar with integrated spinner
+21. `internal/platform/ui/symbols.go` - Status symbols and colors
 
 ## Code References
 

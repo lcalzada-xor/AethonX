@@ -21,22 +21,21 @@ import (
 
 const (
 	sourceName     = "subfinder"
-	defaultTimeout = 200 * time.Second // subfinder with all sources
+	defaultTimeout = 240 * time.Second // subfinder with free sources
 	defaultThreads = 10
 )
 
 // SubfinderSource implements ports.Source and ports.AdvancedSource.
 // It wraps Project Discovery's subfinder CLI tool for subdomain discovery.
 type SubfinderSource struct {
-	logger      logx.Logger
-	execPath    string        // Path to subfinder binary
-	timeout     time.Duration
-	threads     int
-	rateLimit   int
-	allSources  bool     // Use -all flag
-	sources     []string // Specific sources to use (-s flag)
-	parser      *Parser
-	progressCh  chan ports.ProgressUpdate
+	logger     logx.Logger
+	execPath   string        // Path to subfinder binary
+	timeout    time.Duration
+	threads    int
+	rateLimit  int
+	sources    []string // Specific sources to use (-s flag)
+	parser     *Parser
+	progressCh chan ports.ProgressUpdate
 
 	// Process management
 	mu  sync.Mutex
@@ -44,6 +43,7 @@ type SubfinderSource struct {
 }
 
 // New creates a new SubfinderSource with default configuration.
+// Uses only free sources that don't require API keys for immediate results.
 func New(logger logx.Logger) *SubfinderSource {
 	return &SubfinderSource{
 		logger:     logger.With("source", sourceName),
@@ -51,22 +51,20 @@ func New(logger logx.Logger) *SubfinderSource {
 		timeout:    defaultTimeout,
 		threads:    defaultThreads,
 		rateLimit:  0, // No limit by default (subfinder manages this internally)
-		allSources: true,
-		sources:    []string{},
+		sources:    []string{"alienvault", "anubis", "commoncrawl", "crtsh", "digitorus", "dnsdumpster", "hackertarget", "rapiddns", "sitedossier", "waybackarchive"},
 		parser:     NewParser(logger, sourceName),
 		progressCh: make(chan ports.ProgressUpdate, 10),
 	}
 }
 
 // NewWithConfig creates SubfinderSource with custom configuration.
-func NewWithConfig(logger logx.Logger, execPath string, timeout time.Duration, threads, rateLimit int, allSources bool, sources []string) *SubfinderSource {
+func NewWithConfig(logger logx.Logger, execPath string, timeout time.Duration, threads, rateLimit int, sources []string) *SubfinderSource {
 	return &SubfinderSource{
 		logger:     logger.With("source", sourceName),
 		execPath:   execPath,
 		timeout:    timeout,
 		threads:    threads,
 		rateLimit:  rateLimit,
-		allSources: allSources,
 		sources:    sources,
 		parser:     NewParser(logger, sourceName),
 		progressCh: make(chan ports.ProgressUpdate, 10),
@@ -95,7 +93,7 @@ func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domai
 
 	s.logger.Info("starting subfinder scan",
 		"target", target.Root,
-		"all_sources", s.allSources,
+		"sources", s.sources,
 		"threads", s.threads,
 		"rate_limit", s.rateLimit,
 	)
@@ -126,6 +124,16 @@ func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domai
 	}
 
 	s.logger.Debug("subfinder process started", "pid", cmd.Process.Pid)
+
+	// Read stderr in background to prevent blocking
+	var stderrBytes []byte
+	var stderrMu sync.Mutex
+	go func() {
+		data, _ := io.ReadAll(stderr)
+		stderrMu.Lock()
+		stderrBytes = data
+		stderrMu.Unlock()
+	}()
 
 	// Parse stdout in real-time (streaming JSONL)
 	responses := make([]*SubfinderResponse, 0, 100)
@@ -168,10 +176,13 @@ func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domai
 		s.logger.Warn("scanner error", "error", err.Error())
 	}
 
-	// Capture stderr for warnings
-	stderrBytes, _ := io.ReadAll(stderr)
-	if len(stderrBytes) > 0 {
-		stderrStr := string(stderrBytes)
+	// Get stderr from background goroutine
+	stderrMu.Lock()
+	stderrLen := len(stderrBytes)
+	stderrStr := string(stderrBytes)
+	stderrMu.Unlock()
+
+	if stderrLen > 0 {
 		s.logger.Debug("subfinder stderr", "output", stderrStr)
 		result.AddWarning("subfinder", fmt.Sprintf("stderr output: %s", stderrStr))
 	}
@@ -315,8 +326,8 @@ func (s *SubfinderSource) Validate() error {
 		return fmt.Errorf("rate limit cannot be negative")
 	}
 
-	if !s.allSources && len(s.sources) == 0 {
-		return fmt.Errorf("either allSources must be true or sources must be specified")
+	if len(s.sources) == 0 {
+		return fmt.Errorf("sources list cannot be empty")
 	}
 
 	return nil
@@ -346,9 +357,7 @@ func (s *SubfinderSource) buildCommand(ctx context.Context, target domain.Target
 	}
 
 	// Add source selection flags
-	if s.allSources {
-		args = append(args, "-all")
-	} else if len(s.sources) > 0 {
+	if len(s.sources) > 0 {
 		args = append(args, "-s", joinSources(s.sources))
 	}
 

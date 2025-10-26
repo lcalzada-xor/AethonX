@@ -14,17 +14,13 @@ func init() {
 		func(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
 			// Extract custom config
 			execPath := "subfinder"
-			allSources := true
 			threads := defaultThreads
 			rateLimit := 0
-			sources := []string{}
+			sources := []string{"alienvault", "anubis", "commoncrawl", "crtsh", "digitorus", "dnsdumpster", "hackertarget", "rapiddns", "sitedossier", "waybackarchive"}
 
 			if cfg.Custom != nil {
 				if v, ok := cfg.Custom["exec_path"].(string); ok && v != "" {
 					execPath = v
-				}
-				if v, ok := cfg.Custom["all_sources"].(bool); ok {
-					allSources = v
 				}
 				if v, ok := cfg.Custom["threads"].(int); ok {
 					threads = v
@@ -32,7 +28,7 @@ func init() {
 				if v, ok := cfg.Custom["rate_limit"].(int); ok {
 					rateLimit = v
 				}
-				if v, ok := cfg.Custom["sources"].([]string); ok {
+				if v, ok := cfg.Custom["sources"].([]string); ok && len(v) > 0 {
 					sources = v
 				}
 			}
@@ -43,7 +39,7 @@ func init() {
 				timeout = defaultTimeout
 			}
 
-			return NewWithConfig(logger, execPath, timeout, threads, rateLimit, allSources, sources), nil
+			return NewWithConfig(logger, execPath, timeout, threads, rateLimit, sources), nil
 		},
 		ports.SourceMetadata{
 			Name:         "subfinder",

@@ -128,6 +128,19 @@ func DefaultConfig() Config {
 						"exec_path":  "httpx",
 					},
 				},
+				"amass": {
+					Enabled:   true,
+					Timeout:   300 * time.Second, // amass can be slow (5 minutes)
+					Retries:   2,
+					RateLimit: 0,
+					Priority:  15, // Medium-high priority (after crtsh, before subfinder)
+					Custom: map[string]interface{}{
+						"max_dns_qps": 0,     // 0 = unlimited
+						"brute":       false, // Disable brute force by default
+						"alts":        false, // Disable alterations by default
+						"exec_path":   "amass",
+					},
+				},
 			},
 		},
 

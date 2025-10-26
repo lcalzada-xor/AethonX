@@ -20,6 +20,7 @@ import (
 	"aethonx/internal/platform/ui"
 
 	// Import sources for auto-registration via init()
+	_ "aethonx/internal/sources/amass"
 	_ "aethonx/internal/sources/crtsh"
 	_ "aethonx/internal/sources/httpx"
 	_ "aethonx/internal/sources/rdap"
@@ -87,6 +88,15 @@ func main() {
 	if err := target.Validate(); err != nil {
 		logger.Err(err, "phase", "validation")
 		os.Exit(2)
+	}
+
+	// Inject active mode into all source configs (for hybrid sources like amass)
+	for sourceName, sourceConfig := range cfg.Source.Sources {
+		if sourceConfig.Custom == nil {
+			sourceConfig.Custom = make(map[string]interface{})
+		}
+		sourceConfig.Custom["active_mode"] = cfg.Core.Active
+		cfg.Source.Sources[sourceName] = sourceConfig
 	}
 
 	// 5. Build sources from registry with resilience wrappers

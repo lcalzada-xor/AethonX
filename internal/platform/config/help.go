@@ -18,13 +18,15 @@ USAGE
 CORE OPTIONS
   -t, --target <domain>    Target domain (required)
   -a, --active             Active reconnaissance mode (default: passive)
-  -w, --workers <int>      Concurrent workers (default: 4)
+  -w, --workers <int>      Concurrent workers (default: 16)
   -o, --out <path>         Output directory (default: aethonx_out)
   -q, --quiet              JSON only, no visual UI
 
 SOURCES
   --src.crtsh              Certificate Transparency logs (default: enabled)
   --src.rdap               RDAP/WHOIS queries (default: enabled)
+  --src.subfinder          Multi-source subdomain discovery (default: enabled)
+  --src.amass              OWASP Amass enumeration (default: enabled)
   --src.httpx              HTTP probing (default: enabled)
 
   Disable with: --src.<name>=false
@@ -38,21 +40,20 @@ ADVANCED
       --circuit-breaker    Enable circuit breaker (default: true)
 
 UI OPTIONS
-      --ui-mode <mode>     UI mode: compact (default), dashboard, minimal
-      --show-metrics       Show system metrics (CPU, memory, goroutines)
-      --show-phases        Show execution phases for each source
+      --ui-mode <mode>     UI mode: pretty (default), raw
 
 INFO
   -h, --help               Show this help
   -v, --version            Version information
 
 EXAMPLES
-  aethonx -t example.com                        # Passive scan (compact UI)
+  aethonx -t example.com                        # Passive scan (pretty UI)
   aethonx -t example.com -a -w 8                # Active scan, 8 workers
   aethonx -t example.com -q                     # Quiet mode (CI/CD)
   aethonx -t example.com --src.httpx=false      # Disable httpx source
-  aethonx -t example.com --ui-mode=dashboard    # Full dashboard with metrics
-  aethonx -t example.com --show-metrics         # Show system resource usage
+  aethonx -t example.com --src.amass=false      # Disable amass source
+  aethonx -t example.com --src.subfinder=false  # Disable subfinder
+  aethonx -t example.com --ui-mode=raw          # Raw logs (for debugging)
 
 ENVIRONMENT VARIABLES
   All flags support AETHONX_ prefix: AETHONX_TARGET, AETHONX_ACTIVE, etc.
