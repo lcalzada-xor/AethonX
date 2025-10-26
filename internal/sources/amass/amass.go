@@ -5,18 +5,22 @@ package amass
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
+
+	_ "github.com/mattn/go-sqlite3" // SQLite driver
 )
 
 const (
@@ -34,7 +38,6 @@ type AmassSource struct {
 	maxDNSQPS  int          // DNS queries per second (0 = unlimited)
 	brute      bool         // Enable brute force
 	alts       bool         // Enable alterations
-	parser     *Parser
 	progressCh chan ports.ProgressUpdate
 
 	// Process management
@@ -62,7 +65,6 @@ func New(logger logx.Logger) *AmassSource {
 		maxDNSQPS:  0,
 		brute:      false,
 		alts:       false,
-		parser:     NewParser(logger, sourceName),
 		progressCh: make(chan ports.ProgressUpdate, 10),
 	}
 }
@@ -84,7 +86,6 @@ func NewWithConfig(logger logx.Logger, cfg AmassConfig) *AmassSource {
 		maxDNSQPS:  cfg.MaxDNSQPS,
 		brute:      cfg.Brute,
 		alts:       cfg.Alts,
-		parser:     NewParser(logger, sourceName),
 		progressCh: make(chan ports.ProgressUpdate, 10),
 	}
 }
@@ -118,16 +119,19 @@ func (a *AmassSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 		"max_dns_qps", a.maxDNSQPS,
 	)
 
-	// Build command with context
-	cmd := a.buildCommand(ctx, target)
-
-	// Create stdout pipe for streaming JSON
-	stdout, err := cmd.StdoutPipe()
+	// Create temporary directory for amass output
+	tempDir, err := os.MkdirTemp("", "aethonx-amass-*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+		return nil, fmt.Errorf("failed to create temp dir: %w", err)
 	}
+	defer os.RemoveAll(tempDir) // Clean up on exit
 
-	// Create stderr pipe for warnings
+	a.logger.Debug("created temp directory for amass", "dir", tempDir)
+
+	// Build command with context and temp directory
+	cmd := a.buildCommand(ctx, target, tempDir)
+
+	// Create stderr pipe to capture progress/warnings
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
@@ -145,88 +149,92 @@ func (a *AmassSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 
 	a.logger.Debug("amass process started", "pid", cmd.Process.Pid)
 
-	// Read stderr in background to prevent blocking
-	var stderrBytes []byte
+	// Read stderr in background (contains progress output and discovered FQDNs)
+	var stderrLines []string
 	var stderrMu sync.Mutex
+	var stderrWg sync.WaitGroup
+	stderrWg.Add(1)
+
 	go func() {
-		data, _ := io.ReadAll(stderr)
-		stderrMu.Lock()
-		stderrBytes = data
-		stderrMu.Unlock()
+		defer stderrWg.Done()
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			stderrMu.Lock()
+			stderrLines = append(stderrLines, line)
+			stderrMu.Unlock()
+
+			// Log progress lines
+			a.logger.Debug("amass output", "line", line)
+		}
+		if err := scanner.Err(); err != nil {
+			a.logger.Warn("error reading stderr", "error", err.Error())
+		}
 	}()
-
-	// Parse stdout in real-time (streaming JSONL)
-	responses := make([]*AmassResponse, 0, 100)
-	scanner := bufio.NewScanner(stdout)
-
-	// Increase buffer size for large responses
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024) // 1MB max token size
-
-	artifactCount := 0
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// Skip empty lines
-		if line == "" {
-			continue
-		}
-
-		var resp AmassResponse
-		if err := json.Unmarshal([]byte(line), &resp); err != nil {
-			a.logger.Warn("failed to parse amass output", "line", line, "error", err.Error())
-			continue
-		}
-
-		responses = append(responses, &resp)
-		artifactCount++
-
-		// Emit progress (non-blocking)
-		select {
-		case a.progressCh <- ports.ProgressUpdate{
-			ArtifactCount: artifactCount,
-			Message:       fmt.Sprintf("Found %s", resp.Name),
-		}:
-		default:
-			// Channel full, skip update
-		}
-
-		a.logger.Debug("parsed amass response",
-			"name", resp.Name,
-			"addresses", len(resp.Addresses),
-			"tag", resp.Tag,
-			"source", resp.Source,
-		)
-	}
-
-	if err := scanner.Err(); err != nil {
-		a.logger.Warn("scanner error", "error", err.Error())
-	}
-
-	// Get stderr from background goroutine
-	stderrMu.Lock()
-	stderrLen := len(stderrBytes)
-	stderrStr := string(stderrBytes)
-	stderrMu.Unlock()
-
-	if stderrLen > 0 {
-		a.logger.Debug("amass stderr", "output", stderrStr)
-		result.AddWarning("amass", fmt.Sprintf("stderr output: %s", stderrStr))
-	}
 
 	// Wait for process to complete
 	if err := cmd.Wait(); err != nil {
-		// Don't fail if we got some results
-		if len(responses) > 0 {
-			a.logger.Warn("amass exited with error but produced results", "error", err.Error())
-			result.AddWarning("amass", fmt.Sprintf("process exited with error: %v", err))
-		} else {
-			return nil, fmt.Errorf("amass failed: %w", err)
+		// Wait for stderr goroutine to finish before returning error
+		stderrWg.Wait()
+		return nil, fmt.Errorf("amass failed: %w", err)
+	}
+
+	// Wait for stderr goroutine to finish reading all output
+	stderrWg.Wait()
+
+	// Get stderr output
+	stderrMu.Lock()
+	stderrCount := len(stderrLines)
+	stderrMu.Unlock()
+
+	if stderrCount > 0 {
+		a.logger.Debug("amass produced output", "lines", stderrCount)
+	}
+
+	// Read results from SQLite database
+	// Amass creates a subdirectory like: tempDir/db/amass.sqlite
+	// Try multiple possible paths
+	possibleDBPaths := []string{
+		fmt.Sprintf("%s/db/amass.sqlite", tempDir),      // Amass v4 default
+		fmt.Sprintf("%s/amass.sqlite", tempDir),          // Direct path
+	}
+
+	var artifacts []*domain.Artifact
+	var dbErr error
+	dbFound := false
+
+	for _, dbPath := range possibleDBPaths {
+		a.logger.Debug("trying database path", "path", dbPath)
+		artifacts, dbErr = a.readDatabaseResults(dbPath, target)
+		if dbErr == nil {
+			dbFound = true
+			a.logger.Debug("successfully read database", "path", dbPath, "artifacts", len(artifacts))
+			break
+		}
+		a.logger.Debug("database not found at path", "path", dbPath, "error", dbErr.Error())
+	}
+
+	if !dbFound {
+		// If database read fails, fall back to text file parsing
+		a.logger.Warn("failed to read database from any path, trying text file", "last_error", dbErr.Error())
+		txtPath := fmt.Sprintf("%s/amass.txt", tempDir)
+		artifacts, dbErr = a.readTextResults(txtPath, target)
+		if dbErr != nil {
+			return nil, fmt.Errorf("failed to read amass results from database or text file: %w", dbErr)
 		}
 	}
 
-	// Parse responses into artifacts
-	artifacts := a.parser.ParseMultipleResponses(responses, target)
+	// Log warning if no artifacts found
+	if len(artifacts) == 0 {
+		a.logger.Warn("amass completed but found 0 artifacts",
+			"target", target.Root,
+			"stderr_lines", stderrCount,
+			"temp_dir", tempDir,
+		)
+		result.AddWarning("amass", "scan completed but no artifacts were found - target may have no exposed subdomains or amass sources are rate-limited")
+	}
+
+	// Add artifacts to result
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
@@ -235,11 +243,176 @@ func (a *AmassSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 	a.logger.Info("amass scan completed",
 		"target", target.Root,
 		"duration", duration.String(),
-		"responses", len(responses),
 		"artifacts", len(result.Artifacts),
 	)
 
 	return result, nil
+}
+
+// readDatabaseResults reads and parses the SQLite database created by amass.
+func (a *AmassSource) readDatabaseResults(dbPath string, target domain.Target) ([]*domain.Artifact, error) {
+	// Check if database file exists
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("database file not found: %s", dbPath)
+	}
+
+	// Open SQLite database
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	defer db.Close()
+
+	// Query all assets
+	rows, err := db.Query("SELECT type, content FROM assets ORDER BY created_at")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query assets: %w", err)
+	}
+	defer rows.Close()
+
+	artifacts := make([]*domain.Artifact, 0, 100)
+	seenFQDNs := make(map[string]bool) // Deduplicate FQDNs
+
+	for rows.Next() {
+		var assetType string
+		var contentJSON string
+
+		if err := rows.Scan(&assetType, &contentJSON); err != nil {
+			a.logger.Warn("failed to scan row", "error", err.Error())
+			continue
+		}
+
+		// Parse content JSON
+		var content map[string]interface{}
+		if err := json.Unmarshal([]byte(contentJSON), &content); err != nil {
+			a.logger.Warn("failed to parse content JSON", "content", contentJSON, "error", err.Error())
+			continue
+		}
+
+		// Process based on asset type
+		switch assetType {
+		case "FQDN":
+			fqdn, ok := content["name"].(string)
+			if !ok || fqdn == "" {
+				continue
+			}
+
+			// Skip duplicates
+			if seenFQDNs[fqdn] {
+				continue
+			}
+			seenFQDNs[fqdn] = true
+
+			// Create subdomain artifact
+			artifact := domain.NewArtifact(
+				domain.ArtifactTypeSubdomain,
+				fqdn,
+				sourceName,
+			)
+			artifacts = append(artifacts, artifact)
+
+		case "IPAddress":
+			if addr, ok := content["address"].(string); ok && addr != "" {
+				artifact := domain.NewArtifact(
+					domain.ArtifactTypeIP,
+					addr,
+					sourceName,
+				)
+				artifacts = append(artifacts, artifact)
+			}
+
+		case "Netblock":
+			if cidr, ok := content["cidr"].(string); ok && cidr != "" {
+				artifact := domain.NewArtifact(
+					domain.ArtifactTypeCIDR,
+					cidr,
+					sourceName,
+				)
+				artifacts = append(artifacts, artifact)
+			}
+
+		case "ASN":
+			if asn, ok := content["number"].(float64); ok {
+				asnValue := fmt.Sprintf("AS%d", int(asn))
+				artifact := domain.NewArtifact(
+					domain.ArtifactTypeASN,
+					asnValue,
+					sourceName,
+				)
+				artifacts = append(artifacts, artifact)
+			}
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows: %w", err)
+	}
+
+	a.logger.Debug("read database results",
+		"db_path", dbPath,
+		"artifacts", len(artifacts),
+	)
+
+	return artifacts, nil
+}
+
+// readTextResults reads and parses the text file created by amass (fallback).
+func (a *AmassSource) readTextResults(txtPath string, target domain.Target) ([]*domain.Artifact, error) {
+	// Check if text file exists
+	if _, err := os.Stat(txtPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("text file not found: %s", txtPath)
+	}
+
+	file, err := os.Open(txtPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open text file: %w", err)
+	}
+	defer file.Close()
+
+	artifacts := make([]*domain.Artifact, 0, 100)
+	seenFQDNs := make(map[string]bool)
+
+	// Regex to extract FQDN from lines like: "example.com (FQDN) --> ns_record --> a.iana-servers.net (FQDN)"
+	fqdnRegex := regexp.MustCompile(`([a-zA-Z0-9][-a-zA-Z0-9.]*[a-zA-Z0-9])\s*\(FQDN\)`)
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Extract all FQDNs from the line
+		matches := fqdnRegex.FindAllStringSubmatch(line, -1)
+		for _, match := range matches {
+			if len(match) < 2 {
+				continue
+			}
+
+			fqdn := strings.TrimSpace(match[1])
+			if fqdn == "" || seenFQDNs[fqdn] {
+				continue
+			}
+
+			seenFQDNs[fqdn] = true
+
+			// Create subdomain artifact
+			artifact := domain.NewArtifact(
+				domain.ArtifactTypeSubdomain,
+				fqdn,
+				sourceName,
+			)
+			artifacts = append(artifacts, artifact)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading text file: %w", err)
+	}
+
+	a.logger.Debug("read text results",
+		"txt_path", txtPath,
+		"artifacts", len(artifacts),
+	)
+
+	return artifacts, nil
 }
 
 // ProgressChannel implements ports.StreamingSource
@@ -287,10 +460,10 @@ func (a *AmassSource) Close() error {
 		if a.cmd.ProcessState == nil || !a.cmd.ProcessState.Exited() {
 			// Try SIGTERM first
 			if err := a.cmd.Process.Signal(os.Interrupt); err != nil {
-				// Only log if it's not "already finished"
-				if err.Error() != "os: process already finished" {
+				// Check if process already finished (not a real error)
+				if err != os.ErrProcessDone {
 					a.logger.Warn("SIGTERM failed, forcing kill", "error", err.Error())
-					if killErr := a.cmd.Process.Kill(); killErr != nil && killErr.Error() != "os: process already finished" {
+					if killErr := a.cmd.Process.Kill(); killErr != nil && killErr != os.ErrProcessDone {
 						a.logger.Warn("failed to kill amass process", "error", killErr.Error())
 					}
 				}
@@ -337,12 +510,16 @@ func (a *AmassSource) Initialize() error {
 // Validate checks if the source configuration is valid.
 // Implements ports.AdvancedSource.
 func (a *AmassSource) Validate() error {
+	// Note: execPath defaults to "amass" in NewWithConfig
+	// So we only check if it's been explicitly set to empty after construction
 	if a.execPath == "" {
 		return fmt.Errorf("amass exec path is empty")
 	}
 
+	// Note: timeout defaults to defaultTimeout in NewWithConfig
+	// But after construction, it should never be <= 0
 	if a.timeout <= 0 {
-		return fmt.Errorf("timeout must be positive")
+		return fmt.Errorf("timeout must be positive, got %v", a.timeout)
 	}
 
 	if a.maxDNSQPS < 0 {
@@ -367,12 +544,12 @@ func (a *AmassSource) HealthCheck(ctx context.Context) error {
 }
 
 // buildCommand constructs the amass command with appropriate flags.
-func (a *AmassSource) buildCommand(ctx context.Context, target domain.Target) *exec.Cmd {
+func (a *AmassSource) buildCommand(ctx context.Context, target domain.Target, outputDir string) *exec.Cmd {
 	args := []string{
-		"enum",            // Use enum subcommand
-		"-d", target.Root, // Target domain
-		"-silent",         // No progress output
-		"-nocolor",        // No color in output
+		"enum",               // Use enum subcommand
+		"-d", target.Root,    // Target domain
+		"-dir", outputDir,    // Output directory for database
+		"-nocolor",           // No color in output
 	}
 
 	// Active mode flag
@@ -395,10 +572,14 @@ func (a *AmassSource) buildCommand(ctx context.Context, target domain.Target) *e
 		args = append(args, "-dns-qps", strconv.Itoa(a.maxDNSQPS))
 	}
 
-	// Timeout (in minutes)
+	// Timeout (in minutes) - round up to at least 1 minute
 	timeoutMinutes := int(a.timeout.Minutes())
 	if timeoutMinutes <= 0 {
+		// For timeouts less than 1 minute, still pass 1 minute to amass
+		// This is a limitation of amass CLI which only accepts minute granularity
 		timeoutMinutes = 1
+		a.logger.Debug("timeout less than 1 minute, rounding up to 1 minute for amass",
+			"original_timeout", a.timeout.String())
 	}
 	args = append(args, "-timeout", strconv.Itoa(timeoutMinutes))
 
@@ -408,6 +589,7 @@ func (a *AmassSource) buildCommand(ctx context.Context, target domain.Target) *e
 	a.logger.Debug("built amass command",
 		"args", args,
 		"timeout", a.timeout.String(),
+		"output_dir", outputDir,
 	)
 
 	return cmd

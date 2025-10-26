@@ -141,6 +141,18 @@ func DefaultConfig() Config {
 						"exec_path":   "amass",
 					},
 				},
+				"waybackurls": {
+					Enabled:   true,
+					Timeout:   120 * time.Second, // Wayback Machine can be slow
+					Retries:   2,
+					RateLimit: 0,
+					Priority:  5, // High priority (passive discovery, early execution)
+					Custom: map[string]interface{}{
+						"with_dates": false,
+						"no_subs":    false,
+						"exec_path":  "waybackurls",
+					},
+				},
 			},
 		},
 

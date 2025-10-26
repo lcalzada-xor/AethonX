@@ -118,13 +118,13 @@ func inferStageName(id int, sources []ports.Source) string {
 	// Inferir nombre basado en características
 	if id == 0 {
 		if allPassive {
-			return "Passive Discovery"
+			return "Surface Discovery"
 		}
 		return "Initial Discovery"
 	}
 
 	if allActive && hasAPI {
-		return "Active Validation"
+		return "Service Profiling"
 	}
 
 	if allActive && hasCLI {

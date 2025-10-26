@@ -128,8 +128,15 @@ func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domai
 	// Read stderr in background to prevent blocking
 	var stderrBytes []byte
 	var stderrMu sync.Mutex
+	var stderrWg sync.WaitGroup
+	stderrWg.Add(1)
+
 	go func() {
-		data, _ := io.ReadAll(stderr)
+		defer stderrWg.Done()
+		data, err := io.ReadAll(stderr)
+		if err != nil {
+			s.logger.Warn("error reading stderr", "error", err.Error())
+		}
 		stderrMu.Lock()
 		stderrBytes = data
 		stderrMu.Unlock()
@@ -176,6 +183,23 @@ func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domai
 		s.logger.Warn("scanner error", "error", err.Error())
 	}
 
+	// Wait for process to complete
+	if err := cmd.Wait(); err != nil {
+		// Wait for stderr goroutine to finish before returning error
+		stderrWg.Wait()
+
+		// Don't fail if we got some results
+		if len(responses) > 0 {
+			s.logger.Warn("subfinder exited with error but produced results", "error", err.Error())
+			result.AddWarning("subfinder", fmt.Sprintf("process exited with error: %v", err))
+		} else {
+			return nil, fmt.Errorf("subfinder failed: %w", err)
+		}
+	}
+
+	// Wait for stderr goroutine to finish reading all output
+	stderrWg.Wait()
+
 	// Get stderr from background goroutine
 	stderrMu.Lock()
 	stderrLen := len(stderrBytes)
@@ -187,21 +211,29 @@ func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domai
 		result.AddWarning("subfinder", fmt.Sprintf("stderr output: %s", stderrStr))
 	}
 
-	// Wait for process to complete
-	if err := cmd.Wait(); err != nil {
-		// Don't fail if we got some results
-		if len(responses) > 0 {
-			s.logger.Warn("subfinder exited with error but produced results", "error", err.Error())
-			result.AddWarning("subfinder", fmt.Sprintf("process exited with error: %v", err))
-		} else {
-			return nil, fmt.Errorf("subfinder failed: %w", err)
-		}
-	}
-
 	// Parse responses into artifacts
 	artifacts := s.parser.ParseMultipleResponses(responses, target)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
+	}
+
+	// Log warning if responses were found but no artifacts created (filtered out)
+	if len(responses) > 0 && len(artifacts) == 0 {
+		s.logger.Warn("subfinder found responses but all were filtered out",
+			"target", target.Root,
+			"responses", len(responses),
+			"reason", "likely out of scope or wildcards",
+		)
+		result.AddWarning("subfinder", fmt.Sprintf("found %d responses but all were filtered out (out of scope or wildcards)", len(responses)))
+	}
+
+	// Log warning if no responses at all
+	if len(responses) == 0 {
+		s.logger.Warn("subfinder completed but found 0 responses",
+			"target", target.Root,
+			"sources", s.sources,
+		)
+		result.AddWarning("subfinder", "scan completed but no responses were found - target may have no exposed subdomains or sources are unavailable/rate-limited")
 	}
 
 	duration := time.Since(startTime)
@@ -260,10 +292,10 @@ func (s *SubfinderSource) Close() error {
 		if s.cmd.ProcessState == nil || !s.cmd.ProcessState.Exited() {
 			// Try SIGTERM first
 			if err := s.cmd.Process.Signal(os.Interrupt); err != nil {
-				// Only log if it's not "already finished"
-				if err.Error() != "os: process already finished" {
+				// Check if process already finished (not a real error)
+				if err != os.ErrProcessDone {
 					s.logger.Warn("SIGTERM failed, forcing kill", "error", err.Error())
-					if killErr := s.cmd.Process.Kill(); killErr != nil && killErr.Error() != "os: process already finished" {
+					if killErr := s.cmd.Process.Kill(); killErr != nil && killErr != os.ErrProcessDone {
 						s.logger.Warn("failed to kill subfinder process", "error", killErr.Error())
 					}
 				}

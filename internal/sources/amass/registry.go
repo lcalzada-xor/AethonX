@@ -43,7 +43,7 @@ func init() {
 
 			// Use configured timeout or default
 			if cfg.Timeout > 0 {
-				timeout = time.Duration(cfg.Timeout)
+				timeout = time.Duration(cfg.Timeout) * time.Second
 			}
 
 			amassConfig := AmassConfig{
