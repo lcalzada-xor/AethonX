@@ -18,6 +18,10 @@ const (
 
 	// ProfileHeadless enables screenshot capture (requires Chrome).
 	ProfileHeadless ScanProfile = "headless"
+
+	// ProfileVerification performs ultra-fast liveness verification.
+	// Used for mass URL checking (waybackurls artifacts).
+	ProfileVerification ScanProfile = "verification"
 )
 
 // ProfileConfig defines the httpx flags and metadata for a scan profile.
@@ -106,6 +110,20 @@ var Profiles = map[ScanProfile]ProfileConfig{
 		},
 		Description: "Visual reconnaissance with headless browser (requires Chrome)",
 		Weight:      100,
+	},
+
+	ProfileVerification: {
+		Flags: []string{
+			"-sc",                     // Status code (essential)
+			"-silent",                 // No console output
+			"-no-color",               // No ANSI colors
+			"-timeout", "3",           // 3 second timeout per request
+			"-retries", "1",           // Only 1 retry
+			"-follow-redirects",       // Follow HTTP redirects
+			"-max-redirects", "2",     // Max 2 redirects
+		},
+		Description: "Ultra-fast liveness verification for mass URL checking",
+		Weight:      20, // Lowest weight (fastest)
 	},
 }
 

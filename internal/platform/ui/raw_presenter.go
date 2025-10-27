@@ -165,13 +165,20 @@ func (r *RawPresenter) UpdateSourcePhase(sourceName string, phase string) {
 }
 
 // FinishSource notifica la finalización de un source
-func (r *RawPresenter) FinishSource(sourceName string, status Status, duration time.Duration, artifactCount int) {
-	r.log("INFO", "source_completed", map[string]interface{}{
+func (r *RawPresenter) FinishSource(sourceName string, status Status, duration time.Duration, artifactCount int, summary *SourceSummary) {
+	fields := map[string]interface{}{
 		"source":    sourceName,
 		"status":    status.String(),
 		"duration":  duration,
 		"artifacts": artifactCount,
-	})
+	}
+
+	// Añadir summary si existe
+	if summary != nil && summary.Summary != "" {
+		fields["summary"] = summary.Summary
+	}
+
+	r.log("INFO", "source_completed", fields)
 }
 
 // UpdateDiscoveries actualiza estadísticas de descubrimiento

@@ -309,6 +309,12 @@ func (a *AmassSource) readDatabaseResults(dbPath string, target domain.Target) (
 				fqdn,
 				sourceName,
 			)
+			// Set confidence based on active mode
+			if a.activeMode {
+				artifact.Confidence = domain.ConfidenceHigh // Active DNS validation
+			} else {
+				artifact.Confidence = domain.ConfidenceMedium // Passive discovery
+			}
 			artifacts = append(artifacts, artifact)
 
 		case "IPAddress":
@@ -318,6 +324,11 @@ func (a *AmassSource) readDatabaseResults(dbPath string, target domain.Target) (
 					addr,
 					sourceName,
 				)
+				if a.activeMode {
+					artifact.Confidence = domain.ConfidenceHigh
+				} else {
+					artifact.Confidence = domain.ConfidenceMedium
+				}
 				artifacts = append(artifacts, artifact)
 			}
 
@@ -328,6 +339,11 @@ func (a *AmassSource) readDatabaseResults(dbPath string, target domain.Target) (
 					cidr,
 					sourceName,
 				)
+				if a.activeMode {
+					artifact.Confidence = domain.ConfidenceHigh
+				} else {
+					artifact.Confidence = domain.ConfidenceMedium
+				}
 				artifacts = append(artifacts, artifact)
 			}
 
@@ -339,6 +355,11 @@ func (a *AmassSource) readDatabaseResults(dbPath string, target domain.Target) (
 					asnValue,
 					sourceName,
 				)
+				if a.activeMode {
+					artifact.Confidence = domain.ConfidenceHigh
+				} else {
+					artifact.Confidence = domain.ConfidenceMedium
+				}
 				artifacts = append(artifacts, artifact)
 			}
 		}
@@ -399,6 +420,12 @@ func (a *AmassSource) readTextResults(txtPath string, target domain.Target) ([]*
 				fqdn,
 				sourceName,
 			)
+			// Set confidence based on active mode
+			if a.activeMode {
+				artifact.Confidence = domain.ConfidenceHigh
+			} else {
+				artifact.Confidence = domain.ConfidenceMedium
+			}
 			artifacts = append(artifacts, artifact)
 		}
 	}

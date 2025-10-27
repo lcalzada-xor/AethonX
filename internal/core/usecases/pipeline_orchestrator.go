@@ -4,9 +4,13 @@ package usecases
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"aethonx/internal/core/domain"
+	"aethonx/internal/core/domain/metadata"
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/ui"
@@ -211,8 +215,37 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 			Sources:     sourceNames,
 		})
 
+		// Crear contexto con timeout independiente para este stage
+		// Cada stage tiene su propio timeout que NO depende del contexto padre
+		// Si el contexto padre está cancelado (timeout global), creamos uno nuevo
+		var stageCtx context.Context
+		var stageCancel context.CancelFunc
+
+		// Verificar si el contexto padre está cancelado
+		if ctx.Err() != nil {
+			p.logger.Warn("parent context cancelled, creating fresh context for stage",
+				"stage_id", stage.ID,
+				"stage_name", stage.Name,
+			)
+			// Contexto padre cancelado, crear uno completamente nuevo
+			if p.uiConfig.TimeoutS > 0 {
+				stageCtx, stageCancel = context.WithTimeout(context.Background(), time.Duration(p.uiConfig.TimeoutS)*time.Second)
+			} else {
+				stageCtx, stageCancel = context.WithCancel(context.Background())
+			}
+		} else {
+			// Contexto padre activo, crear hijo con timeout
+			if p.uiConfig.TimeoutS > 0 {
+				stageCtx, stageCancel = context.WithTimeout(ctx, time.Duration(p.uiConfig.TimeoutS)*time.Second)
+			} else {
+				stageCtx, stageCancel = context.WithCancel(ctx)
+			}
+		}
+
 		// Ejecutar stage con artifacts acumulados como input
-		stageResult, err := p.executeStage(ctx, stage, result)
+		stageResult, err := p.executeStage(stageCtx, stage, result)
+		stageCancel() // Limpiar contexto del stage
+
 		if err != nil {
 			// Fail-soft: log error pero continuar con siguientes stages
 			p.logger.Warn("stage execution failed",
@@ -486,8 +519,12 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 			sourceName,
 			err,
 		))
+		// Generar summary para error
+		summary := p.buildSourceSummary(sourceName, nil, err, 0)
+		execResult.Summary = summary
+
 		// Notificar error al presenter
-		p.presenter.FinishSource(sourceName, ui.StatusError, duration, 0)
+		p.presenter.FinishSource(sourceName, ui.StatusError, duration, 0, summary)
 		return execResult
 	}
 
@@ -524,12 +561,16 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 		artifactCount,
 	))
 
+	// Generar summary para resultado exitoso
+	summary := p.buildSourceSummary(sourceName, result, nil, artifactCount)
+	execResult.Summary = summary
+
 	// Notificar éxito al presenter
 	status := ui.StatusSuccess
 	if len(result.Warnings) > 0 {
 		status = ui.StatusWarning
 	}
-	p.presenter.FinishSource(sourceName, status, duration, artifactCount)
+	p.presenter.FinishSource(sourceName, status, duration, artifactCount, summary)
 
 	return execResult
 }
@@ -619,6 +660,288 @@ func (p *PipelineOrchestrator) listenToProgress(ctx context.Context, source port
 			// Contexto cancelado, salir
 			return
 		}
+	}
+}
+
+// buildSourceSummary genera un resumen informativo del resultado de un source
+func (p *PipelineOrchestrator) buildSourceSummary(
+	sourceName string,
+	result *domain.ScanResult,
+	err error,
+	artifactCount int,
+) *ui.SourceSummary {
+	// Caso 1: Error
+	if err != nil {
+		return &ui.SourceSummary{
+			Summary: p.summarizeError(sourceName, err),
+		}
+	}
+
+	// Caso 2: Sin resultados
+	if artifactCount == 0 {
+		// Verificar si hay warnings para mostrar contexto
+		if result != nil && len(result.Warnings) > 0 {
+			return &ui.SourceSummary{
+				Summary: result.Warnings[0].Message,
+			}
+		}
+		return &ui.SourceSummary{
+			Summary: "no results found",
+		}
+	}
+
+	// Caso 3: Resumen específico por source
+	switch sourceName {
+	case "waybackurls":
+		return p.summarizeWaybackurls(result)
+	case "httpx":
+		return p.summarizeHTTPX(result)
+	case "subfinder":
+		return p.summarizeSubfinder(result)
+	case "rdap":
+		return p.summarizeRDAP(result)
+	case "crtsh":
+		return p.summarizeCRTSH(result)
+	case "amass":
+		return p.summarizeAmass(result)
+	default:
+		return p.summarizeGeneric(result)
+	}
+}
+
+// summarizeError genera un resumen legible del error
+func (p *PipelineOrchestrator) summarizeError(sourceName string, err error) string {
+	errStr := err.Error()
+
+	// Detectar errores comunes y humanizarlos
+	switch {
+	case strings.Contains(errStr, "executable file not found"):
+		return fmt.Sprintf("binary '%s' not found in PATH", sourceName)
+	case strings.Contains(errStr, "context deadline exceeded"):
+		return "timeout exceeded"
+	case strings.Contains(errStr, "connection refused"):
+		return "connection refused"
+	case strings.Contains(errStr, "no such host"):
+		return "DNS resolution failed"
+	case strings.Contains(errStr, "permission denied"):
+		return "permission denied"
+	default:
+		// Truncar si es muy largo
+		if len(errStr) > 50 {
+			return errStr[:47] + "..."
+		}
+		return errStr
+	}
+}
+
+// summarizeGeneric genera un resumen genérico por tipo de artifact
+func (p *PipelineOrchestrator) summarizeGeneric(result *domain.ScanResult) *ui.SourceSummary {
+	// Contar por tipo
+	stats := result.Stats()
+
+	// Tomar los 3 tipos más frecuentes
+	type typeCount struct {
+		name  string
+		count int
+	}
+
+	types := make([]typeCount, 0, len(stats))
+	for t, c := range stats {
+		types = append(types, typeCount{name: t, count: c})
+	}
+
+	// Ordenar por count descendente
+	sort.Slice(types, func(i, j int) bool {
+		return types[i].count > types[j].count
+	})
+
+	// Construir resumen (max 3 tipos)
+	parts := make([]string, 0, 3)
+	for i := 0; i < len(types) && i < 3; i++ {
+		parts = append(parts, fmt.Sprintf("%s: %d",
+			strings.ToLower(types[i].name), types[i].count))
+	}
+
+	return &ui.SourceSummary{
+		Summary: strings.Join(parts, " • "),
+	}
+}
+
+// summarizeWaybackurls resume resultados de waybackurls
+// Formato esperado: "raw: 8432 → filtered: 1247"
+func (p *PipelineOrchestrator) summarizeWaybackurls(result *domain.ScanResult) *ui.SourceSummary {
+	artifactCount := len(result.Artifacts)
+
+	// Buscar estadísticas de filtrado en metadata
+	inputURLs := 0
+	outputURLs := 0
+
+	if result.Metadata.Environment != nil {
+		if inputStr, ok := result.Metadata.Environment["waybackurls_filter_input_urls"]; ok {
+			inputURLs, _ = strconv.Atoi(inputStr)
+		}
+		if outputStr, ok := result.Metadata.Environment["waybackurls_filter_output_urls"]; ok {
+			outputURLs, _ = strconv.Atoi(outputStr)
+		}
+	}
+
+	// Si hay estadísticas de filtrado, mostrarlas
+	if inputURLs > 0 && outputURLs > 0 && inputURLs != outputURLs {
+		return &ui.SourceSummary{
+			Summary: fmt.Sprintf("raw: %d → filtered: %d", inputURLs, outputURLs),
+		}
+	}
+
+	// Si solo hay outputURLs (sin diferencia), mostrar solo el total
+	if outputURLs > 0 {
+		return &ui.SourceSummary{
+			Summary: fmt.Sprintf("urls: %d", outputURLs),
+		}
+	}
+
+	// Fallback: usar artifact count
+	return &ui.SourceSummary{
+		Summary: fmt.Sprintf("urls: %d", artifactCount),
+	}
+}
+
+// summarizeHTTPX resume resultados de httpx
+// Formato esperado: "probed: 156 → alive: 89 (57%)"
+func (p *PipelineOrchestrator) summarizeHTTPX(result *domain.ScanResult) *ui.SourceSummary {
+	alive := len(result.Artifacts)
+	probed := 0
+
+	// Buscar estadísticas en metadata
+	if result.Metadata.Environment != nil {
+		if probedStr, ok := result.Metadata.Environment["httpx_probed"]; ok {
+			probed, _ = strconv.Atoi(probedStr)
+		}
+		if aliveStr, ok := result.Metadata.Environment["httpx_alive"]; ok {
+			// Usar el valor de metadata si está disponible (más preciso)
+			alive, _ = strconv.Atoi(aliveStr)
+		}
+	}
+
+	// Si hay estadísticas de probed y son diferentes del alive, mostrar porcentaje
+	if probed > 0 && alive > 0 && probed != alive {
+		percentage := (alive * 100) / probed
+		return &ui.SourceSummary{
+			Summary: fmt.Sprintf("probed: %d → alive: %d (%d%%)", probed, alive, percentage),
+		}
+	}
+
+	// Si solo hay alive count
+	if alive > 0 {
+		return &ui.SourceSummary{
+			Summary: fmt.Sprintf("alive: %d", alive),
+		}
+	}
+
+	// Sin resultados
+	return &ui.SourceSummary{
+		Summary: "no results",
+	}
+}
+
+// summarizeSubfinder resume resultados de subfinder
+func (p *PipelineOrchestrator) summarizeSubfinder(result *domain.ScanResult) *ui.SourceSummary {
+	subdomains := 0
+	for _, a := range result.Artifacts {
+		if a.Type == domain.ArtifactTypeSubdomain {
+			subdomains++
+		}
+	}
+
+	// Contar sources únicas mencionadas (si hay metadata)
+	sourcesUsed := len(result.Metadata.SourcesUsed)
+
+	if sourcesUsed > 0 {
+		return &ui.SourceSummary{
+			Summary: fmt.Sprintf("sources: %d • unique: %d", sourcesUsed, subdomains),
+		}
+	}
+
+	return &ui.SourceSummary{
+		Summary: fmt.Sprintf("subdomains: %d", subdomains),
+	}
+}
+
+// summarizeRDAP resume resultados de RDAP
+func (p *PipelineOrchestrator) summarizeRDAP(result *domain.ScanResult) *ui.SourceSummary {
+	registrar := "unknown"
+	nsCount := 0
+
+	// Buscar en artifacts con metadata de tipo Domain
+	for _, a := range result.Artifacts {
+		if a.Type == domain.ArtifactTypeDomain && a.TypedMetadata != nil {
+			if domainMeta, ok := a.TypedMetadata.(*metadata.DomainMetadata); ok {
+				if domainMeta.Registrar != "" {
+					registrar = domainMeta.Registrar
+				}
+				nsCount = len(domainMeta.Nameservers)
+				break
+			}
+		}
+	}
+
+	return &ui.SourceSummary{
+		Summary: fmt.Sprintf("registrar: %s • ns: %d", registrar, nsCount),
+	}
+}
+
+// summarizeCRTSH resume resultados de crt.sh
+func (p *PipelineOrchestrator) summarizeCRTSH(result *domain.ScanResult) *ui.SourceSummary {
+	subdomains := 0
+	certs := 0
+
+	for _, a := range result.Artifacts {
+		switch a.Type {
+		case domain.ArtifactTypeSubdomain:
+			subdomains++
+		case domain.ArtifactTypeCertificate:
+			certs++
+		}
+	}
+
+	return &ui.SourceSummary{
+		Summary: fmt.Sprintf("subdomains: %d • certs: %d", subdomains, certs),
+	}
+}
+
+// summarizeAmass resume resultados de Amass
+func (p *PipelineOrchestrator) summarizeAmass(result *domain.ScanResult) *ui.SourceSummary {
+	subdomains := 0
+	ips := 0
+	asns := 0
+
+	for _, a := range result.Artifacts {
+		switch a.Type {
+		case domain.ArtifactTypeSubdomain:
+			subdomains++
+		case domain.ArtifactTypeIP:
+			ips++
+		case domain.ArtifactTypeASN:
+			asns++
+		}
+	}
+
+	parts := []string{}
+	if subdomains > 0 {
+		parts = append(parts, fmt.Sprintf("subs: %d", subdomains))
+	}
+	if ips > 0 {
+		parts = append(parts, fmt.Sprintf("ips: %d", ips))
+	}
+	if asns > 0 {
+		parts = append(parts, fmt.Sprintf("asn: %d", asns))
+	}
+
+	if len(parts) == 0 {
+		return &ui.SourceSummary{Summary: "no results"}
+	}
+
+	return &ui.SourceSummary{
+		Summary: strings.Join(parts, " • "),
 	}
 }
 

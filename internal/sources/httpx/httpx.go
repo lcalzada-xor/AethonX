@@ -24,6 +24,11 @@ const (
 	defaultTimeout   = 120 * time.Second
 	defaultThreads   = 75
 	defaultRateLimit = 150
+
+	// Verification profile optimizations (for waybackurls mass validation)
+	verificationThreads   = 150
+	verificationRateLimit = 300
+	verificationTimeout   = 5 * time.Second
 )
 
 // HTTPXSource implements ports.Source and ports.AdvancedSource.
@@ -401,18 +406,162 @@ func (h *HTTPXSource) RunWithInput(ctx context.Context, target domain.Target, in
 	result := domain.NewScanResult(target)
 	startTime := time.Now()
 
-	// Extract targets from input artifacts
-	targets := h.extractTargetsFromInput(input)
+	// Separate artifacts by confidence level (waybackurls vs others)
+	waybackurlsTargets, otherTargets := h.separateTargetsBySource(input)
 
-	if len(targets) == 0 {
+	if len(waybackurlsTargets) == 0 && len(otherTargets) == 0 {
 		h.logger.Warn("no input artifacts found, using root target", "target", target.Root)
 		return h.Run(ctx, target)
 	}
 
-	h.logger.Info("starting httpx scan with input artifacts",
+	h.logger.Info("starting httpx scan with smart profile selection",
 		"target", target.Root,
-		"profile", h.profile,
-		"input_targets", len(targets),
+		"waybackurls_targets", len(waybackurlsTargets),
+		"other_targets", len(otherTargets),
+	)
+
+	// Execute verification profile for waybackurls (fast)
+	if len(waybackurlsTargets) > 0 {
+		verificationResults, err := h.runWithProfile(ctx, target, waybackurlsTargets, ProfileVerification, input.Artifacts)
+		if err != nil {
+			h.logger.Warn("verification profile failed", "error", err.Error())
+			result.AddWarning("httpx", fmt.Sprintf("verification failed: %v", err))
+		} else {
+			// Merge results
+			for _, artifact := range verificationResults.Artifacts {
+				result.AddArtifact(artifact)
+			}
+		}
+	}
+
+	// Execute full profile for other sources (comprehensive)
+	if len(otherTargets) > 0 {
+		fullResults, err := h.runWithProfile(ctx, target, otherTargets, h.profile, input.Artifacts)
+		if err != nil {
+			h.logger.Warn("full profile failed", "error", err.Error())
+			result.AddWarning("httpx", fmt.Sprintf("full profile failed: %v", err))
+		} else {
+			// Merge results
+			for _, artifact := range fullResults.Artifacts {
+				result.AddArtifact(artifact)
+			}
+		}
+	}
+
+	duration := time.Since(startTime)
+	totalProbed := len(waybackurlsTargets) + len(otherTargets)
+	totalAlive := len(result.Artifacts)
+
+	h.logger.Info("httpx scan completed with smart profiles",
+		"target", target.Root,
+		"duration", duration.String(),
+		"waybackurls_verified", len(waybackurlsTargets),
+		"others_scanned", len(otherTargets),
+		"total_probed", totalProbed,
+		"total_alive", totalAlive,
+	)
+
+	// Store statistics in metadata for UI summary
+	if result.Metadata.Environment == nil {
+		result.Metadata.Environment = make(map[string]string)
+	}
+	result.Metadata.Environment["httpx_probed"] = fmt.Sprintf("%d", totalProbed)
+	result.Metadata.Environment["httpx_alive"] = fmt.Sprintf("%d", totalAlive)
+
+	return result, nil
+}
+
+// separateTargetsBySource separates targets into waybackurls and others based on artifact source.
+func (h *HTTPXSource) separateTargetsBySource(input *domain.ScanResult) (waybackurls []string, others []string) {
+	waybackurlsSet := make(map[string]bool)
+	othersSet := make(map[string]bool)
+
+	for _, artifact := range input.Artifacts {
+		var target string
+
+		switch artifact.Type {
+		case domain.ArtifactTypeSubdomain, domain.ArtifactTypeDomain:
+			target = artifact.Value
+		case domain.ArtifactTypeURL:
+			target = artifact.Value
+		default:
+			continue
+		}
+
+		if target == "" {
+			continue
+		}
+
+		// Check if artifact is from waybackurls
+		isFromWaybackurls := false
+		for _, source := range artifact.Sources {
+			if source == "waybackurls" {
+				isFromWaybackurls = true
+				break
+			}
+		}
+
+		if isFromWaybackurls {
+			waybackurlsSet[target] = true
+		} else {
+			othersSet[target] = true
+		}
+	}
+
+	// Convert sets to slices
+	waybackurls = make([]string, 0, len(waybackurlsSet))
+	for target := range waybackurlsSet {
+		waybackurls = append(waybackurls, target)
+	}
+
+	others = make([]string, 0, len(othersSet))
+	for target := range othersSet {
+		others = append(others, target)
+	}
+
+	h.logger.Debug("separated targets by source",
+		"waybackurls", len(waybackurls),
+		"others", len(others),
+	)
+
+	return waybackurls, others
+}
+
+// runWithProfile executes httpx with a specific profile for the given targets.
+func (h *HTTPXSource) runWithProfile(ctx context.Context, target domain.Target, targets []string, profile ScanProfile, inputArtifacts []*domain.Artifact) (*domain.ScanResult, error) {
+	result := domain.NewScanResult(target)
+	startTime := time.Now()
+
+	// Temporarily switch profile
+	originalProfile := h.profile
+	originalThreads := h.threads
+	originalRateLimit := h.rateLimit
+	originalTimeout := h.timeout
+
+	h.profile = profile
+
+	// Apply optimized settings for verification profile
+	if profile == ProfileVerification {
+		h.threads = verificationThreads
+		h.rateLimit = verificationRateLimit
+		h.timeout = verificationTimeout
+		h.logger.Debug("applying verification profile optimizations",
+			"threads", h.threads,
+			"rate_limit", h.rateLimit,
+			"timeout", h.timeout.String(),
+		)
+	}
+
+	defer func() {
+		h.profile = originalProfile
+		h.threads = originalThreads
+		h.rateLimit = originalRateLimit
+		h.timeout = originalTimeout
+	}()
+
+	h.logger.Info("running httpx with profile",
+		"profile", profile,
+		"targets", len(targets),
 		"threads", h.threads,
 		"rate_limit", h.rateLimit,
 	)
@@ -507,14 +656,14 @@ func (h *HTTPXSource) RunWithInput(ctx context.Context, target domain.Target, in
 		}
 	}
 
-	// Parse responses into artifacts
-	artifacts := h.parser.ParseMultipleResponses(responses, target)
+	// Parse responses into artifacts with confidence upgrade
+	artifacts := h.parser.ParseMultipleResponsesWithInput(responses, target, inputArtifacts)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
 
 	duration := time.Since(startTime)
-	h.logger.Info("httpx scan completed with input",
+	h.logger.Info("httpx profile execution completed",
 		"target", target.Root,
 		"duration", duration.String(),
 		"input_targets", len(targets),

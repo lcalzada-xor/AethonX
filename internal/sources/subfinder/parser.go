@@ -96,8 +96,8 @@ func (p *Parser) ParseResponse(resp *SubfinderResponse, target domain.Target) []
 		}
 	}
 
-	// High confidence for subfinder (aggregates from trusted public sources)
-	artifact.Confidence = 0.90
+	// Passive discovery - medium confidence
+	artifact.Confidence = domain.ConfidenceMedium
 
 	// Add tags based on subdomain characteristics
 	if strings.Count(host, ".") > strings.Count(target.Root, ".")+1 {

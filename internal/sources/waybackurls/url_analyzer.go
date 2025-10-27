@@ -228,11 +228,13 @@ func (a *URLAnalyzer) extractParameters(query url.Values) []*domain.Artifact {
 		}
 		seen[paramName] = true
 
-		artifacts = append(artifacts, domain.NewArtifact(
+		artifact := domain.NewArtifact(
 			domain.ArtifactTypeParameter,
 			paramName,
 			"waybackurls",
-		))
+		)
+		artifact.Confidence = domain.ConfidenceLow
+		artifacts = append(artifacts, artifact)
 	}
 
 	return artifacts
@@ -242,11 +244,13 @@ func (a *URLAnalyzer) extractParameters(query url.Values) []*domain.Artifact {
 func (a *URLAnalyzer) detectJavaScript(path string, rawURL string) *domain.Artifact {
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == ".js" {
-		return domain.NewArtifact(
+		artifact := domain.NewArtifact(
 			domain.ArtifactTypeJavaScript,
 			rawURL,
 			"waybackurls",
 		)
+		artifact.Confidence = domain.ConfidenceLow
+		return artifact
 	}
 	return nil
 }
@@ -259,11 +263,13 @@ func (a *URLAnalyzer) detectSensitiveFile(path string, rawURL string) *domain.Ar
 	for _, pattern := range sensitivePatterns {
 		if strings.Contains(fileName, pattern) || strings.HasSuffix(fileName, pattern) {
 			a.logger.Warn("detected sensitive file", "url", rawURL, "pattern", pattern)
-			return domain.NewArtifact(
+			artifact := domain.NewArtifact(
 				domain.ArtifactTypeSensitiveFile,
 				rawURL,
 				"waybackurls",
 			)
+			artifact.Confidence = domain.ConfidenceLow
+			return artifact
 		}
 	}
 
@@ -278,11 +284,13 @@ func (a *URLAnalyzer) detectBackupFile(path string, rawURL string) *domain.Artif
 	for _, pattern := range backupPatterns {
 		if strings.HasSuffix(fileName, pattern) {
 			a.logger.Info("detected backup file", "url", rawURL, "pattern", pattern)
-			return domain.NewArtifact(
+			artifact := domain.NewArtifact(
 				domain.ArtifactTypeBackupFile,
 				rawURL,
 				"waybackurls",
 			)
+			artifact.Confidence = domain.ConfidenceLow
+			return artifact
 		}
 	}
 
@@ -296,11 +304,13 @@ func (a *URLAnalyzer) detectRepository(path string, rawURL string) *domain.Artif
 	for _, pattern := range repoPatterns {
 		if strings.Contains(pathLower, pattern) {
 			a.logger.Warn("detected repository exposure", "url", rawURL, "pattern", pattern)
-			return domain.NewArtifact(
+			artifact := domain.NewArtifact(
 				domain.ArtifactTypeRepository,
 				rawURL,
 				"waybackurls",
 			)
+			artifact.Confidence = domain.ConfidenceLow
+			return artifact
 		}
 	}
 
@@ -313,11 +323,13 @@ func (a *URLAnalyzer) detectAPI(path string, rawURL string) *domain.Artifact {
 
 	for _, pattern := range apiPatterns {
 		if strings.Contains(pathLower, pattern) {
-			return domain.NewArtifact(
+			artifact := domain.NewArtifact(
 				domain.ArtifactTypeAPI,
 				rawURL,
 				"waybackurls",
 			)
+			artifact.Confidence = domain.ConfidenceLow
+			return artifact
 		}
 	}
 
@@ -330,11 +342,13 @@ func (a *URLAnalyzer) detectTechnology(u *url.URL) *domain.Artifact {
 
 	for pattern, techName := range techPatterns {
 		if strings.Contains(pathLower, pattern) {
-			return domain.NewArtifact(
+			artifact := domain.NewArtifact(
 				domain.ArtifactTypeTechnology,
 				techName,
 				"waybackurls",
 			)
+			artifact.Confidence = domain.ConfidenceLow
+			return artifact
 		}
 	}
 

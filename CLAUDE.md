@@ -626,12 +626,12 @@ type Presenter interface {
 - **Global progress bar with source dashboard**:
   - Format: `⠋ [██████████▓░░░░░] 50% | (1/3) | 2.4s | [httpx ⠋] [rdap ✓] [crtsh ○]`
   - Components:
-    - Main spinner (rotates every 250ms)
+    - Main spinner (rotates every 200ms)
     - Progress bar with animated growing edge
     - Percentage and source completion counter
     - Elapsed time
     - Mini-dashboard showing each source's current status with individual spinners
-- **Animated spinner** (⠋ → ⠙ → ⠹ → ⠸ → ⠼ → ⠴ → ⠦ → ⠧ → ⠇ → ⠏) that updates every 250ms
+- **Animated spinner** (⠋ → ⠙ → ⠹ → ⠸ → ⠼ → ⠴ → ⠦ → ⠧ → ⠇ → ⠏) that updates every 200ms
 - **Color-coded progress**: cyan (0-49%) → yellow (50-99%) → green (100%)
 - **Accumulates source results** in memory and displays all together at stage completion
 - **Clean summary** with artifact counts and execution times
@@ -698,7 +698,7 @@ The orchestrator notifies the presenter at key lifecycle events:
 **Key features**:
 - **Thread-safe**: Uses sync.RWMutex for concurrent access
 - **In-place rendering**: Uses ANSI codes to update same line
-- **Independent spinner**: Goroutine with 250ms ticker for smooth animation
+- **Independent spinner**: Goroutine with 200ms ticker for smooth animation
 - **ETA calculation**: Estimates remaining time based on average source duration
 - **Slow source detection**: Shows ⏱ indicator for sources taking >5 seconds
 - **Artifact tracking**: Displays real-time artifact count with velocity (artifacts/second)
@@ -710,13 +710,13 @@ The orchestrator notifies the presenter at key lifecycle events:
 
 **Spinner Animation**:
 - Uses Unicode Braille patterns: ⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏
-- Updates every 100ms via independent goroutine
+- Updates every 200ms via independent goroutine
 - Smooth, professional animation
 - Changes to ✓ when scan completes
 
 **Visual Enhancements**:
 - **Progress colors**: Cyan (0-49%) → Yellow (50-74%) → Bright Yellow (75-99%) → Green (100%)
-- **Animated progress bar**: Growing edge pulses with characters `▓▒░` rotating every 250ms
+- **Animated progress bar**: Growing edge pulses with characters `▓▒░` rotating every 200ms
 - **ETA display**: Shows estimated time remaining (e.g., "• ETA 2s")
 - **Artifact counter with velocity**: Shows total and rate (e.g., "• 42 artifacts (15/s)")
 - **Slow indicator**: Yellow ⏱ appears if source takes >5s
@@ -728,13 +728,13 @@ The orchestrator notifies the presenter at key lifecycle events:
     - Success: `✓` (green checkmark)
     - Error: `✖` (red X)
     - Warning: `⚠` (yellow warning)
-  - Running sources have individual animated spinners that rotate every 100ms
+  - Running sources have individual animated spinners that rotate every 200ms
   - Provides at-a-glance view of all source execution status
 
 **Rendering Flow**:
 ```
 StartStage → globalProgress.InitializeSources(names) → globalProgress.Start(len(sources)) → startSpinner()
-  → Ticker goroutine updates every 100ms:
+  → Ticker goroutine updates every 200ms:
     - Advances main spinner frame
     - Advances growing edge frame
     - Advances spinner frames for all running sources

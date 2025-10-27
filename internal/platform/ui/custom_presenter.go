@@ -25,6 +25,7 @@ type sourceResult struct {
 	status   Status
 	duration time.Duration
 	count    int
+	summary  *SourceSummary
 }
 
 // NewCustomPresenter crea un nuevo presenter custom
@@ -123,7 +124,7 @@ func (c *CustomPresenter) FinishStage(stageNum int, duration time.Duration) {
 	// Detener y limpiar GlobalProgress
 	c.globalProgress.Stop()
 	c.globalProgress.Render() // Renderizar estado final (100%)
-	time.Sleep(200 * time.Millisecond) // Dar tiempo para ver el 100%
+	time.Sleep(400 * time.Millisecond) // Dar tiempo para ver el 100%
 	c.globalProgress.Clear()
 
 	// Mostrar TODOS los resultados acumulados
@@ -131,12 +132,25 @@ func (c *CustomPresenter) FinishStage(stageNum int, duration time.Duration) {
 	for _, result := range results {
 		symbol := result.status.Symbol()
 		color := result.status.Color()
-		fmt.Printf("  %s %s %s ◆ %d artifacts\n",
+
+		// Construir línea base
+		line := fmt.Sprintf("  %s %s %s ◆ %d artifacts",
 			terminal.Colorize(symbol, color),
 			terminal.Colorize(result.name, terminal.BrightCyan),
 			terminal.Colorize(fmt.Sprintf("(%s)", formatDuration(result.duration)), terminal.Gray),
 			result.count,
 		)
+
+		// Añadir summary si existe
+		if result.summary != nil && result.summary.Summary != "" {
+			summaryColor := terminal.Gray
+			if result.status == StatusError {
+				summaryColor = terminal.BrightRed
+			}
+			line += fmt.Sprintf(" | %s", terminal.Colorize(result.summary.Summary, summaryColor))
+		}
+
+		fmt.Println(line)
 	}
 
 	// Mostrar resumen del stage
@@ -204,7 +218,7 @@ func (c *CustomPresenter) UpdateSource(sourceName string, metrics ProgressMetric
 
 	// Actualizar contador de artifacts en GlobalProgress
 	c.globalProgress.UpdateArtifactCount(totalArtifacts)
-	// No llamar Render() aquí porque el spinner ya lo hace cada 250ms
+	// No llamar Render() aquí porque el spinner ya lo hace cada 200ms
 }
 
 // UpdateSourcePhase actualiza solo la fase de un source
@@ -213,7 +227,7 @@ func (c *CustomPresenter) UpdateSourcePhase(sourceName string, phase string) {
 }
 
 // FinishSource finaliza un source
-func (c *CustomPresenter) FinishSource(sourceName string, status Status, duration time.Duration, artifactCount int) {
+func (c *CustomPresenter) FinishSource(sourceName string, status Status, duration time.Duration, artifactCount int, summary *SourceSummary) {
 	c.mu.Lock()
 
 	// Actualizar state
@@ -232,6 +246,7 @@ func (c *CustomPresenter) FinishSource(sourceName string, status Status, duratio
 		status:   status,
 		duration: duration,
 		count:    artifactCount,
+		summary:  summary,
 	})
 
 	c.mu.Unlock()

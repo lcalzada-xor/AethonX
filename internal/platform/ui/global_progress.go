@@ -82,7 +82,7 @@ func (g *GlobalProgress) Start(totalSources int) {
 	g.previousArtifacts = 0
 	g.mu.Unlock()
 
-	// Iniciar goroutine del spinner con ticker de 250ms
+	// Iniciar goroutine del spinner con ticker de 200ms
 	g.startSpinner()
 }
 
@@ -160,7 +160,7 @@ func (g *GlobalProgress) Stop() {
 
 // startSpinner inicia la goroutine del spinner independiente
 func (g *GlobalProgress) startSpinner() {
-	g.spinnerTicker = time.NewTicker(100 * time.Millisecond)
+	g.spinnerTicker = time.NewTicker(200 * time.Millisecond)
 
 	go func() {
 		for {

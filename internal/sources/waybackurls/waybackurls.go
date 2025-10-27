@@ -15,6 +15,7 @@ import (
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
+	"aethonx/internal/platform/urlfilter"
 )
 
 const (
@@ -31,6 +32,8 @@ type WaybackurlsSource struct {
 	withDates  bool // -dates flag
 	noSubs     bool // -no-subs flag
 	parser     *Parser
+	filter     *urlfilter.FilterEngine // URL filter engine
+	filterCfg  urlfilter.FilterConfig  // Filter configuration
 	progressCh chan ports.ProgressUpdate
 
 	// Process management
@@ -40,6 +43,9 @@ type WaybackurlsSource struct {
 
 // New creates a new WaybackurlsSource with default configuration.
 func New(logger logx.Logger) *WaybackurlsSource {
+	// Use balanced default filter config
+	filterCfg := urlfilter.DefaultConfig()
+
 	return &WaybackurlsSource{
 		logger:     logger.With("source", sourceName),
 		execPath:   "waybackurls",
@@ -47,12 +53,14 @@ func New(logger logx.Logger) *WaybackurlsSource {
 		withDates:  false, // Don't need dates by default
 		noSubs:     false, // Include subdomains
 		parser:     NewParser(logger, sourceName),
+		filter:     urlfilter.NewFilterEngine(filterCfg, logger),
+		filterCfg:  filterCfg,
 		progressCh: make(chan ports.ProgressUpdate, 100),
 	}
 }
 
 // NewWithConfig creates WaybackurlsSource with custom configuration.
-func NewWithConfig(logger logx.Logger, execPath string, timeout time.Duration, withDates, noSubs bool) *WaybackurlsSource {
+func NewWithConfig(logger logx.Logger, execPath string, timeout time.Duration, withDates, noSubs bool, filterCfg urlfilter.FilterConfig) *WaybackurlsSource {
 	return &WaybackurlsSource{
 		logger:     logger.With("source", sourceName),
 		execPath:   execPath,
@@ -60,6 +68,8 @@ func NewWithConfig(logger logx.Logger, execPath string, timeout time.Duration, w
 		withDates:  withDates,
 		noSubs:     noSubs,
 		parser:     NewParser(logger, sourceName),
+		filter:     urlfilter.NewFilterEngine(filterCfg, logger),
+		filterCfg:  filterCfg,
 		progressCh: make(chan ports.ProgressUpdate, 100),
 	}
 }
@@ -89,6 +99,8 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 		"with_dates", w.withDates,
 		"no_subs", w.noSubs,
 		"timeout", w.timeout.String(),
+		"filter_enabled", w.filter != nil,
+		"max_urls", w.filterCfg.MaxURLs,
 	)
 
 	// Build command with context
@@ -147,16 +159,14 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 		stderrMu.Unlock()
 	}()
 
-	// Parse stdout in real-time (streaming URLs)
+	// Phase 1: Collect raw URLs
 	scanner := bufio.NewScanner(stdout)
 
 	// Increase buffer size for long URLs
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 10*1024*1024) // 10MB max token size
 
-	// Deduplication map
-	seen := make(map[string]bool) // key: "type:value"
-	artifactCount := 0
+	rawURLs := make([]string, 0, 10000)
 	urlCount := 0
 	lastProgress := time.Now()
 
@@ -164,25 +174,28 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 		line := scanner.Text()
 		urlCount++
 
-		// Parse line and extract artifacts
-		artifacts := w.parser.ParseLine(line, target)
-
-		for _, artifact := range artifacts {
-			// Deduplicate on the fly
-			key := string(artifact.Type) + ":" + artifact.Value
-			if !seen[key] {
-				seen[key] = true
-				result.AddArtifact(artifact)
-				artifactCount++
-			}
+		// Extract just the URL (remove timestamp if present)
+		urlStr, _ := w.parser.ExtractURLAndTimestamp(line)
+		if urlStr != "" {
+			rawURLs = append(rawURLs, urlStr)
 		}
 
-		// Emit progress every 100 URLs or every 2 seconds
-		if urlCount%100 == 0 || time.Since(lastProgress) > 2*time.Second {
+		// Apply volume control early if filtering is enabled
+		if w.filter != nil && w.filterCfg.EnableVolumeControl &&
+			w.filterCfg.MaxURLs > 0 && len(rawURLs) >= w.filterCfg.MaxURLs {
+			w.logger.Warn("reached max URLs, stopping collection",
+				"max", w.filterCfg.MaxURLs,
+				"current", len(rawURLs),
+			)
+			break
+		}
+
+		// Emit progress every 1000 URLs or every 2 seconds
+		if urlCount%1000 == 0 || time.Since(lastProgress) > 2*time.Second {
 			select {
 			case w.progressCh <- ports.ProgressUpdate{
-				ArtifactCount: artifactCount,
-				Message:       fmt.Sprintf("Processed %d URLs, found %d artifacts", urlCount, artifactCount),
+				ArtifactCount: len(rawURLs),
+				Message:       fmt.Sprintf("Collected %d URLs", len(rawURLs)),
 			}:
 				lastProgress = time.Now()
 			default:
@@ -193,6 +206,73 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 
 	if err := scanner.Err(); err != nil {
 		w.logger.Warn("scanner error", "error", err.Error())
+	}
+
+	w.logger.Info("collected raw URLs", "count", len(rawURLs))
+
+	// Phase 2: Apply intelligent filtering (if enabled)
+	var filteredURLs []string
+
+	if w.filter != nil && len(rawURLs) > 0 {
+		w.logger.Info("applying URL filtering", "input_urls", len(rawURLs))
+
+		scoredURLs, stats, err := w.filter.Filter(ctx, rawURLs)
+		if err != nil {
+			w.logger.Warn("filter failed, using unfiltered URLs", "error", err.Error())
+			filteredURLs = rawURLs
+		} else {
+			// Extract URLs from scored results (already sorted by priority)
+			filteredURLs = make([]string, len(scoredURLs))
+			for i, s := range scoredURLs {
+				filteredURLs[i] = s.URL
+			}
+
+			w.logger.Info("filtering complete",
+				"input", stats.InputURLs,
+				"output", stats.OutputURLs,
+				"reduction", fmt.Sprintf("%.1f%%", stats.ReductionRatio()),
+				"duplicates", stats.DuplicatesSkipped,
+				"low_priority", stats.LowPrioritySkipped,
+				"clusters", stats.ClustersMerged,
+				"patterns", stats.PatternsFound,
+			)
+
+			// Store filter stats in result metadata (using Environment map)
+			if result.Metadata.Environment == nil {
+				result.Metadata.Environment = make(map[string]string)
+			}
+			result.Metadata.Environment["waybackurls_filter_input_urls"] = fmt.Sprintf("%d", stats.InputURLs)
+			result.Metadata.Environment["waybackurls_filter_output_urls"] = fmt.Sprintf("%d", stats.OutputURLs)
+			result.Metadata.Environment["waybackurls_filter_reduction_ratio"] = fmt.Sprintf("%.1f%%", stats.ReductionRatio())
+			result.Metadata.Environment["waybackurls_filter_duplicates"] = fmt.Sprintf("%d", stats.DuplicatesSkipped)
+			result.Metadata.Environment["waybackurls_filter_low_priority"] = fmt.Sprintf("%d", stats.LowPrioritySkipped)
+			result.Metadata.Environment["waybackurls_filter_clusters"] = fmt.Sprintf("%d", stats.ClustersMerged)
+			result.Metadata.Environment["waybackurls_filter_patterns"] = fmt.Sprintf("%d", stats.PatternsFound)
+			result.Metadata.Environment["waybackurls_filter_duration_ms"] = fmt.Sprintf("%d", stats.DurationMs)
+		}
+	} else {
+		// No filtering, use all collected URLs
+		filteredURLs = rawURLs
+	}
+
+	// Phase 3: Parse filtered URLs to artifacts
+	w.logger.Info("parsing URLs to artifacts", "count", len(filteredURLs))
+
+	seen := make(map[string]bool)
+	artifactCount := 0
+
+	for _, urlStr := range filteredURLs {
+		artifacts := w.parser.ParseLine(urlStr, target)
+
+		for _, artifact := range artifacts {
+			// Deduplicate artifacts
+			key := string(artifact.Type) + ":" + artifact.Value
+			if !seen[key] {
+				seen[key] = true
+				result.AddArtifact(artifact)
+				artifactCount++
+			}
+		}
 	}
 
 	// Wait for process to complete

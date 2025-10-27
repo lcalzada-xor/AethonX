@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -160,6 +161,9 @@ func (p *Parser) createURLArtifact(resp *HTTPXResponse, hostname string) *domain
 	artifact.TypedMetadata = serviceMeta
 	artifact.Confidence = 1.0
 
+	// Add status-based tags to URL artifact
+	p.addStatusTags(artifact, resp.StatusCode)
+
 	// Add relation to parent domain
 	if hostname != "" {
 		// Create target artifact to get its ID
@@ -225,10 +229,41 @@ func (p *Parser) createAliveDomainArtifact(resp *HTTPXResponse, hostname string)
 	artifact.TypedMetadata = domainMeta
 	artifact.Confidence = 1.0
 
-	// Add "alive" tag
-	artifact.AddTag("alive")
+	// Add status-based tags
+	p.addStatusTags(artifact, resp.StatusCode)
 
 	return artifact
+}
+
+// addStatusTags adds tags to artifacts based on HTTP status code.
+func (p *Parser) addStatusTags(artifact *domain.Artifact, statusCode int) {
+	switch {
+	case statusCode >= 200 && statusCode < 300:
+		artifact.AddTag("alive")
+		artifact.AddTag("http-success")
+	case statusCode >= 300 && statusCode < 400:
+		artifact.AddTag("alive")
+		artifact.AddTag("http-redirect")
+	case statusCode == 401:
+		artifact.AddTag("alive")
+		artifact.AddTag("http-auth-required")
+	case statusCode == 403:
+		artifact.AddTag("alive")
+		artifact.AddTag("http-forbidden")
+	case statusCode == 404:
+		artifact.AddTag("dead")
+		artifact.AddTag("http-not-found")
+	case statusCode >= 400 && statusCode < 500:
+		artifact.AddTag("dead")
+		artifact.AddTag("http-client-error")
+	case statusCode >= 500 && statusCode < 600:
+		artifact.AddTag("alive")
+		artifact.AddTag("http-server-error")
+	default:
+		if statusCode > 0 {
+			artifact.AddTag("alive")
+		}
+	}
 }
 
 // createIPArtifact creates an IP artifact with network metadata.
@@ -455,6 +490,99 @@ func (p *Parser) ParseMultipleResponses(responses []*HTTPXResponse, target domai
 	p.logger.Info("parsed multiple httpx responses",
 		"response_count", len(responses),
 		"artifact_count", len(allArtifacts),
+	)
+
+	return allArtifacts
+}
+
+// ParseMultipleResponsesWithInput parses multiple HTTPXResponse objects and upgrades confidence
+// for artifacts that were verified alive (status 200-299).
+func (p *Parser) ParseMultipleResponsesWithInput(responses []*HTTPXResponse, target domain.Target, inputArtifacts []*domain.Artifact) []*domain.Artifact {
+	allArtifacts := make([]*domain.Artifact, 0, len(responses)*3)
+
+	// Build map of input artifacts by URL for quick lookup
+	inputMap := make(map[string]*domain.Artifact)
+	for _, artifact := range inputArtifacts {
+		if artifact.Type == domain.ArtifactTypeURL {
+			inputMap[artifact.Value] = artifact
+		}
+	}
+
+	// Statistics tracking
+	var stats struct {
+		upgradedCount int
+		aliveCount    int
+		deadCount     int
+		newURLs       int
+	}
+
+	for _, resp := range responses {
+		artifacts := p.ParseResponse(resp, target)
+
+		// Check each artifact for confidence upgrade
+		for _, artifact := range artifacts {
+			// Only upgrade URL artifacts
+			if artifact.Type == domain.ArtifactTypeURL {
+				// Check if this URL was from input (low confidence)
+				if inputArtifact, exists := inputMap[resp.URL]; exists {
+					if inputArtifact.Confidence < domain.ConfidenceVerified {
+						// Upgrade confidence if alive (status 200-299)
+						if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+							artifact.Confidence = domain.ConfidenceVerified
+							stats.upgradedCount++
+							stats.aliveCount++
+							p.logger.Debug("upgraded confidence for verified URL",
+								"url", resp.URL,
+								"old_confidence", inputArtifact.Confidence,
+								"new_confidence", domain.ConfidenceVerified,
+								"status_code", resp.StatusCode,
+							)
+						} else {
+							// Keep original low confidence (dead URL)
+							artifact.Confidence = inputArtifact.Confidence
+							stats.deadCount++
+							p.logger.Debug("keeping low confidence for dead URL",
+								"url", resp.URL,
+								"confidence", inputArtifact.Confidence,
+								"status_code", resp.StatusCode,
+							)
+						}
+					} else {
+						// Already high confidence, keep verified
+						artifact.Confidence = domain.ConfidenceVerified
+						if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+							stats.aliveCount++
+						}
+					}
+				} else {
+					// New URL, set verified confidence
+					artifact.Confidence = domain.ConfidenceVerified
+					stats.newURLs++
+					if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+						stats.aliveCount++
+					}
+				}
+			}
+
+			allArtifacts = append(allArtifacts, artifact)
+		}
+	}
+
+	// Calculate verification rate
+	totalVerified := stats.aliveCount + stats.deadCount
+	var aliveRate float64
+	if totalVerified > 0 {
+		aliveRate = float64(stats.aliveCount) / float64(totalVerified) * 100
+	}
+
+	p.logger.Info("parsed httpx responses with confidence upgrade",
+		"response_count", len(responses),
+		"artifact_count", len(allArtifacts),
+		"upgraded_count", stats.upgradedCount,
+		"alive_count", stats.aliveCount,
+		"dead_count", stats.deadCount,
+		"new_urls", stats.newURLs,
+		"alive_rate", fmt.Sprintf("%.1f%%", aliveRate),
 	)
 
 	return allArtifacts

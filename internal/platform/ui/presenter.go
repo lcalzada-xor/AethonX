@@ -35,7 +35,7 @@ type Presenter interface {
 	UpdateSourcePhase(sourceName string, phase string)
 
 	// FinishSource notifica la finalización de un source
-	FinishSource(sourceName string, status Status, duration time.Duration, artifactCount int)
+	FinishSource(sourceName string, status Status, duration time.Duration, artifactCount int, summary *SourceSummary)
 
 	// UpdateDiscoveries actualiza contadores de artifacts por tipo en tiempo real
 	UpdateDiscoveries(discoveries DiscoveryStats)
@@ -117,4 +117,13 @@ type StageProgress struct {
 	Sources   map[string]*SourceProgress
 	StartTime time.Time
 	Duration  time.Duration
+}
+
+// SourceSummary contiene información resumida del resultado de un source
+type SourceSummary struct {
+	// Summary resumen textual principal (siempre presente)
+	Summary string
+
+	// Metrics métricas clave (opcional, depende del source)
+	Metrics map[string]interface{}
 }

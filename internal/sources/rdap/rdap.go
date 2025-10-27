@@ -283,7 +283,8 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 			sourceName,
 			regMeta,
 		)
-		domainArtifact.Confidence = 1.0
+		// Official WHOIS data - high confidence
+		domainArtifact.Confidence = domain.ConfidenceHigh
 		result.AddArtifact(domainArtifact)
 		artifactCount++
 
@@ -305,7 +306,7 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 				ns.LDHName,
 				sourceName,
 			)
-			nsArtifact.Confidence = 1.0
+			nsArtifact.Confidence = domain.ConfidenceHigh
 			result.AddArtifact(nsArtifact)
 			artifactCount++
 
@@ -395,7 +396,7 @@ func (r *RDAP) extractContactsWithProgress(result *domain.ScanResult, entities [
 				email,
 				sourceName,
 			)
-			emailArtifact.Confidence = 0.95 // High confidence for RDAP emails
+			emailArtifact.Confidence = domain.ConfidenceHigh // Official WHOIS emails
 
 			// Add contact metadata
 			contactMeta := r.extractContactMetadata(entity)

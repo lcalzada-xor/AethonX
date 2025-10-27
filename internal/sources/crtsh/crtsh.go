@@ -190,8 +190,8 @@ func (c *CRT) processRecordsWithProgress(ctx context.Context, records []certReco
 				domainMeta,
 			)
 
-			// Confianza alta para crt.sh (datos públicos oficiales)
-			artifact.Confidence = 0.95
+			// Passive discovery - medium confidence
+			artifact.Confidence = domain.ConfidenceMedium
 
 			// Tag automático si es wildcard
 			if strings.HasPrefix(host, "*.") {
@@ -205,7 +205,7 @@ func (c *CRT) processRecordsWithProgress(ctx context.Context, records []certReco
 				c.Name(),
 				certMeta,
 			)
-			certArtifact.Confidence = 0.95
+			certArtifact.Confidence = domain.ConfidenceMedium
 
 			// Establecer relación: subdomain uses_cert certificate
 			artifact.AddRelation(certArtifact.ID, domain.RelationUsesCert, 0.95, c.Name())

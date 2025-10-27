@@ -5,6 +5,7 @@ import (
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
+	"aethonx/internal/platform/urlfilter"
 )
 
 // Auto-registro de la source al importar el package
@@ -35,7 +36,10 @@ func init() {
 				timeout = defaultTimeout
 			}
 
-			return NewWithConfig(logger, execPath, timeout, withDates, noSubs), nil
+			// Use default filter config (can be customized via Custom map in the future)
+			filterCfg := urlfilter.DefaultConfig()
+
+			return NewWithConfig(logger, execPath, timeout, withDates, noSubs, filterCfg), nil
 		},
 		ports.SourceMetadata{
 			Name:         "waybackurls",

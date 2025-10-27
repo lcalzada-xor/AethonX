@@ -40,7 +40,7 @@ func (p *Parser) ParseLine(line string, target domain.Target) []*domain.Artifact
 	line = strings.TrimSpace(line)
 
 	// Parse line to extract URL and optional timestamp
-	urlStr, timestamp := p.extractURLAndTimestamp(line)
+	urlStr, timestamp := p.ExtractURLAndTimestamp(line)
 
 	// Validate URL format
 	if !validator.IsURL(urlStr) {
@@ -87,9 +87,9 @@ func (p *Parser) ParseMultipleLines(lines []string, target domain.Target) []*dom
 	return artifacts
 }
 
-// extractURLAndTimestamp extracts URL and optional timestamp from line.
+// ExtractURLAndTimestamp extracts URL and optional timestamp from line.
 // Returns (url, timestamp) where timestamp is empty string if not present.
-func (p *Parser) extractURLAndTimestamp(line string) (string, string) {
+func (p *Parser) ExtractURLAndTimestamp(line string) (string, string) {
 	// Check if line contains timestamp format: "YYYY-MM-DD HH:MM:SS URL"
 	// Look for "http" or "https" in the line
 	httpIdx := strings.Index(line, "http://")

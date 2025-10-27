@@ -6,6 +6,7 @@ import (
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/ports"
+	"aethonx/internal/platform/ui"
 )
 
 // Stage representa una etapa de ejecución en el pipeline.
@@ -73,6 +74,9 @@ type SourceExecutionResult struct {
 
 	// StreamedToDisk indica si el resultado fue escrito a disco
 	StreamedToDisk bool
+
+	// Summary resumen informativo del resultado para UI
+	Summary *ui.SourceSummary
 }
 
 // NewStage crea un nuevo stage.
