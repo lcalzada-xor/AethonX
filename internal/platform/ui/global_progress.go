@@ -240,9 +240,12 @@ func (g *GlobalProgress) renderUnsafe() {
 	}
 
 	// Renderizar barra de progreso con borde animado
-	filled := (g.barWidth * g.completedSources) / g.totalSources
-	if filled > g.barWidth {
-		filled = g.barWidth
+	var filled int
+	if g.totalSources > 0 {
+		filled = (g.barWidth * g.completedSources) / g.totalSources
+		if filled > g.barWidth {
+			filled = g.barWidth
+		}
 	}
 
 	// Barra con transición suave y borde de crecimiento animado

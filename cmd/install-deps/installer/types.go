@@ -26,6 +26,19 @@ const (
 	StatusPending           Status = "pending"
 )
 
+// InstallationPhase represents the current phase of installation.
+type InstallationPhase string
+
+const (
+	PhaseChecking    InstallationPhase = "checking"
+	PhaseDownloading InstallationPhase = "downloading"
+	PhaseExtracting  InstallationPhase = "extracting"
+	PhaseInstalling  InstallationPhase = "installing"
+	PhaseValidating  InstallationPhase = "validating"
+	PhaseCompleted   InstallationPhase = "completed"
+	PhaseFailed      InstallationPhase = "failed"
+)
+
 // SystemInfo contains system detection information.
 type SystemInfo struct {
 	OS           string // linux, darwin, windows
@@ -48,12 +61,16 @@ type Dependency struct {
 
 // InstallationResult represents the result of a dependency installation.
 type InstallationResult struct {
-	Dependency  Dependency
-	Status      Status
-	Version     string
-	Error       error
-	Duration    time.Duration
-	Message     string
+	Dependency    Dependency
+	Status        Status
+	Version       string
+	Error         error
+	ErrorContext  *ErrorContext
+	Duration      time.Duration
+	Message       string
+	Phase         InstallationPhase
+	InstallPath   string // Where the tool was installed
+	AlreadyLatest bool   // True if already had latest version
 }
 
 // Config represents the parsed deps.yaml configuration.
@@ -88,10 +105,18 @@ type ExternalTool struct {
 	MinVersion string `yaml:"min_version"`
 }
 
+// ProgressCallback is called during installation to report progress.
+type ProgressCallback func(toolName string, phase InstallationPhase, message string)
+
 // Installer interface defines the contract for dependency installers.
 type Installer interface {
 	Name() string
 	Check(ctx context.Context, sys SystemInfo) (bool, string, error)
 	Install(ctx context.Context, sys SystemInfo) error
 	Validate(ctx context.Context) error
+}
+
+// ProgressReporter is an optional interface for installers that report progress.
+type ProgressReporter interface {
+	SetProgressCallback(callback ProgressCallback)
 }

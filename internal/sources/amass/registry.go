@@ -12,36 +12,17 @@ func init() {
 	if err := registry.Global().Register(
 		"amass",
 		func(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
-			// Extract custom config
-			execPath := "amass"
-			timeout := defaultTimeout
-			maxDNSQPS := 0
-			brute := false
-			alts := false
-			activeMode := false // Default to passive
-
-			if cfg.Custom != nil {
-				if v, ok := cfg.Custom["exec_path"].(string); ok && v != "" {
-					execPath = v
-				}
-				if v, ok := cfg.Custom["max_dns_qps"].(int); ok {
-					maxDNSQPS = v
-				}
-				if v, ok := cfg.Custom["brute"].(bool); ok {
-					brute = v
-				}
-				if v, ok := cfg.Custom["alts"].(bool); ok {
-					alts = v
-				}
-				// Active mode passed via custom map from main.go
-				if v, ok := cfg.Custom["active_mode"].(bool); ok {
-					activeMode = v
-				}
-			}
+			// Extract custom config using registry helpers
+			execPath := registry.GetStringConfig(cfg.Custom, "exec_path", "amass")
+			maxDNSQPS := registry.GetIntConfig(cfg.Custom, "max_dns_qps", 0)
+			brute := registry.GetBoolConfig(cfg.Custom, "brute", false)
+			alts := registry.GetBoolConfig(cfg.Custom, "alts", false)
+			activeMode := registry.GetBoolConfig(cfg.Custom, "active_mode", false)
 
 			// Use configured timeout or default
-			if cfg.Timeout > 0 {
-				timeout = cfg.Timeout
+			timeout := cfg.Timeout
+			if timeout == 0 {
+				timeout = defaultTimeout
 			}
 
 			amassConfig := AmassConfig{

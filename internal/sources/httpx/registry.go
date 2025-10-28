@@ -25,11 +25,11 @@ func init() {
 			domain.ArtifactTypeURL,       // Consume URLs if exist
 		},
 		OutputArtifacts: []domain.ArtifactType{
-			domain.ArtifactTypeURL,        // Probed URLs
-			domain.ArtifactTypeIP,         // Resolved IPs
-			domain.ArtifactTypeTechnology, // Detected technologies
+			domain.ArtifactTypeURL,         // Probed URLs
+			domain.ArtifactTypeIP,          // Resolved IPs
+			domain.ArtifactTypeTechnology,  // Detected technologies
 			domain.ArtifactTypeCertificate, // SSL certificates
-			domain.ArtifactTypeSubdomain,  // Subdomains from SANs
+			domain.ArtifactTypeSubdomain,   // Subdomains from SANs
 		},
 	})
 
@@ -39,13 +39,13 @@ func init() {
 	}
 }
 
-// factory creates a new HTTPXSource from SourceConfig.
+// factory creates a new HTTPXSource from SourceConfig using registry helpers.
 func factory(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
-	// Extract custom configuration
-	execPath := getStringConfig(cfg.Custom, "exec_path", "httpx")
-	profileStr := getStringConfig(cfg.Custom, "profile", string(ProfileFull))
-	threads := getIntConfig(cfg.Custom, "threads", defaultThreads)
-	rateLimit := getIntConfig(cfg.Custom, "rate_limit", defaultRateLimit)
+	// Extract custom configuration using registry helpers
+	execPath := registry.GetStringConfig(cfg.Custom, "exec_path", "httpx")
+	profileStr := registry.GetStringConfig(cfg.Custom, "profile", string(ProfileFull))
+	threads := registry.GetIntConfig(cfg.Custom, "threads", defaultThreads)
+	rateLimit := registry.GetIntConfig(cfg.Custom, "rate_limit", defaultRateLimit)
 
 	// Parse profile
 	profile := ScanProfile(profileStr)
@@ -84,24 +84,4 @@ func factory(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
 	)
 
 	return source, nil
-}
-
-// getStringConfig extracts string value from custom config map with default.
-func getStringConfig(custom map[string]interface{}, key, defaultValue string) string {
-	if val, ok := custom[key].(string); ok && val != "" {
-		return val
-	}
-	return defaultValue
-}
-
-// getIntConfig extracts int value from custom config map with default.
-func getIntConfig(custom map[string]interface{}, key string, defaultValue int) int {
-	if val, ok := custom[key].(int); ok {
-		return val
-	}
-	// Try float64 (JSON numbers are parsed as float64)
-	if val, ok := custom[key].(float64); ok {
-		return int(val)
-	}
-	return defaultValue
 }

@@ -24,6 +24,7 @@ import (
 	_ "aethonx/internal/sources/crtsh"
 	_ "aethonx/internal/sources/httpx"
 	_ "aethonx/internal/sources/rdap"
+	_ "aethonx/internal/sources/shodan"
 	_ "aethonx/internal/sources/subfinder"
 	_ "aethonx/internal/sources/waybackurls"
 )

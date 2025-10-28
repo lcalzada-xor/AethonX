@@ -11,7 +11,6 @@ import (
 
 	"aethonx/cmd/install-deps/installer"
 	"aethonx/internal/platform/logx"
-	"aethonx/internal/platform/ui"
 
 	"github.com/spf13/pflag"
 )
@@ -23,14 +22,15 @@ const (
 
 // Config holds CLI configuration.
 type Config struct {
-	ConfigPath  string
-	InstallDir  string
-	CheckOnly   bool
-	Force       bool
-	Quiet       bool
-	SkipGo      bool
+	ConfigPath   string
+	InstallDir   string
+	CheckOnly    bool
+	Force        bool
+	Quiet        bool
+	Verbose      bool
+	SkipGo       bool
 	SkipExternal bool
-	ShowVersion bool
+	ShowVersion  bool
 }
 
 func main() {
@@ -57,19 +57,17 @@ func main() {
 	}()
 
 	// Initialize logger
-	logger := logx.NewWithLevel(logx.LevelInfo)
-
-	// Initialize presenter
-	var presenter ui.Presenter
-	if cfg.Quiet {
-		presenter = ui.NewRawPresenter(ui.LogFormatText)
-	} else {
-		presenter = ui.NewCustomPresenter()
+	logLevel := logx.LevelInfo
+	if cfg.Verbose {
+		logLevel = logx.LevelDebug
 	}
-	defer presenter.Close()
+	logger := logx.NewWithLevel(logLevel)
 
 	// Run installer
-	if err := run(ctx, cfg, logger, presenter); err != nil {
+	if err := run(ctx, cfg, logger); err != nil {
+		if !cfg.Quiet {
+			fmt.Fprintf(os.Stderr, "\n❌ Installation failed: %v\n\n", err)
+		}
 		logger.Err(err, "installation failed")
 		os.Exit(1)
 	}
@@ -84,6 +82,7 @@ func parseFlags() Config {
 	pflag.BoolVar(&cfg.CheckOnly, "check", false, "Only check dependencies, do not install")
 	pflag.BoolVar(&cfg.Force, "force", false, "Force reinstall even if already installed")
 	pflag.BoolVarP(&cfg.Quiet, "quiet", "q", false, "Quiet mode (no UI, minimal output)")
+	pflag.BoolVar(&cfg.Verbose, "verbose", false, "Verbose mode (detailed logging)")
 	pflag.BoolVar(&cfg.SkipGo, "skip-go", false, "Skip Go module dependencies")
 	pflag.BoolVar(&cfg.SkipExternal, "skip-external", false, "Skip external tool dependencies")
 	pflag.BoolVarP(&cfg.ShowVersion, "version", "v", false, "Show version and exit")
@@ -109,21 +108,17 @@ func parseFlags() Config {
 }
 
 // run executes the main installation logic.
-func run(ctx context.Context, cfg Config, logger logx.Logger, presenter ui.Presenter) error {
+func run(ctx context.Context, cfg Config, logger logx.Logger) error {
 	startTime := time.Now()
 
-	// Start scan
-	presenter.Start(ui.ScanInfo{
-		Target:         "AethonX Dependencies",
-		Mode:           "Installation",
-		Workers:        1,
-		TimeoutSeconds: 300,
-		TotalStages:    1,
-		UIMode:         ui.UIModePretty,
-	})
+	// Initialize presenter
+	presenter := installer.NewSimplePresenter(cfg.Quiet)
+
+	// Show header
+	presenter.ShowHeader()
 
 	// Initialize orchestrator
-	logger.Info("initializing dependency installer", "config", cfg.ConfigPath)
+	logger.Debug("initializing dependency installer", "config", cfg.ConfigPath)
 	orch, err := installer.NewOrchestrator(cfg.ConfigPath, cfg.InstallDir)
 	if err != nil {
 		return fmt.Errorf("failed to create orchestrator: %w", err)
@@ -133,69 +128,87 @@ func run(ctx context.Context, cfg Config, logger logx.Logger, presenter ui.Prese
 		return fmt.Errorf("failed to initialize orchestrator: %w", err)
 	}
 
-	// Start stage
-	presenter.StartStage(ui.StageInfo{
-		Number:      1,
-		TotalStages: 1,
-		Name:        "Dependency Check & Installation",
-		Sources:     []string{},
+	// Set progress callback for real-time updates
+	orch.SetProgressCallback(func(toolName string, phase installer.InstallationPhase, message string) {
+		if cfg.Verbose {
+			logger.Debug("installation progress", "tool", toolName, "phase", phase, "message", message)
+		}
+		presenter.ShowProgress(toolName, phase, message)
 	})
 
 	// Check mode
 	if cfg.CheckOnly {
-		logger.Info("checking dependencies (check-only mode)")
-		presenter.Info("Running in check-only mode")
-
-		results, err := orch.Check(ctx)
-		if err != nil {
-			return fmt.Errorf("dependency check failed: %w", err)
-		}
-
-		displayResults(results, presenter)
-		presenter.FinishStage(1, time.Since(startTime))
-
-		// Check PATH
-		inPath, _ := orch.CheckPath()
-		if !inPath {
-			presenter.Warning(orch.GetPathWarning())
-		}
-
-		presenter.Finish(ui.ScanStats{
-			TotalDuration: time.Since(startTime),
-		})
-
-		return nil
+		return runCheckMode(ctx, orch, presenter, logger)
 	}
 
 	// Install mode
-	logger.Info("installing dependencies")
-	presenter.Info("Installing dependencies...")
+	return runInstallMode(ctx, cfg, orch, presenter, logger, startTime)
+}
 
+// runCheckMode executes dependency check-only mode.
+func runCheckMode(ctx context.Context, orch *installer.Orchestrator, presenter *installer.SimplePresenter, logger logx.Logger) error {
+	logger.Debug("checking dependencies (check-only mode)")
+
+	results, err := orch.Check(ctx)
+	if err != nil {
+		return fmt.Errorf("dependency check failed: %w", err)
+	}
+
+	// Display check results
+	presenter.ShowCheckResults(results)
+
+	return nil
+}
+
+// runInstallMode executes dependency installation mode.
+func runInstallMode(ctx context.Context, cfg Config, orch *installer.Orchestrator, presenter *installer.SimplePresenter, logger logx.Logger, startTime time.Time) error {
+	logger.Debug("installing dependencies")
+
+	// Pre-installation check
+	preResults, err := orch.Check(ctx)
+	if err != nil {
+		return fmt.Errorf("pre-installation check failed: %w", err)
+	}
+
+	// Show pre-installation summary
+	presenter.ShowPreCheck(preResults, cfg.Force)
+
+	// Count what needs installation
+	toInstall := 0
+	for _, result := range preResults {
+		if cfg.Force || result.Status != installer.StatusAlreadyInstalled {
+			toInstall++
+		}
+	}
+
+	// Start installation
+	presenter.StartInstallation(toInstall)
+
+	// Install
 	results, err := orch.Install(ctx, cfg.Force)
 	if err != nil {
 		return fmt.Errorf("installation failed: %w", err)
 	}
 
-	displayResults(results, presenter)
-	presenter.FinishStage(1, time.Since(startTime))
-
-	// Check PATH
-	inPath, _ := orch.CheckPath()
-	if !inPath {
-		presenter.Warning(orch.GetPathWarning())
+	// Show individual results
+	fmt.Println()
+	for _, result := range results {
+		presenter.ShowResult(result)
 	}
 
-	// Final statistics
-	stats := calculateStats(results)
-	presenter.Finish(ui.ScanStats{
-		TotalDuration:    time.Since(startTime),
-		TotalArtifacts:   stats.Total,
-		UniqueArtifacts:  stats.Success,
-		SourcesSucceeded: stats.Success,
-		SourcesFailed:    stats.Failed,
-	})
+	// Check PATH
+	pathWarning := ""
+	inPath, _ := orch.CheckPath()
+	if !inPath {
+		pathWarning = orch.GetPathWarning()
+	}
 
-	logger.Info("installation completed",
+	// Display final summary
+	presenter.ShowSummary(results, time.Since(startTime), pathWarning)
+
+	// Calculate stats for logging
+	stats := calculateStats(results)
+	logger.Debug("installation completed",
 		"duration", time.Since(startTime),
 		"success", stats.Success,
 		"failed", stats.Failed,
@@ -208,53 +221,6 @@ func run(ctx context.Context, cfg Config, logger logx.Logger, presenter ui.Prese
 	}
 
 	return nil
-}
-
-// displayResults shows installation results using the presenter.
-func displayResults(results []installer.InstallationResult, presenter ui.Presenter) {
-	for _, result := range results {
-		switch result.Status {
-		case installer.StatusSuccess:
-			presenter.FinishSource(
-				result.Dependency.Name,
-				ui.StatusSuccess,
-				result.Duration,
-				1,
-				nil, // No summary for install-deps
-			)
-			presenter.Info(fmt.Sprintf("✓ %s: %s", result.Dependency.Name, result.Message))
-
-		case installer.StatusAlreadyInstalled:
-			presenter.FinishSource(
-				result.Dependency.Name,
-				ui.StatusSuccess,
-				result.Duration,
-				1,
-				nil, // No summary for install-deps
-			)
-			presenter.Info(fmt.Sprintf("✓ %s: %s", result.Dependency.Name, result.Message))
-
-		case installer.StatusFailed:
-			presenter.FinishSource(
-				result.Dependency.Name,
-				ui.StatusError,
-				result.Duration,
-				0,
-				nil, // No summary for install-deps
-			)
-			presenter.Error(fmt.Sprintf("✗ %s: %s", result.Dependency.Name, result.Message))
-
-		case installer.StatusSkipped:
-			presenter.FinishSource(
-				result.Dependency.Name,
-				ui.StatusSkipped,
-				result.Duration,
-				0,
-				nil, // No summary for install-deps
-			)
-			presenter.Info(fmt.Sprintf("⊘ %s: %s", result.Dependency.Name, result.Message))
-		}
-	}
 }
 
 // Stats holds installation statistics.

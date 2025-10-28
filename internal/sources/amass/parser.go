@@ -174,14 +174,3 @@ func (p *Parser) ParseMultipleResponses(responses []*AmassResponse, target domai
 
 	return artifacts
 }
-
-// extractIPs extrae solo las IPs de un slice de AmassAddress.
-func extractIPs(addresses []AmassAddress) []string {
-	ips := make([]string, 0, len(addresses))
-	for _, addr := range addresses {
-		if addr.IP != "" {
-			ips = append(ips, addr.IP)
-		}
-	}
-	return ips
-}

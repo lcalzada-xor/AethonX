@@ -6,6 +6,26 @@ go:
   modules_required: true
 
 external_tools:
+  - name: subfinder
+    description: "Project Discovery's subdomain discovery tool"
+    required: true
+    type: binary
+    install:
+      github:
+        repo: projectdiscovery/subfinder
+        asset_patterns:
+          linux_amd64: "subfinder_*_linux_amd64.zip"
+          linux_arm64: "subfinder_*_linux_arm64.zip"
+          darwin_amd64: "subfinder_*_macOS_amd64.zip"
+          darwin_arm64: "subfinder_*_macOS_arm64.zip"
+          windows_amd64: "subfinder_*_windows_amd64.zip"
+        binary_name: "subfinder"
+    health_check:
+      command: "subfinder"
+      args: ["-version"]
+      expected_contains: "Current Version"
+    min_version: "2.6.0"
+
   - name: httpx
     description: "Project Discovery's HTTP probing tool"
     required: true
@@ -26,7 +46,65 @@ external_tools:
       expected_contains: "Current Version"
     min_version: "1.6.0"
 
-# External binary tools install directory (httpx, etc.)
+  - name: amass
+    description: "OWASP Amass - Network mapping and attack surface discovery"
+    required: true
+    type: binary
+    install:
+      github:
+        repo: owasp-amass/amass
+        asset_patterns:
+          linux_amd64: "amass_linux_amd64.tar.gz"
+          linux_arm64: "amass_linux_arm64.tar.gz"
+          darwin_amd64: "amass_darwin_amd64.tar.gz"
+          darwin_arm64: "amass_darwin_arm64.tar.gz"
+          windows_amd64: "amass_windows_amd64.tar.gz"
+        binary_name: "amass"
+    health_check:
+      command: "amass"
+      args: ["-version"]
+      expected_contains: "v"
+    min_version: "4.0.0"
+
+  - name: waybackurls
+    description: "Fetch URLs from Wayback Machine for a domain"
+    required: true
+    type: binary
+    install:
+      github:
+        repo: tomnomnom/waybackurls
+        asset_patterns:
+          linux_amd64: "waybackurls-linux-amd64-*"
+          linux_arm64: "waybackurls-linux-arm64-*"
+          darwin_amd64: "waybackurls-darwin-amd64-*"
+          darwin_arm64: "waybackurls-darwin-arm64-*"
+          windows_amd64: "waybackurls-windows-amd64-*.exe"
+        binary_name: "waybackurls"
+    health_check:
+      command: "waybackurls"
+      args: ["-h"]
+      expected_contains: "Usage"
+    min_version: "0.1.0"
+
+  - name: shodan
+    description: "Shodan command-line interface (optional, requires API key)"
+    required: false
+    type: python_package
+    install:
+      python_pip:
+        package: "shodan"
+    health_check:
+      command: "shodan"
+      args: ["--version"]
+      expected_contains: "Shodan"
+    min_version: "1.30.0"
+    notes: |
+      Shodan CLI requires Python 3.x and pip.
+      After installation, initialize with: shodan init YOUR_API_KEY
+      API key can be obtained from: https://account.shodan.io/
+      Requires at least Shodan Membership plan for domain enumeration features.
+
+# External binary tools install directory
 install_directory: "$HOME/go/bin"
 add_to_path: true
 

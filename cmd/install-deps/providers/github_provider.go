@@ -1,7 +1,9 @@
 package providers
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,6 +33,7 @@ func (r *GitHubRelease) GetVersion() string {
 // GitHubProvider handles downloading binaries from GitHub releases.
 type GitHubProvider struct {
 	client *http.Client
+	token  string
 }
 
 // NewGitHubProvider creates a new GitHub provider.
@@ -39,6 +42,7 @@ func NewGitHubProvider() *GitHubProvider {
 		client: &http.Client{
 			Timeout: 5 * time.Minute,
 		},
+		token: os.Getenv("GITHUB_TOKEN"),
 	}
 }
 
@@ -51,6 +55,11 @@ func (g *GitHubProvider) GetLatestRelease(ctx context.Context, repo string) (*Gi
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// Add GitHub token if available for higher rate limits
+	if g.token != "" {
+		req.Header.Set("Authorization", "token "+g.token)
+	}
+
 	resp, err := g.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch release: %w", err)
@@ -58,6 +67,17 @@ func (g *GitHubProvider) GetLatestRelease(ctx context.Context, repo string) (*Gi
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Include rate limit info in error for 403
+		if resp.StatusCode == http.StatusForbidden {
+			remaining := resp.Header.Get("X-RateLimit-Remaining")
+			reset := resp.Header.Get("X-RateLimit-Reset")
+			if remaining == "0" && reset != "" {
+				// Convert Unix timestamp to human readable
+				// For now, just say "in ~X minutes"
+				return nil, fmt.Errorf("GitHub API rate limit exceeded (try again in ~60 minutes)")
+			}
+			return nil, fmt.Errorf("GitHub API returned status 403 (rate limit or authentication issue)")
+		}
 		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
 	}
 
@@ -76,6 +96,11 @@ func (g *GitHubProvider) DownloadAsset(ctx context.Context, url, destPath string
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
+	// Add GitHub token if available
+	if g.token != "" {
+		req.Header.Set("Authorization", "token "+g.token)
+	}
+
 	resp, err := g.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download asset: %w", err)
@@ -83,6 +108,9 @@ func (g *GitHubProvider) DownloadAsset(ctx context.Context, url, destPath string
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("download failed with status 403 (rate limit or authentication issue)")
+		}
 		return fmt.Errorf("download failed with status %d", resp.StatusCode)
 	}
 
@@ -150,6 +178,70 @@ func (g *GitHubProvider) ExtractZip(zipPath, destDir string) error {
 
 		if err != nil {
 			return fmt.Errorf("failed to extract file: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ExtractTarGz extracts a tar.gz archive to the specified directory.
+func (g *GitHubProvider) ExtractTarGz(tarGzPath, destDir string) error {
+	// Open the tar.gz file
+	file, err := os.Open(tarGzPath)
+	if err != nil {
+		return fmt.Errorf("failed to open tar.gz: %w", err)
+	}
+	defer file.Close()
+
+	// Create gzip reader
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip reader: %w", err)
+	}
+	defer gzReader.Close()
+
+	// Create tar reader
+	tarReader := tar.NewReader(gzReader)
+
+	// Extract files
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar header: %w", err)
+		}
+
+		// Construct target path
+		target := filepath.Join(destDir, header.Name)
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			// Create directory
+			if err := os.MkdirAll(target, 0755); err != nil {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+
+		case tar.TypeReg:
+			// Create parent directory
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return fmt.Errorf("failed to create parent directory: %w", err)
+			}
+
+			// Create file
+			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(header.Mode))
+			if err != nil {
+				return fmt.Errorf("failed to create file: %w", err)
+			}
+
+			// Copy content
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return fmt.Errorf("failed to extract file: %w", err)
+			}
+
+			outFile.Close()
 		}
 	}
 

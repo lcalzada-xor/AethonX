@@ -12,8 +12,9 @@ import (
 
 // ExternalToolInstaller handles installation of external binary tools from GitHub.
 type ExternalToolInstaller struct {
-	tool     ExternalTool
-	provider *providers.GitHubProvider
+	tool             ExternalTool
+	provider         *providers.GitHubProvider
+	progressCallback ProgressCallback
 }
 
 // NewExternalToolInstaller creates a new external tool installer.
@@ -27,6 +28,18 @@ func NewExternalToolInstaller(tool ExternalTool) *ExternalToolInstaller {
 // Name returns the tool name.
 func (e *ExternalToolInstaller) Name() string {
 	return e.tool.Name
+}
+
+// SetProgressCallback sets the progress callback function.
+func (e *ExternalToolInstaller) SetProgressCallback(callback ProgressCallback) {
+	e.progressCallback = callback
+}
+
+// reportProgress calls the progress callback if set.
+func (e *ExternalToolInstaller) reportProgress(phase InstallationPhase, message string) {
+	if e.progressCallback != nil {
+		e.progressCallback(e.tool.Name, phase, message)
+	}
 }
 
 // Check verifies if the tool is already installed and its version.
@@ -78,10 +91,14 @@ func (e *ExternalToolInstaller) Install(ctx context.Context, sys SystemInfo) err
 	}
 
 	// Fetch latest release
+	e.reportProgress(PhaseDownloading, "Fetching latest release info...")
 	release, err := e.provider.GetLatestRelease(ctx, e.tool.Install.Github.Repo)
 	if err != nil {
 		return fmt.Errorf("failed to get latest release: %w", err)
 	}
+
+	version := release.GetVersion()
+	e.reportProgress(PhaseDownloading, fmt.Sprintf("Found version %s", version))
 
 	// Find matching asset
 	assetName, assetURL, err := e.provider.FindMatchingAsset(release, assetPattern)
@@ -97,33 +114,57 @@ func (e *ExternalToolInstaller) Install(ctx context.Context, sys SystemInfo) err
 	defer os.RemoveAll(tempDir)
 
 	// Download asset
+	e.reportProgress(PhaseDownloading, fmt.Sprintf("Downloading %s...", assetName))
 	downloadPath := filepath.Join(tempDir, assetName)
 	if err := e.provider.DownloadAsset(ctx, assetURL, downloadPath); err != nil {
 		return fmt.Errorf("failed to download asset: %w", err)
 	}
+	e.reportProgress(PhaseDownloading, "Download complete")
 
-	// Extract archive
-	extractDir := filepath.Join(tempDir, "extracted")
-	if err := os.MkdirAll(extractDir, 0755); err != nil {
-		return fmt.Errorf("failed to create extract directory: %w", err)
-	}
-
-	if err := e.provider.ExtractZip(downloadPath, extractDir); err != nil {
-		return fmt.Errorf("failed to extract archive: %w", err)
-	}
-
-	// Find binary in extracted files
+	var binaryPath string
 	binaryName := e.tool.Install.Github.BinaryName
 	if sys.OS == "windows" {
 		binaryName += ".exe"
 	}
 
-	binaryPath := filepath.Join(extractDir, binaryName)
-	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		return fmt.Errorf("binary %s not found in archive", binaryName)
+	// Check if the downloaded file needs extraction
+	lowerAssetName := strings.ToLower(assetName)
+	needsExtraction := strings.HasSuffix(lowerAssetName, ".zip") ||
+		strings.HasSuffix(lowerAssetName, ".tar.gz") ||
+		strings.HasSuffix(lowerAssetName, ".tgz")
+
+	if needsExtraction {
+		// Extract archive
+		e.reportProgress(PhaseExtracting, "Extracting archive...")
+		extractDir := filepath.Join(tempDir, "extracted")
+		if err := os.MkdirAll(extractDir, 0755); err != nil {
+			return fmt.Errorf("failed to create extract directory: %w", err)
+		}
+
+		// Extract based on file extension
+		if strings.HasSuffix(lowerAssetName, ".zip") {
+			if err := e.provider.ExtractZip(downloadPath, extractDir); err != nil {
+				return fmt.Errorf("failed to extract zip: %w", err)
+			}
+		} else if strings.HasSuffix(lowerAssetName, ".tar.gz") || strings.HasSuffix(lowerAssetName, ".tgz") {
+			if err := e.provider.ExtractTarGz(downloadPath, extractDir); err != nil {
+				return fmt.Errorf("failed to extract tar.gz: %w", err)
+			}
+		}
+
+		// Find binary in extracted files (may be in subdirectory)
+		binaryPath, err = findBinaryInDir(extractDir, binaryName)
+		if err != nil {
+			return fmt.Errorf("binary %s not found in archive: %w", binaryName, err)
+		}
+		e.reportProgress(PhaseExtracting, "Extraction complete")
+	} else {
+		// Direct binary download - use downloaded file directly
+		binaryPath = downloadPath
 	}
 
 	// Ensure install directory exists
+	e.reportProgress(PhaseInstalling, fmt.Sprintf("Installing to %s...", sys.InstallDir))
 	if err := EnsureInstallDir(sys.InstallDir); err != nil {
 		return err
 	}
@@ -140,6 +181,8 @@ func (e *ExternalToolInstaller) Install(ctx context.Context, sys SystemInfo) err
 			return fmt.Errorf("failed to make binary executable: %w", err)
 		}
 	}
+
+	e.reportProgress(PhaseInstalling, fmt.Sprintf("Installed to %s", destPath))
 
 	return nil
 }
@@ -187,4 +230,38 @@ func containsIgnoreCase(s, substr string) bool {
 	s = strings.ToLower(s)
 	substr = strings.ToLower(substr)
 	return strings.Contains(s, substr)
+}
+
+// findBinaryInDir searches for a binary file in a directory and its subdirectories.
+func findBinaryInDir(dir, binaryName string) (string, error) {
+	var foundPath string
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip directories
+		if info.IsDir() {
+			return nil
+		}
+
+		// Check if this is the binary we're looking for
+		if info.Name() == binaryName {
+			foundPath = path
+			return filepath.SkipDir // Stop walking once found
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return "", err
+	}
+
+	if foundPath == "" {
+		return "", fmt.Errorf("binary not found")
+	}
+
+	return foundPath, nil
 }

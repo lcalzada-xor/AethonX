@@ -7,40 +7,11 @@ import (
 	"aethonx/internal/platform/registry"
 )
 
-// Auto-registro de la source al importar el package
+// Auto-registration on package import using registry helpers
 func init() {
 	if err := registry.Global().Register(
 		"subfinder",
-		func(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
-			// Extract custom config
-			execPath := "subfinder"
-			threads := defaultThreads
-			rateLimit := 0
-			sources := []string{"alienvault", "anubis", "commoncrawl", "crtsh", "digitorus", "dnsdumpster", "hackertarget", "rapiddns", "sitedossier", "waybackarchive"}
-
-			if cfg.Custom != nil {
-				if v, ok := cfg.Custom["exec_path"].(string); ok && v != "" {
-					execPath = v
-				}
-				if v, ok := cfg.Custom["threads"].(int); ok {
-					threads = v
-				}
-				if v, ok := cfg.Custom["rate_limit"].(int); ok {
-					rateLimit = v
-				}
-				if v, ok := cfg.Custom["sources"].([]string); ok && len(v) > 0 {
-					sources = v
-				}
-			}
-
-			// Use configured timeout or default
-			timeout := cfg.Timeout
-			if timeout == 0 {
-				timeout = defaultTimeout
-			}
-
-			return NewWithConfig(logger, execPath, timeout, threads, rateLimit, sources), nil
-		},
+		factory,
 		ports.SourceMetadata{
 			Name:         "subfinder",
 			Description:  "Multi-source subdomain discovery via Project Discovery's subfinder",
@@ -61,7 +32,23 @@ func init() {
 		},
 	); err != nil {
 		// Log error but don't panic - allow application to start
-		// Registry will skip this source during Build()
 		logx.New().Warn("failed to register subfinder source", "error", err.Error())
 	}
+}
+
+// factory creates a new SubfinderSource from SourceConfig using registry helpers
+func factory(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
+	// Extract custom config using registry helpers (type-safe, no manual nil checks)
+	execPath := registry.GetStringConfig(cfg.Custom, "exec_path", "subfinder")
+	threads := registry.GetIntConfig(cfg.Custom, "threads", defaultThreads)
+	rateLimit := registry.GetIntConfig(cfg.Custom, "rate_limit", 0)
+	sources := registry.GetSliceConfig(cfg.Custom, "sources", []string{"alienvault", "anubis", "commoncrawl", "crtsh", "digitorus", "dnsdumpster", "hackertarget", "rapiddns", "sitedossier", "waybackarchive"})
+
+	// Use configured timeout or default
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
+
+	return NewWithConfig(logger, execPath, timeout, threads, rateLimit, sources), nil
 }

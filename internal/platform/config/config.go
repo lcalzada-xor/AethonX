@@ -153,6 +153,18 @@ func DefaultConfig() Config {
 						"exec_path":  "waybackurls",
 					},
 				},
+				"shodan": {
+					Enabled:   false, // Disabled by default (requires API key)
+					Timeout:   60 * time.Second,
+					Retries:   2,
+					RateLimit: 1.0, // 1 req/s (free tier)
+					Priority:  12,  // After crtsh (10), before subfinder (20)
+					Custom: map[string]interface{}{
+						"api_key":    "",    // Must be set via env or flag
+						"use_cli":    false, // Use API by default
+						"rate_limit": 1.0,   // Requests per second
+					},
+				},
 			},
 		},
 
@@ -292,6 +304,22 @@ func loadFromEnv(cfg *Config) {
 			}
 			if v := getenv(prefix+"EXEC_PATH", ""); v != "" {
 				sourceCfg.Custom["exec_path"] = v
+			}
+		}
+
+		// Shodan-specific custom config
+		if name == "shodan" {
+			if v := getenv(prefix+"API_KEY", ""); v != "" {
+				sourceCfg.Custom["api_key"] = v
+			}
+			if v := getenv(prefix+"USE_CLI", ""); v != "" {
+				sourceCfg.Custom["use_cli"] = parseBool(v)
+			}
+			if v := getenv(prefix+"RATE_LIMIT", ""); v != "" {
+				// Parse as float for Shodan rate limit
+				if f, err := strconv.ParseFloat(v, 64); err == nil {
+					sourceCfg.Custom["rate_limit"] = f
+				}
 			}
 		}
 

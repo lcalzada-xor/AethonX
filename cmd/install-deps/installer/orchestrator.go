@@ -11,9 +11,10 @@ import (
 
 // Orchestrator coordinates the installation of all dependencies.
 type Orchestrator struct {
-	config     Config
-	systemInfo SystemInfo
-	installers []Installer
+	config           Config
+	systemInfo       SystemInfo
+	installers       []Installer
+	progressCallback ProgressCallback
 }
 
 // NewOrchestrator creates a new installation orchestrator.
@@ -32,6 +33,17 @@ func NewOrchestrator(configPath string, installDir string) (*Orchestrator, error
 	return &Orchestrator{
 		config: config,
 	}, nil
+}
+
+// SetProgressCallback sets the progress callback for real-time updates.
+func (o *Orchestrator) SetProgressCallback(callback ProgressCallback) {
+	o.progressCallback = callback
+	// Set callback for all installers that support it
+	for _, inst := range o.installers {
+		if reporter, ok := inst.(ProgressReporter); ok {
+			reporter.SetProgressCallback(callback)
+		}
+	}
 }
 
 // Initialize detects system and prepares installers.
@@ -54,7 +66,12 @@ func (o *Orchestrator) Initialize(ctx context.Context) error {
 	// Add external tool installers
 	for _, tool := range o.config.ExternalTools {
 		if tool.Required {
-			o.installers = append(o.installers, NewExternalToolInstaller(tool))
+			inst := NewExternalToolInstaller(tool)
+			// Set progress callback if available
+			if o.progressCallback != nil {
+				inst.SetProgressCallback(o.progressCallback)
+			}
+			o.installers = append(o.installers, inst)
 		}
 	}
 
@@ -71,6 +88,9 @@ func (o *Orchestrator) Check(ctx context.Context) ([]InstallationResult, error) 
 		installed, version, err := inst.Check(ctx, o.systemInfo)
 
 		result := InstallationResult{
+			Dependency: Dependency{
+				Name: inst.Name(),
+			},
 			Duration: time.Since(startTime),
 			Version:  version,
 		}
@@ -150,6 +170,8 @@ func (o *Orchestrator) Install(ctx context.Context, force bool) ([]InstallationR
 		if err := inst.Install(ctx, o.systemInfo); err != nil {
 			result.Status = StatusFailed
 			result.Error = err
+			result.Phase = PhaseFailed
+			result.ErrorContext = AnalyzeError(inst.Name(), "install", err, GetDocumentationURL(inst.Name()))
 			result.Message = fmt.Sprintf("Installation failed: %v", err)
 			result.Duration = time.Since(startTime)
 			results = append(results, result)
@@ -160,6 +182,8 @@ func (o *Orchestrator) Install(ctx context.Context, force bool) ([]InstallationR
 		if err := inst.Validate(ctx); err != nil {
 			result.Status = StatusFailed
 			result.Error = err
+			result.Phase = PhaseFailed
+			result.ErrorContext = AnalyzeError(inst.Name(), "validate", err, GetDocumentationURL(inst.Name()))
 			result.Message = fmt.Sprintf("Validation failed: %v", err)
 			result.Duration = time.Since(startTime)
 			results = append(results, result)
@@ -170,6 +194,16 @@ func (o *Orchestrator) Install(ctx context.Context, force bool) ([]InstallationR
 		_, newVersion, _ := inst.Check(ctx, o.systemInfo)
 		result.Status = StatusSuccess
 		result.Version = newVersion
+		result.Phase = PhaseCompleted
+
+		// Determine install path
+		if extInst, ok := inst.(*ExternalToolInstaller); ok {
+			binaryName := extInst.tool.Install.Github.BinaryName
+			if o.systemInfo.OS == "windows" {
+				binaryName += ".exe"
+			}
+			result.InstallPath = fmt.Sprintf("%s/%s", o.systemInfo.InstallDir, binaryName)
+		}
 
 		if installed && !force {
 			result.Message = fmt.Sprintf("Successfully updated (version: %s)", newVersion)

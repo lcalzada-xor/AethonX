@@ -1,7 +1,6 @@
 package subfinder
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -45,99 +44,43 @@ func TestSubfinder_Validate(t *testing.T) {
 		expectErr bool
 	}{
 		{
-			name: "valid configuration",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   10,
-				rateLimit: 0,
-				sources:   []string{"anubis", "hackertarget"},
-			},
+			name:      "valid configuration",
+			source:    NewWithConfig(logger, "subfinder", 60*time.Second, 10, 0, []string{"anubis", "hackertarget"}),
 			expectErr: false,
 		},
 		{
-			name: "empty exec path",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "",
-				timeout:   60 * time.Second,
-				threads:   10,
-				rateLimit: 0,
-				sources:   []string{"anubis"},
-			},
+			name:      "empty exec path",
+			source:    NewWithConfig(logger, "", 60*time.Second, 10, 0, []string{"anubis"}),
 			expectErr: true,
 		},
 		{
-			name: "invalid timeout",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   0,
-				threads:   10,
-				rateLimit: 0,
-				sources:   []string{"anubis"},
-			},
+			name:      "invalid timeout",
+			source:    NewWithConfig(logger, "subfinder", 0, 10, 0, []string{"anubis"}),
 			expectErr: true,
 		},
 		{
-			name: "invalid threads - too low",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   0,
-				rateLimit: 0,
-				sources:   []string{"anubis"},
-			},
+			name:      "invalid threads - too low",
+			source:    NewWithConfig(logger, "subfinder", 60*time.Second, 0, 0, []string{"anubis"}),
 			expectErr: true,
 		},
 		{
-			name: "invalid threads - too high",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   1001,
-				rateLimit: 0,
-				sources:   []string{"anubis"},
-			},
+			name:      "invalid threads - too high",
+			source:    NewWithConfig(logger, "subfinder", 60*time.Second, 1001, 0, []string{"anubis"}),
 			expectErr: true,
 		},
 		{
-			name: "negative rate limit",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   10,
-				rateLimit: -1,
-				sources:   []string{"anubis"},
-			},
+			name:      "negative rate limit",
+			source:    NewWithConfig(logger, "subfinder", 60*time.Second, 10, -1, []string{"anubis"}),
 			expectErr: true,
 		},
 		{
-			name: "no sources configured",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   10,
-				rateLimit: 0,
-				sources:   []string{},
-			},
+			name:      "no sources configured",
+			source:    NewWithConfig(logger, "subfinder", 60*time.Second, 10, 0, []string{}),
 			expectErr: true,
 		},
 		{
-			name: "specific sources configured",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   10,
-				rateLimit: 0,
-				sources:   []string{"crtsh", "hackertarget"},
-			},
+			name:      "specific sources configured",
+			source:    NewWithConfig(logger, "subfinder", 60*time.Second, 10, 0, []string{"crtsh", "hackertarget"}),
 			expectErr: false,
 		},
 	}
@@ -183,50 +126,25 @@ func TestSubfinder_buildCommand(t *testing.T) {
 		expectArgs []string
 	}{
 		{
-			name: "default configuration with free sources",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   10,
-				rateLimit: 0,
-				sources:   []string{"anubis", "hackertarget"},
-			},
+			name:       "default configuration with free sources",
+			source:     NewWithConfig(logger, "subfinder", 60*time.Second, 10, 0, []string{"anubis", "hackertarget"}),
 			expectArgs: []string{"-d", "example.com", "-oJ", "-silent", "-nc", "-s", "anubis,hackertarget", "-t", "10", "-timeout", "60"},
 		},
 		{
-			name: "specific sources",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   10,
-				rateLimit: 0,
-				sources:   []string{"crtsh", "hackertarget"},
-			},
+			name:       "specific sources",
+			source:     NewWithConfig(logger, "subfinder", 60*time.Second, 10, 0, []string{"crtsh", "hackertarget"}),
 			expectArgs: []string{"-d", "example.com", "-oJ", "-silent", "-nc", "-s", "crtsh,hackertarget", "-t", "10", "-timeout", "60"},
 		},
 		{
-			name: "with rate limit",
-			source: &SubfinderSource{
-				logger:    logger,
-				execPath:  "subfinder",
-				timeout:   60 * time.Second,
-				threads:   20,
-				rateLimit: 100,
-				sources:   []string{"anubis"},
-			},
+			name:       "with rate limit",
+			source:     NewWithConfig(logger, "subfinder", 60*time.Second, 20, 100, []string{"anubis"}),
 			expectArgs: []string{"-d", "example.com", "-oJ", "-silent", "-nc", "-s", "anubis", "-t", "20", "-rl", "100", "-timeout", "60"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			cmd := tt.source.buildCommand(ctx, target)
-
-			// Verify command args contain expected flags
-			args := cmd.Args[1:] // Skip executable path
+			args := tt.source.buildCommandArgs(target)
 
 			// Check if all expected args are present
 			for _, expectedArg := range tt.expectArgs {

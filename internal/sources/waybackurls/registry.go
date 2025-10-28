@@ -8,39 +8,11 @@ import (
 	"aethonx/internal/platform/urlfilter"
 )
 
-// Auto-registro de la source al importar el package
+// Auto-registration on package import using registry helpers
 func init() {
 	if err := registry.Global().Register(
 		"waybackurls",
-		func(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
-			// Extract custom config
-			execPath := "waybackurls"
-			withDates := false
-			noSubs := false
-
-			if cfg.Custom != nil {
-				if v, ok := cfg.Custom["exec_path"].(string); ok && v != "" {
-					execPath = v
-				}
-				if v, ok := cfg.Custom["with_dates"].(bool); ok {
-					withDates = v
-				}
-				if v, ok := cfg.Custom["no_subs"].(bool); ok {
-					noSubs = v
-				}
-			}
-
-			// Use configured timeout or default
-			timeout := cfg.Timeout
-			if timeout == 0 {
-				timeout = defaultTimeout
-			}
-
-			// Use default filter config (can be customized via Custom map in the future)
-			filterCfg := urlfilter.DefaultConfig()
-
-			return NewWithConfig(logger, execPath, timeout, withDates, noSubs, filterCfg), nil
-		},
+		factory,
 		ports.SourceMetadata{
 			Name:         "waybackurls",
 			Description:  "Historical URL discovery via Wayback Machine (Internet Archive)",
@@ -70,7 +42,25 @@ func init() {
 		},
 	); err != nil {
 		// Log error but don't panic - allow application to start
-		// Registry will skip this source during Build()
 		logx.New().Warn("failed to register waybackurls source", "error", err.Error())
 	}
+}
+
+// factory creates a new WaybackurlsSource from SourceConfig using registry helpers
+func factory(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
+	// Extract custom config using registry helpers (type-safe, no manual nil checks)
+	execPath := registry.GetStringConfig(cfg.Custom, "exec_path", "waybackurls")
+	withDates := registry.GetBoolConfig(cfg.Custom, "with_dates", false)
+	noSubs := registry.GetBoolConfig(cfg.Custom, "no_subs", false)
+
+	// Use configured timeout or default
+	timeout := cfg.Timeout
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
+
+	// Use default filter config (can be customized via Custom map in the future)
+	filterCfg := urlfilter.DefaultConfig()
+
+	return NewWithConfig(logger, execPath, timeout, withDates, noSubs, filterCfg), nil
 }

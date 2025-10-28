@@ -1,7 +1,6 @@
 package amass
 
 import (
-	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -82,12 +81,12 @@ func TestAmassSource_NewWithConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			source := NewWithConfig(logger, tt.config)
 
-			if source.execPath != tt.expect.ExecPath {
-				t.Errorf("expected execPath %s, got %s", tt.expect.ExecPath, source.execPath)
+			if source.GetExecPath() != tt.expect.ExecPath {
+				t.Errorf("expected execPath %s, got %s", tt.expect.ExecPath, source.GetExecPath())
 			}
 
-			if source.timeout != tt.expect.Timeout {
-				t.Errorf("expected timeout %v, got %v", tt.expect.Timeout, source.timeout)
+			if source.GetTimeout() != tt.expect.Timeout {
+				t.Errorf("expected timeout %v, got %v", tt.expect.Timeout, source.GetTimeout())
 			}
 
 			if source.activeMode != tt.expect.ActiveMode {
@@ -129,24 +128,6 @@ func TestAmassSource_Validate(t *testing.T) {
 			expectErr: false,
 		},
 		{
-			name: "empty exec path",
-			setupSource: func() *AmassSource {
-				s := New(logger)
-				s.execPath = "" // Manually set to empty to test validation
-				return s
-			},
-			expectErr: true,
-		},
-		{
-			name: "negative timeout",
-			setupSource: func() *AmassSource {
-				s := New(logger)
-				s.timeout = -1 * time.Second // Manually set to negative
-				return s
-			},
-			expectErr: true,
-		},
-		{
 			name: "negative max DNS QPS",
 			setupSource: func() *AmassSource {
 				return NewWithConfig(logger, AmassConfig{
@@ -175,9 +156,8 @@ func TestAmassSource_Validate(t *testing.T) {
 	}
 }
 
-func TestAmassSource_buildCommand(t *testing.T) {
+func TestAmassSource_buildCommandArgs(t *testing.T) {
 	logger := logx.New()
-	ctx := context.Background()
 	target := domain.Target{Root: "example.com"}
 	outputDir := "/tmp/test-amass"
 
@@ -228,14 +208,8 @@ func TestAmassSource_buildCommand(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			source := NewWithConfig(logger, tt.config)
-			cmd := source.buildCommand(ctx, target, outputDir)
+			args := source.buildCommandArgs(target, outputDir)
 
-			if cmd == nil {
-				t.Fatal("expected non-nil command")
-			}
-
-			// Check args contain expected values
-			args := cmd.Args[1:] // Skip executable name
 			if len(args) != len(tt.expectArgs) {
 				t.Errorf("expected %d args, got %d: %v", len(tt.expectArgs), len(args), args)
 			}

@@ -3,19 +3,15 @@
 package waybackurls
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"sync"
 	"time"
 
 	"aethonx/internal/core/domain"
-	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/urlfilter"
+	"aethonx/internal/sources/common"
 )
 
 const (
@@ -26,51 +22,48 @@ const (
 // WaybackurlsSource implements ports.Source and ports.AdvancedSource.
 // It wraps waybackurls CLI tool for historical URL discovery.
 type WaybackurlsSource struct {
-	logger     logx.Logger
-	execPath   string        // Path to waybackurls binary
-	timeout    time.Duration
-	withDates  bool // -dates flag
-	noSubs     bool // -no-subs flag
-	parser     *Parser
-	filter     *urlfilter.FilterEngine // URL filter engine
-	filterCfg  urlfilter.FilterConfig  // Filter configuration
-	progressCh chan ports.ProgressUpdate
+	*common.BaseCLISource // Embedded base for subprocess management
 
-	// Process management
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	withDates bool                   // -dates flag
+	noSubs    bool                   // -no-subs flag
+	parser    *Parser                // Output parser
+	filter    *urlfilter.FilterEngine // URL filter engine
+	filterCfg urlfilter.FilterConfig  // Filter configuration
 }
 
 // New creates a new WaybackurlsSource with default configuration.
 func New(logger logx.Logger) *WaybackurlsSource {
-	// Use balanced default filter config
 	filterCfg := urlfilter.DefaultConfig()
 
 	return &WaybackurlsSource{
-		logger:     logger.With("source", sourceName),
-		execPath:   "waybackurls",
-		timeout:    defaultTimeout,
-		withDates:  false, // Don't need dates by default
-		noSubs:     false, // Include subdomains
-		parser:     NewParser(logger, sourceName),
-		filter:     urlfilter.NewFilterEngine(filterCfg, logger),
-		filterCfg:  filterCfg,
-		progressCh: make(chan ports.ProgressUpdate, 100),
+		BaseCLISource: common.NewBaseCLISource(logger, common.BaseCLIConfig{
+			SourceName:     sourceName,
+			ExecPath:       "waybackurls",
+			Timeout:        defaultTimeout,
+			ProgressBuffer: 100,
+		}),
+		withDates: false,
+		noSubs:    false,
+		parser:    NewParser(logger, sourceName),
+		filter:    urlfilter.NewFilterEngine(filterCfg, logger),
+		filterCfg: filterCfg,
 	}
 }
 
 // NewWithConfig creates WaybackurlsSource with custom configuration.
 func NewWithConfig(logger logx.Logger, execPath string, timeout time.Duration, withDates, noSubs bool, filterCfg urlfilter.FilterConfig) *WaybackurlsSource {
 	return &WaybackurlsSource{
-		logger:     logger.With("source", sourceName),
-		execPath:   execPath,
-		timeout:    timeout,
-		withDates:  withDates,
-		noSubs:     noSubs,
-		parser:     NewParser(logger, sourceName),
-		filter:     urlfilter.NewFilterEngine(filterCfg, logger),
-		filterCfg:  filterCfg,
-		progressCh: make(chan ports.ProgressUpdate, 100),
+		BaseCLISource: common.NewBaseCLISource(logger, common.BaseCLIConfig{
+			SourceName:     sourceName,
+			ExecPath:       execPath,
+			Timeout:        timeout,
+			ProgressBuffer: 100,
+		}),
+		withDates: withDates,
+		noSubs:    noSubs,
+		parser:    NewParser(logger, sourceName),
+		filter:    urlfilter.NewFilterEngine(filterCfg, logger),
+		filterCfg: filterCfg,
 	}
 }
 
@@ -91,229 +84,72 @@ func (w *WaybackurlsSource) Type() domain.SourceType {
 
 // Run executes waybackurls against the target domain.
 func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
-	result := domain.NewScanResult(target)
 	startTime := time.Now()
 
-	w.logger.Info("starting waybackurls scan",
+	w.GetLogger().Info("starting waybackurls scan",
 		"target", target.Root,
 		"with_dates", w.withDates,
 		"no_subs", w.noSubs,
-		"timeout", w.timeout.String(),
+		"timeout", w.GetTimeout().String(),
 		"filter_enabled", w.filter != nil,
 		"max_urls", w.filterCfg.MaxURLs,
 	)
 
-	// Build command with context
-	cmd := w.buildCommand(ctx, target)
+	// Build command arguments
+	args := w.buildCommandArgs()
 
-	// Create stdin pipe to feed domain
-	stdin, err := cmd.StdinPipe()
+	// Create result early (handler needs it)
+	tempResult := domain.NewScanResult(target)
+
+	// Create handler for processing output
+	handler := &waybackurlsHandler{
+		parser:    w.parser,
+		filter:    w.filter,
+		filterCfg: w.filterCfg,
+		target:    target,
+		logger:    w.GetLogger(),
+		result:    tempResult,
+		rawURLs:   make([]string, 0, 10000),
+	}
+
+	// Execute CLI with handler (BaseCLISource handles all subprocess logic)
+	result, stderrOutput, err := w.ExecuteCLI(ctx, target, args, handler)
+
+	// Handle fatal errors (e.g., failed to start process)
+	if result == nil {
+		return nil, fmt.Errorf("waybackurls failed to start: %w", err)
+	}
+
+	// Handle stderr warnings
+	if len(stderrOutput) > 0 {
+		w.GetLogger().Debug("waybackurls stderr", "output", stderrOutput)
+		result.AddWarning("waybackurls", fmt.Sprintf("stderr output: %s", stderrOutput))
+	}
+
+	// Handle errors (partial results tolerated)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
-	}
-
-	// Create stdout pipe for streaming URLs
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	// Create stderr pipe for warnings
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	// Store command reference for Close()
-	w.mu.Lock()
-	w.cmd = cmd
-	w.mu.Unlock()
-
-	// Start waybackurls process
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start waybackurls: %w", err)
-	}
-
-	w.logger.Debug("waybackurls process started", "pid", cmd.Process.Pid)
-
-	// Write target domain to stdin
-	go func() {
-		defer stdin.Close()
-		fmt.Fprintln(stdin, target.Root)
-	}()
-
-	// Read stderr in background to prevent blocking
-	var stderrBytes []byte
-	var stderrMu sync.Mutex
-	var stderrWg sync.WaitGroup
-	stderrWg.Add(1)
-
-	go func() {
-		defer stderrWg.Done()
-		data, err := io.ReadAll(stderr)
-		if err != nil {
-			w.logger.Warn("error reading stderr", "error", err.Error())
-		}
-		stderrMu.Lock()
-		stderrBytes = data
-		stderrMu.Unlock()
-	}()
-
-	// Phase 1: Collect raw URLs
-	scanner := bufio.NewScanner(stdout)
-
-	// Increase buffer size for long URLs
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024) // 10MB max token size
-
-	rawURLs := make([]string, 0, 10000)
-	urlCount := 0
-	lastProgress := time.Now()
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		urlCount++
-
-		// Extract just the URL (remove timestamp if present)
-		urlStr, _ := w.parser.ExtractURLAndTimestamp(line)
-		if urlStr != "" {
-			rawURLs = append(rawURLs, urlStr)
-		}
-
-		// Apply volume control early if filtering is enabled
-		if w.filter != nil && w.filterCfg.EnableVolumeControl &&
-			w.filterCfg.MaxURLs > 0 && len(rawURLs) >= w.filterCfg.MaxURLs {
-			w.logger.Warn("reached max URLs, stopping collection",
-				"max", w.filterCfg.MaxURLs,
-				"current", len(rawURLs),
-			)
-			break
-		}
-
-		// Emit progress every 1000 URLs or every 2 seconds
-		if urlCount%1000 == 0 || time.Since(lastProgress) > 2*time.Second {
-			select {
-			case w.progressCh <- ports.ProgressUpdate{
-				ArtifactCount: len(rawURLs),
-				Message:       fmt.Sprintf("Collected %d URLs", len(rawURLs)),
-			}:
-				lastProgress = time.Now()
-			default:
-				// Channel full, skip update
-			}
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		w.logger.Warn("scanner error", "error", err.Error())
-	}
-
-	w.logger.Info("collected raw URLs", "count", len(rawURLs))
-
-	// Phase 2: Apply intelligent filtering (if enabled)
-	var filteredURLs []string
-
-	if w.filter != nil && len(rawURLs) > 0 {
-		w.logger.Info("applying URL filtering", "input_urls", len(rawURLs))
-
-		scoredURLs, stats, err := w.filter.Filter(ctx, rawURLs)
-		if err != nil {
-			w.logger.Warn("filter failed, using unfiltered URLs", "error", err.Error())
-			filteredURLs = rawURLs
-		} else {
-			// Extract URLs from scored results (already sorted by priority)
-			filteredURLs = make([]string, len(scoredURLs))
-			for i, s := range scoredURLs {
-				filteredURLs[i] = s.URL
-			}
-
-			w.logger.Info("filtering complete",
-				"input", stats.InputURLs,
-				"output", stats.OutputURLs,
-				"reduction", fmt.Sprintf("%.1f%%", stats.ReductionRatio()),
-				"duplicates", stats.DuplicatesSkipped,
-				"low_priority", stats.LowPrioritySkipped,
-				"clusters", stats.ClustersMerged,
-				"patterns", stats.PatternsFound,
-			)
-
-			// Store filter stats in result metadata (using Environment map)
-			if result.Metadata.Environment == nil {
-				result.Metadata.Environment = make(map[string]string)
-			}
-			result.Metadata.Environment["waybackurls_filter_input_urls"] = fmt.Sprintf("%d", stats.InputURLs)
-			result.Metadata.Environment["waybackurls_filter_output_urls"] = fmt.Sprintf("%d", stats.OutputURLs)
-			result.Metadata.Environment["waybackurls_filter_reduction_ratio"] = fmt.Sprintf("%.1f%%", stats.ReductionRatio())
-			result.Metadata.Environment["waybackurls_filter_duplicates"] = fmt.Sprintf("%d", stats.DuplicatesSkipped)
-			result.Metadata.Environment["waybackurls_filter_low_priority"] = fmt.Sprintf("%d", stats.LowPrioritySkipped)
-			result.Metadata.Environment["waybackurls_filter_clusters"] = fmt.Sprintf("%d", stats.ClustersMerged)
-			result.Metadata.Environment["waybackurls_filter_patterns"] = fmt.Sprintf("%d", stats.PatternsFound)
-			result.Metadata.Environment["waybackurls_filter_duration_ms"] = fmt.Sprintf("%d", stats.DurationMs)
-		}
-	} else {
-		// No filtering, use all collected URLs
-		filteredURLs = rawURLs
-	}
-
-	// Phase 3: Parse filtered URLs to artifacts
-	w.logger.Info("parsing URLs to artifacts", "count", len(filteredURLs))
-
-	seen := make(map[string]bool)
-	artifactCount := 0
-
-	for _, urlStr := range filteredURLs {
-		artifacts := w.parser.ParseLine(urlStr, target)
-
-		for _, artifact := range artifacts {
-			// Deduplicate artifacts
-			key := string(artifact.Type) + ":" + artifact.Value
-			if !seen[key] {
-				seen[key] = true
-				result.AddArtifact(artifact)
-				artifactCount++
-			}
-		}
-	}
-
-	// Wait for process to complete
-	if err := cmd.Wait(); err != nil {
-		// Wait for stderr goroutine to finish before returning error
-		stderrWg.Wait()
-
-		// Don't fail if we got some results
+		artifactCount := len(result.Artifacts)
 		if artifactCount > 0 {
-			w.logger.Warn("waybackurls exited with error but produced results", "error", err.Error())
+			w.GetLogger().Warn("waybackurls exited with error but produced results",
+				"error", err.Error(),
+				"artifacts", artifactCount,
+			)
 			result.AddWarning("waybackurls", fmt.Sprintf("process exited with error: %v", err))
 		} else {
 			return nil, fmt.Errorf("waybackurls failed: %w", err)
 		}
 	}
 
-	// Wait for stderr goroutine to finish reading all output
-	stderrWg.Wait()
-
-	// Get stderr from background goroutine
-	stderrMu.Lock()
-	stderrLen := len(stderrBytes)
-	stderrStr := string(stderrBytes)
-	stderrMu.Unlock()
-
-	if stderrLen > 0 {
-		w.logger.Debug("waybackurls stderr", "output", stderrStr)
-		result.AddWarning("waybackurls", fmt.Sprintf("stderr output: %s", stderrStr))
-	}
-
 	// Log warnings if no results
+	urlCount := handler.urlCount
 	if urlCount == 0 {
-		w.logger.Warn("waybackurls completed but found 0 URLs",
-			"target", target.Root,
-		)
+		w.GetLogger().Warn("waybackurls completed but found 0 URLs", "target", target.Root)
 		result.AddWarning("waybackurls", "scan completed but no URLs were found - target may not be archived in Wayback Machine")
 	}
 
 	// Log final statistics
 	duration := time.Since(startTime)
-	w.logger.Info("waybackurls scan completed",
+	w.GetLogger().Info("waybackurls scan completed",
 		"target", target.Root,
 		"duration", duration.String(),
 		"urls_processed", urlCount,
@@ -325,126 +161,163 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 	for _, artifact := range result.Artifacts {
 		typeCount[artifact.Type]++
 	}
-	w.logger.Debug("artifact breakdown", "counts", typeCount)
+	w.GetLogger().Debug("artifact breakdown", "counts", typeCount)
 
 	return result, nil
 }
 
-// ProgressChannel implements ports.StreamingSource
-func (w *WaybackurlsSource) ProgressChannel() <-chan ports.ProgressUpdate {
-	return w.progressCh
+// waybackurlsHandler implements common.OutputHandler for waybackurls output processing.
+type waybackurlsHandler struct {
+	parser    *Parser
+	filter    *urlfilter.FilterEngine
+	filterCfg urlfilter.FilterConfig
+	target    domain.Target
+	logger    logx.Logger
+	result    *domain.ScanResult // Store result to populate artifacts
+
+	// State
+	rawURLs  []string
+	urlCount int
+	mu       sync.Mutex
 }
 
-// Stream implements ports.StreamingSource
-func (w *WaybackurlsSource) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
-	artifactCh := make(chan *domain.Artifact, 100)
-	errorCh := make(chan error, 1)
+// ProcessLine handles each line of waybackurls stdout.
+func (h *waybackurlsHandler) ProcessLine(line []byte) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	go func() {
-		defer close(artifactCh)
-		defer close(errorCh)
+	h.urlCount++
+	lineStr := string(line)
 
-		result, err := w.Run(ctx, target)
-		if err != nil {
-			errorCh <- err
-			return
-		}
-
-		for _, artifact := range result.Artifacts {
-			select {
-			case artifactCh <- artifact:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return artifactCh, errorCh
-}
-
-// Close terminates the waybackurls process and cleans up resources.
-func (w *WaybackurlsSource) Close() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	w.logger.Debug("closing waybackurls source")
-
-	// Close progress channel to prevent goroutine leaks
-	close(w.progressCh)
-
-	// Kill process if still running
-	if w.cmd != nil && w.cmd.Process != nil {
-		// Check if process is still running
-		if w.cmd.ProcessState == nil || !w.cmd.ProcessState.Exited() {
-			// Try SIGTERM first
-			if err := w.cmd.Process.Signal(os.Interrupt); err != nil {
-				// Check if process already finished (not a real error)
-				if err != os.ErrProcessDone {
-					w.logger.Warn("SIGTERM failed, forcing kill", "error", err.Error())
-					if killErr := w.cmd.Process.Kill(); killErr != nil && killErr != os.ErrProcessDone {
-						w.logger.Warn("failed to kill waybackurls process", "error", killErr.Error())
-					}
-				}
-			}
-		}
-
-		w.cmd = nil
+	// Extract just the URL (remove timestamp if present)
+	urlStr, _ := h.parser.ExtractURLAndTimestamp(lineStr)
+	if urlStr != "" {
+		h.rawURLs = append(h.rawURLs, urlStr)
 	}
 
-	w.logger.Debug("waybackurls source closed")
+	// Apply volume control early if filtering is enabled
+	if h.filter != nil && h.filterCfg.EnableVolumeControl &&
+		h.filterCfg.MaxURLs > 0 && len(h.rawURLs) >= h.filterCfg.MaxURLs {
+		h.logger.Warn("reached max URLs, stopping collection",
+			"max", h.filterCfg.MaxURLs,
+			"current", len(h.rawURLs),
+		)
+		// Return error to stop processing (non-fatal)
+		return fmt.Errorf("max URLs reached: %d", h.filterCfg.MaxURLs)
+	}
+
 	return nil
+}
+
+// Finalize is called after all lines are processed.
+func (h *waybackurlsHandler) Finalize() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.logger.Info("collected raw URLs", "count", len(h.rawURLs))
+
+	// Apply intelligent filtering (if enabled)
+	var filteredURLs []string
+
+	if h.filter != nil && len(h.rawURLs) > 0 {
+		h.logger.Info("applying URL filtering", "input_urls", len(h.rawURLs))
+
+		ctx := context.Background()
+		scoredURLs, stats, err := h.filter.Filter(ctx, h.rawURLs)
+		if err != nil {
+			h.logger.Warn("filter failed, using unfiltered URLs", "error", err.Error())
+			filteredURLs = h.rawURLs
+		} else {
+			// Extract URLs from scored results (already sorted by priority)
+			filteredURLs = make([]string, len(scoredURLs))
+			for i, s := range scoredURLs {
+				filteredURLs[i] = s.URL
+			}
+
+			h.logger.Info("filtering complete",
+				"input", stats.InputURLs,
+				"output", stats.OutputURLs,
+				"reduction", fmt.Sprintf("%.1f%%", stats.ReductionRatio()),
+				"duplicates", stats.DuplicatesSkipped,
+				"low_priority", stats.LowPrioritySkipped,
+				"clusters", stats.ClustersMerged,
+				"patterns", stats.PatternsFound,
+			)
+
+			// Store filter stats in result metadata
+			if h.result.Metadata.Environment == nil {
+				h.result.Metadata.Environment = make(map[string]string)
+			}
+			h.result.Metadata.Environment["waybackurls_filter_input_urls"] = fmt.Sprintf("%d", stats.InputURLs)
+			h.result.Metadata.Environment["waybackurls_filter_output_urls"] = fmt.Sprintf("%d", stats.OutputURLs)
+			h.result.Metadata.Environment["waybackurls_filter_reduction_ratio"] = fmt.Sprintf("%.1f%%", stats.ReductionRatio())
+			h.result.Metadata.Environment["waybackurls_filter_duplicates"] = fmt.Sprintf("%d", stats.DuplicatesSkipped)
+			h.result.Metadata.Environment["waybackurls_filter_low_priority"] = fmt.Sprintf("%d", stats.LowPrioritySkipped)
+			h.result.Metadata.Environment["waybackurls_filter_clusters"] = fmt.Sprintf("%d", stats.ClustersMerged)
+			h.result.Metadata.Environment["waybackurls_filter_patterns"] = fmt.Sprintf("%d", stats.PatternsFound)
+			h.result.Metadata.Environment["waybackurls_filter_duration_ms"] = fmt.Sprintf("%d", stats.DurationMs)
+		}
+	} else {
+		// No filtering, use all collected URLs
+		filteredURLs = h.rawURLs
+	}
+
+	// Parse filtered URLs to artifacts
+	h.logger.Info("parsing URLs to artifacts", "count", len(filteredURLs))
+
+	seen := make(map[string]bool)
+	artifactCount := 0
+
+	for _, urlStr := range filteredURLs {
+		artifacts := h.parser.ParseLine(urlStr, h.target)
+
+		for _, artifact := range artifacts {
+			// Deduplicate artifacts
+			key := string(artifact.Type) + ":" + artifact.Value
+			if !seen[key] {
+				seen[key] = true
+				h.result.AddArtifact(artifact)
+				artifactCount++
+			}
+		}
+	}
+
+	h.logger.Info("finalization complete",
+		"filtered_urls", len(filteredURLs),
+		"artifacts", artifactCount,
+	)
+
+	return nil
+}
+
+// Stream implements ports.StreamingSource.
+func (w *WaybackurlsSource) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
+	return w.DefaultStream(ctx, target, w.Run)
 }
 
 // Initialize verifies that waybackurls is installed and accessible.
 // Implements ports.AdvancedSource.
 func (w *WaybackurlsSource) Initialize() error {
-	w.logger.Debug("initializing waybackurls source", "exec_path", w.execPath)
-
-	// Check if waybackurls binary exists
-	execPath, err := exec.LookPath(w.execPath)
-	if err != nil {
-		return fmt.Errorf("waybackurls not found in PATH: %w (install: go install github.com/tomnomnom/waybackurls@latest)", err)
-	}
-
-	w.execPath = execPath
-	w.logger.Debug("found waybackurls binary", "path", execPath)
-
-	// waybackurls doesn't have a -version flag, just check if it exists
-	w.logger.Info("waybackurls initialized successfully", "path", execPath)
-
-	return nil
+	return w.DefaultInitialize(
+		"waybackurls",
+		"go install github.com/tomnomnom/waybackurls@latest",
+	)
 }
 
 // Validate checks if the source configuration is valid.
 // Implements ports.AdvancedSource.
 func (w *WaybackurlsSource) Validate() error {
-	if w.execPath == "" {
-		return fmt.Errorf("waybackurls exec path is empty")
-	}
-
-	if w.timeout <= 0 {
-		return fmt.Errorf("timeout must be positive")
-	}
-
-	return nil
+	return w.DefaultValidate()
 }
 
 // HealthCheck verifies that waybackurls is responsive.
 // Implements ports.AdvancedSource.
 func (w *WaybackurlsSource) HealthCheck(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	// Just check if binary exists and is executable
-	if _, err := exec.LookPath(w.execPath); err != nil {
-		return fmt.Errorf("waybackurls health check failed: %w", err)
-	}
-
-	return nil
+	return w.DefaultHealthCheck(ctx)
 }
 
-// buildCommand constructs the waybackurls command with appropriate flags.
-func (w *WaybackurlsSource) buildCommand(ctx context.Context, target domain.Target) *exec.Cmd {
+// buildCommandArgs constructs the waybackurls command arguments.
+func (w *WaybackurlsSource) buildCommandArgs() []string {
 	args := []string{}
 
 	// Add optional flags
@@ -456,13 +329,10 @@ func (w *WaybackurlsSource) buildCommand(ctx context.Context, target domain.Targ
 		args = append(args, "-no-subs")
 	}
 
-	// Use parent context directly
-	cmd := exec.CommandContext(ctx, w.execPath, args...)
-
-	w.logger.Debug("built waybackurls command",
+	w.GetLogger().Debug("built waybackurls command",
 		"args", args,
-		"timeout", w.timeout.String(),
+		"timeout", w.GetTimeout().String(),
 	)
 
-	return cmd
+	return args
 }

@@ -34,9 +34,13 @@ Named after the Greek mythology horse Aethon (one of Helios' horses) - just as A
              │
 ┌────────────▼────────────────────────────┐
 │  internal/sources/                      │  ← Source implementations
+│  ├─ common/     (BaseCLISource)         │
 │  ├─ crtsh/      (Certificate logs)      │
 │  ├─ rdap/       (WHOIS queries)         │
-│  └─ httpx/      (HTTP probing)          │
+│  ├─ httpx/      (HTTP probing)          │
+│  ├─ subfinder/  (Subdomain enum)        │
+│  ├─ waybackurls/(Archive URLs)          │
+│  └─ amass/      (Network mapping)       │
 └────────────┬────────────────────────────┘
              │
 ┌────────────▼────────────────────────────┐
@@ -145,6 +149,16 @@ make coverage          # Coverage summary
 # Disable specific sources
 ./aethonx -t example.com --src.crtsh=false
 
+# Enable Shodan with API key
+export AETHONX_SRC_SHODAN_API_KEY="your-api-key-here"
+./aethonx -t example.com --src.shodan
+
+# Shodan API mode (requires API key)
+./aethonx -t example.com --src.shodan --src.shodan.api_key="your-key"
+
+# Shodan CLI mode (requires shodan binary)
+./aethonx -t example.com --src.shodan --src.shodan.use_cli
+
 # Help and version
 ./aethonx -h           # Show help
 ./aethonx -v           # Show version
@@ -164,6 +178,10 @@ make coverage          # Coverage summary
 - `--src.rdap` - Enable/disable RDAP (default: true)
 - `--src.subfinder` - Enable/disable subfinder (default: true)
 - `--src.httpx` - Enable/disable httpx (default: true)
+- `--src.shodan` - Enable/disable Shodan (default: false, requires API key)
+- `--src.shodan.api_key` - Shodan API key
+- `--src.shodan.use_cli` - Use Shodan CLI instead of API (default: false)
+- `--src.shodan.rate_limit` - Shodan API rate limit (req/s, default: 1.0)
 
 **Output Options:**
 - `-q, --quiet` - Disable table output, JSON only
@@ -216,6 +234,18 @@ make coverage          # Coverage summary
 - Rich metadata: IP addresses with ASN, AS organization, CIDR ranges
 - Configurable: brute force (`--src.amass.brute`), alterations (`--src.amass.alts`), DNS rate limiting
 - Priority: 15 (medium-high, after crtsh, before subfinder)
+
+**shodan** (`internal/sources/shodan/`)
+- Queries Shodan database for internet-facing assets and vulnerabilities
+- **Hybrid implementation**: REST API (primary) or CLI tool (fallback)
+- Passive reconnaissance (queries pre-indexed historical data)
+- Returns: `ArtifactTypeIP`, `ArtifactTypeSubdomain`, `ArtifactTypePort`, `ArtifactTypeService`, `ArtifactTypeVulnerability`, `ArtifactTypeCertificate`, `ArtifactTypeTechnology`, `ArtifactTypeASN`, `ArtifactTypeCloudResource`
+- Rich metadata: Services with banners, CVE vulnerabilities, SSL certificates, geolocation, ASN, cloud providers
+- Requires: Shodan API key (API mode) or CLI tool installation (CLI mode)
+- Configuration: `--src.shodan.api_key`, `--src.shodan.use_cli`, env: `AETHONX_SRC_SHODAN_API_KEY`
+- Priority: 12 (after crtsh, before subfinder)
+- API mode: 1 req/s (free tier), configurable for paid tiers
+- Disabled by default (requires API key to enable)
 
 ## Adding New Sources
 
@@ -298,6 +328,241 @@ import (
     _ "aethonx/internal/sources/mytool" // Blank import triggers init()
 )
 ```
+
+## BaseCLISource Abstraction (CLI Sources)
+
+For CLI-based reconnaissance tools (subfinder, httpx, waybackurls, amass), AethonX provides **BaseCLISource** - a reusable abstraction that eliminates duplicate subprocess management code.
+
+### Architecture
+
+**BaseCLISource** (`internal/sources/common/cli_source.go`) handles:
+- Subprocess lifecycle (spawn, monitor, cleanup)
+- Context cancellation and timeout handling
+- stdout/stderr pipe management with background readers
+- Thread-safe process tracking with mutex protection
+- Idempotent Close() with resource cleanup
+- Progress channel management
+- Default implementations for AdvancedSource methods
+
+**OutputHandler Interface** (`internal/sources/common/cli_source.go:19-29`):
+```go
+type OutputHandler interface {
+    // ProcessLine handles each line of stdout in real-time.
+    // Return error to stop processing (non-fatal errors should be logged instead).
+    ProcessLine(line []byte) error
+
+    // Finalize is called after all lines are processed.
+    // Use this for cleanup, validation, or final artifact creation.
+    Finalize() error
+}
+```
+
+This interface separates **subprocess management** (reusable) from **output parsing** (source-specific).
+
+### Key Features
+
+**Thread Safety**:
+- Mutex-protected cmd reference to prevent races with OS-level process structures
+- Idempotent Close() with chClosed flag to prevent double-close panics
+- All tests pass with `-race` detector
+
+**Error Handling**:
+- Tolerates partial results (continues parsing on handler errors)
+- Background stderr reader prevents blocking
+- Graceful process termination (SIGTERM → SIGKILL fallback)
+
+**Default Methods**:
+- `DefaultInitialize()` - Verifies binary exists in PATH
+- `DefaultValidate()` - Validates execPath and timeout
+- `DefaultHealthCheck()` - Runs `-version` or `-h` to verify binary
+- `DefaultStream()` - Wraps Run() for streaming interface
+- `ProcessOutput()` - Process stdout with handler (for stdin mode)
+
+### Usage Pattern
+
+**1. Embed BaseCLISource**:
+```go
+type SubfinderSource struct {
+    *common.BaseCLISource  // Embed base
+    threads   int
+    rateLimit int
+    sources   []string
+    parser    *Parser
+}
+
+func New(logger logx.Logger) *SubfinderSource {
+    return &SubfinderSource{
+        BaseCLISource: common.NewBaseCLISource(logger, common.BaseCLIConfig{
+            SourceName:     "subfinder",
+            ExecPath:       "subfinder",
+            Timeout:        60 * time.Second,
+            ProgressBuffer: 10,
+        }),
+        threads:   10,
+        rateLimit: 0,
+        sources:   []string{},
+    }
+}
+```
+
+**2. Implement OutputHandler**:
+```go
+type subfinderHandler struct {
+    parser    *Parser
+    target    domain.Target
+    logger    logx.Logger
+    responses []*SubfinderResponse
+    mu        sync.Mutex
+}
+
+func (h *subfinderHandler) ProcessLine(line []byte) error {
+    var resp SubfinderResponse
+    if err := json.Unmarshal(line, &resp); err != nil {
+        h.logger.Warn("failed to parse", "error", err.Error())
+        return nil // Non-fatal, continue processing
+    }
+    h.mu.Lock()
+    h.responses = append(h.responses, &resp)
+    h.mu.Unlock()
+    return nil
+}
+
+func (h *subfinderHandler) Finalize() error {
+    // Convert responses to artifacts, apply filters, etc.
+    return nil
+}
+```
+
+**3. Use ExecuteCLI in Run()**:
+```go
+func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
+    handler := &subfinderHandler{
+        parser: s.parser,
+        target: target,
+        logger: s.GetLogger(),
+    }
+
+    args := s.buildCommandArgs(target)
+    result, stderr, err := s.ExecuteCLI(ctx, target, args, handler)
+
+    // Check handler state, add artifacts to result
+    for _, resp := range handler.responses {
+        artifact := s.parser.Parse(resp, target)
+        result.AddArtifact(artifact)
+    }
+
+    return result, err
+}
+```
+
+**4. Use Default Methods**:
+```go
+func (s *SubfinderSource) Initialize() error {
+    return s.DefaultInitialize("subfinder", "https://github.com/projectdiscovery/subfinder")
+}
+
+func (s *SubfinderSource) Validate() error {
+    return s.DefaultValidate()
+}
+
+func (s *SubfinderSource) HealthCheck(ctx context.Context) error {
+    return s.DefaultHealthCheck(ctx)
+}
+
+func (s *SubfinderSource) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
+    return s.DefaultStream(ctx, target, s.Run)
+}
+```
+
+### Special Cases
+
+**Amass (Database Output)**:
+Amass doesn't write to stdout - it writes to SQLite database. Therefore:
+- Does NOT use OutputHandler pattern
+- Embeds BaseCLISource but manages subprocess manually in Run()
+- Still uses Default* methods for Initialize/Validate/HealthCheck/Stream
+- Reads database after process completes using `readDatabaseResults()`
+
+**HTTPx (Stdin Input)**:
+HTTPx supports reading targets from stdin for batch processing:
+- Uses `ProcessOutput()` method for manual stdout processing
+- Creates pipes manually, writes to stdin in background goroutine
+- Still uses handler for parsing JSON output
+
+### Available Helper Methods
+
+From BaseCLISource:
+- `GetExecPath()` - Get resolved binary path
+- `GetTimeout()` - Get configured timeout
+- `SetTimeout()` - Update timeout dynamically
+- `GetLogger()` - Get logger instance
+- `EmitProgress()` - Send non-blocking progress update
+- `ProgressChannel()` - Get progress channel
+- `ProcessOutput()` - Process stdout with handler (for manual subprocess control)
+
+## Registry Helpers (Type-Safe Config)
+
+**Registry Helpers** (`internal/platform/registry/helpers.go`) provide type-safe configuration extraction for source factories.
+
+### Problem Solved
+
+**Before** (manual nil checks and type assertions):
+```go
+func factory(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
+    execPath := "subfinder"
+    threads := 10
+    rateLimit := 0
+
+    if cfg.Custom != nil {
+        if v, ok := cfg.Custom["exec_path"].(string); ok && v != "" {
+            execPath = v
+        }
+        if v, ok := cfg.Custom["threads"].(int); ok {
+            threads = v
+        }
+        if v, ok := cfg.Custom["rate_limit"].(int); ok {
+            rateLimit = v
+        }
+        // ... 20+ more lines of boilerplate
+    }
+    // ...
+}
+```
+
+**After** (clean, type-safe):
+```go
+func factory(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
+    execPath := registry.GetStringConfig(cfg.Custom, "exec_path", "subfinder")
+    threads := registry.GetIntConfig(cfg.Custom, "threads", 10)
+    rateLimit := registry.GetIntConfig(cfg.Custom, "rate_limit", 0)
+    // ...
+}
+```
+
+### Available Helpers
+
+**Config Extraction**:
+- `GetStringConfig(custom, key, defaultValue)` - Extract string with default
+- `GetIntConfig(custom, key, defaultValue)` - Extract int with default
+- `GetBoolConfig(custom, key, defaultValue)` - Extract bool with default
+- `GetDurationConfig(custom, key, defaultValue)` - Extract time.Duration with default
+- `GetSliceConfig(custom, key, defaultValue)` - Extract []string with default
+- `GetFloat64Config(custom, key, defaultValue)` - Extract float64 with default
+
+**Validation Helpers**:
+- `ValidateRequiredString(fieldName, value)` - Ensure non-empty string
+- `ValidatePositiveInt(fieldName, value)` - Ensure value > 0
+- `ValidateIntRange(fieldName, value, min, max)` - Ensure value in range
+- `ValidateNonNegativeInt(fieldName, value)` - Ensure value >= 0
+- `ValidatePositiveDuration(fieldName, value)` - Ensure duration > 0
+- `ValidateNonEmptySlice(fieldName, value)` - Ensure slice has elements
+
+**Benefits**:
+- **Type safety**: No manual type assertions
+- **Nil safety**: Handles nil maps automatically
+- **Default values**: Clean fallback mechanism
+- **Reduced boilerplate**: ~75% code reduction in registry.go files
+- **Consistency**: All sources use same pattern
 
 ## Source Registry Workflow
 
@@ -795,30 +1060,38 @@ The Presenter system is **designed for future expansion**:
 3. `internal/core/usecases/pipeline_orchestrator.go` - Orchestration
 4. `cmd/aethonx/main.go` - Dependency injection
 
+**CLI Source Abstractions**:
+5. `internal/sources/common/cli_source.go` - BaseCLISource for subprocess management
+6. `internal/sources/common/cli_source_test.go` - Comprehensive BaseCLISource tests
+7. `internal/platform/registry/helpers.go` - Type-safe config extraction helpers
+8. `internal/platform/registry/helpers_test.go` - Registry helper tests
+
 **Source Examples**:
-5. `internal/sources/crtsh/crtsh.go` - Simple passive source
-6. `internal/sources/rdap/rdap.go` - Advanced source with caching
-7. `internal/sources/subfinder/subfinder.go` - Multi-source CLI wrapper
-8. `internal/sources/httpx/httpx.go` - CLI wrapper source
+9. `internal/sources/crtsh/crtsh.go` - Simple passive API source
+10. `internal/sources/rdap/rdap.go` - Advanced source with caching
+11. `internal/sources/subfinder/subfinder.go` - CLI source using BaseCLISource
+12. `internal/sources/httpx/httpx.go` - CLI source with stdin support
+13. `internal/sources/waybackurls/waybackurls.go` - Simple CLI source
+14. `internal/sources/amass/amass.go` - Complex CLI source with database output
 
 **Data Processing**:
-9. `internal/core/usecases/dedupe_service.go` - Deduplication
-10. `internal/adapters/output/streaming.go` - Streaming writer
-11. `internal/core/usecases/merge_service.go` - Merge service
+15. `internal/core/usecases/dedupe_service.go` - Deduplication
+16. `internal/adapters/output/streaming.go` - Streaming writer
+17. `internal/core/usecases/merge_service.go` - Merge service
 
 **Platform**:
-12. `internal/platform/workerpool/worker_pool.go` - Task scheduler
-13. `internal/platform/resilience/circuit_breaker.go` - Circuit breaker
-14. `internal/platform/registry/source_registry.go` - Source registry
-15. `internal/platform/validator/validator.go` - Validation utilities
-16. `internal/platform/config/config.go` - Configuration management
+18. `internal/platform/workerpool/worker_pool.go` - Task scheduler
+19. `internal/platform/resilience/circuit_breaker.go` - Circuit breaker
+20. `internal/platform/registry/source_registry.go` - Source registry
+21. `internal/platform/validator/validator.go` - Validation utilities
+22. `internal/platform/config/config.go` - Configuration management
 
 **Visual UI**:
-17. `internal/platform/ui/presenter.go` - Presenter interface
-18. `internal/platform/ui/custom_presenter.go` - Visual implementation (pretty mode)
-19. `internal/platform/ui/raw_presenter.go` - Log-based implementation (raw mode)
-20. `internal/platform/ui/global_progress.go` - Global progress bar with integrated spinner
-21. `internal/platform/ui/symbols.go` - Status symbols and colors
+23. `internal/platform/ui/presenter.go` - Presenter interface
+24. `internal/platform/ui/custom_presenter.go` - Visual implementation (pretty mode)
+25. `internal/platform/ui/raw_presenter.go` - Log-based implementation (raw mode)
+26. `internal/platform/ui/global_progress.go` - Global progress bar with integrated spinner
+27. `internal/platform/ui/symbols.go` - Status symbols and colors
 
 ## Code References
 

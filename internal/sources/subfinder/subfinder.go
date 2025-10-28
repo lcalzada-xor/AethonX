@@ -3,20 +3,16 @@
 package subfinder
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"os/exec"
 	"strconv"
 	"sync"
 	"time"
 
 	"aethonx/internal/core/domain"
-	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
+	"aethonx/internal/sources/common"
 )
 
 const (
@@ -28,46 +24,44 @@ const (
 // SubfinderSource implements ports.Source and ports.AdvancedSource.
 // It wraps Project Discovery's subfinder CLI tool for subdomain discovery.
 type SubfinderSource struct {
-	logger     logx.Logger
-	execPath   string        // Path to subfinder binary
-	timeout    time.Duration
-	threads    int
-	rateLimit  int
-	sources    []string // Specific sources to use (-s flag)
-	parser     *Parser
-	progressCh chan ports.ProgressUpdate
+	*common.BaseCLISource // Embedded base for subprocess management
 
-	// Process management
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	threads   int
+	rateLimit int
+	sources   []string // Specific sources to use (-s flag)
+	parser    *Parser
 }
 
 // New creates a new SubfinderSource with default configuration.
 // Uses only free sources that don't require API keys for immediate results.
 func New(logger logx.Logger) *SubfinderSource {
 	return &SubfinderSource{
-		logger:     logger.With("source", sourceName),
-		execPath:   "subfinder",
-		timeout:    defaultTimeout,
-		threads:    defaultThreads,
-		rateLimit:  0, // No limit by default (subfinder manages this internally)
-		sources:    []string{"alienvault", "anubis", "commoncrawl", "crtsh", "digitorus", "dnsdumpster", "hackertarget", "rapiddns", "sitedossier", "waybackarchive"},
-		parser:     NewParser(logger, sourceName),
-		progressCh: make(chan ports.ProgressUpdate, 10),
+		BaseCLISource: common.NewBaseCLISource(logger, common.BaseCLIConfig{
+			SourceName:     sourceName,
+			ExecPath:       "subfinder",
+			Timeout:        defaultTimeout,
+			ProgressBuffer: 10,
+		}),
+		threads:   defaultThreads,
+		rateLimit: 0, // No limit by default (subfinder manages this internally)
+		sources:   []string{"alienvault", "anubis", "commoncrawl", "crtsh", "digitorus", "dnsdumpster", "hackertarget", "rapiddns", "sitedossier", "waybackarchive"},
+		parser:    NewParser(logger, sourceName),
 	}
 }
 
 // NewWithConfig creates SubfinderSource with custom configuration.
 func NewWithConfig(logger logx.Logger, execPath string, timeout time.Duration, threads, rateLimit int, sources []string) *SubfinderSource {
 	return &SubfinderSource{
-		logger:     logger.With("source", sourceName),
-		execPath:   execPath,
-		timeout:    timeout,
-		threads:    threads,
-		rateLimit:  rateLimit,
-		sources:    sources,
-		parser:     NewParser(logger, sourceName),
-		progressCh: make(chan ports.ProgressUpdate, 10),
+		BaseCLISource: common.NewBaseCLISource(logger, common.BaseCLIConfig{
+			SourceName:     sourceName,
+			ExecPath:       execPath,
+			Timeout:        timeout,
+			ProgressBuffer: 10,
+		}),
+		threads:   threads,
+		rateLimit: rateLimit,
+		sources:   sources,
+		parser:    NewParser(logger, sourceName),
 	}
 }
 
@@ -88,148 +82,73 @@ func (s *SubfinderSource) Type() domain.SourceType {
 
 // Run executes subfinder against the target domain.
 func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
-	result := domain.NewScanResult(target)
 	startTime := time.Now()
 
-	s.logger.Info("starting subfinder scan",
+	s.GetLogger().Info("starting subfinder scan",
 		"target", target.Root,
 		"sources", s.sources,
 		"threads", s.threads,
 		"rate_limit", s.rateLimit,
 	)
 
-	// Build command with context
-	cmd := s.buildCommand(ctx, target)
+	// Build command arguments
+	args := s.buildCommandArgs(target)
 
-	// Create stdout pipe for streaming JSON
-	stdout, err := cmd.StdoutPipe()
+	// Create handler for processing output
+	handler := &subfinderHandler{
+		parser:    s.parser,
+		target:    target,
+		logger:    s.GetLogger(),
+		responses: make([]*SubfinderResponse, 0, 100),
+	}
+
+	// Execute CLI with handler (BaseCLISource handles all subprocess logic)
+	result, stderrOutput, err := s.ExecuteCLI(ctx, target, args, handler)
+
+	// Handle fatal errors (e.g., failed to start process)
+	if result == nil {
+		return nil, fmt.Errorf("subfinder failed to start: %w", err)
+	}
+
+	// Handle stderr warnings
+	if len(stderrOutput) > 0 {
+		s.GetLogger().Debug("subfinder stderr", "output", stderrOutput)
+		result.AddWarning("subfinder", fmt.Sprintf("stderr output: %s", stderrOutput))
+	}
+
+	// Handle errors (partial results tolerated)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	// Create stderr pipe for warnings
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	// Store command reference for Close()
-	s.mu.Lock()
-	s.cmd = cmd
-	s.mu.Unlock()
-
-	// Start subfinder process
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start subfinder: %w", err)
-	}
-
-	s.logger.Debug("subfinder process started", "pid", cmd.Process.Pid)
-
-	// Read stderr in background to prevent blocking
-	var stderrBytes []byte
-	var stderrMu sync.Mutex
-	var stderrWg sync.WaitGroup
-	stderrWg.Add(1)
-
-	go func() {
-		defer stderrWg.Done()
-		data, err := io.ReadAll(stderr)
-		if err != nil {
-			s.logger.Warn("error reading stderr", "error", err.Error())
-		}
-		stderrMu.Lock()
-		stderrBytes = data
-		stderrMu.Unlock()
-	}()
-
-	// Parse stdout in real-time (streaming JSONL)
-	responses := make([]*SubfinderResponse, 0, 100)
-	scanner := bufio.NewScanner(stdout)
-
-	// Increase buffer size for large responses
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024) // 1MB max token size
-
-	artifactCount := 0
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		var resp SubfinderResponse
-		if err := json.Unmarshal([]byte(line), &resp); err != nil {
-			s.logger.Warn("failed to parse subfinder output", "line", line, "error", err.Error())
-			continue
-		}
-
-		responses = append(responses, &resp)
-		artifactCount++
-
-		// Emit progress (non-blocking)
-		select {
-		case s.progressCh <- ports.ProgressUpdate{
-			ArtifactCount: artifactCount,
-			Message:       fmt.Sprintf("Found %s", resp.Host),
-		}:
-		default:
-			// Channel full, skip update
-		}
-
-		s.logger.Debug("parsed subfinder response",
-			"host", resp.Host,
-			"sources", resp.Source,
-		)
-	}
-
-	if err := scanner.Err(); err != nil {
-		s.logger.Warn("scanner error", "error", err.Error())
-	}
-
-	// Wait for process to complete
-	if err := cmd.Wait(); err != nil {
-		// Wait for stderr goroutine to finish before returning error
-		stderrWg.Wait()
-
-		// Don't fail if we got some results
-		if len(responses) > 0 {
-			s.logger.Warn("subfinder exited with error but produced results", "error", err.Error())
+		responseCount := len(handler.responses)
+		if responseCount > 0 {
+			s.GetLogger().Warn("subfinder exited with error but produced results",
+				"error", err.Error(),
+				"responses", responseCount,
+			)
 			result.AddWarning("subfinder", fmt.Sprintf("process exited with error: %v", err))
 		} else {
 			return nil, fmt.Errorf("subfinder failed: %w", err)
 		}
 	}
 
-	// Wait for stderr goroutine to finish reading all output
-	stderrWg.Wait()
-
-	// Get stderr from background goroutine
-	stderrMu.Lock()
-	stderrLen := len(stderrBytes)
-	stderrStr := string(stderrBytes)
-	stderrMu.Unlock()
-
-	if stderrLen > 0 {
-		s.logger.Debug("subfinder stderr", "output", stderrStr)
-		result.AddWarning("subfinder", fmt.Sprintf("stderr output: %s", stderrStr))
-	}
-
-	// Parse responses into artifacts
-	artifacts := s.parser.ParseMultipleResponses(responses, target)
+	// Parse responses into artifacts (after ExecuteCLI completes)
+	artifacts := s.parser.ParseMultipleResponses(handler.responses, target)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
 
 	// Log warning if responses were found but no artifacts created (filtered out)
-	if len(responses) > 0 && len(artifacts) == 0 {
-		s.logger.Warn("subfinder found responses but all were filtered out",
+	if len(handler.responses) > 0 && len(result.Artifacts) == 0 {
+		s.GetLogger().Warn("subfinder found responses but all were filtered out",
 			"target", target.Root,
-			"responses", len(responses),
+			"responses", len(handler.responses),
 			"reason", "likely out of scope or wildcards",
 		)
-		result.AddWarning("subfinder", fmt.Sprintf("found %d responses but all were filtered out (out of scope or wildcards)", len(responses)))
+		result.AddWarning("subfinder", fmt.Sprintf("found %d responses but all were filtered out (out of scope or wildcards)", len(handler.responses)))
 	}
 
 	// Log warning if no responses at all
-	if len(responses) == 0 {
-		s.logger.Warn("subfinder completed but found 0 responses",
+	if len(handler.responses) == 0 {
+		s.GetLogger().Warn("subfinder completed but found 0 responses",
 			"target", target.Root,
 			"sources", s.sources,
 		)
@@ -237,122 +156,85 @@ func (s *SubfinderSource) Run(ctx context.Context, target domain.Target) (*domai
 	}
 
 	duration := time.Since(startTime)
-	s.logger.Info("subfinder scan completed",
+	s.GetLogger().Info("subfinder scan completed",
 		"target", target.Root,
 		"duration", duration.String(),
-		"responses", len(responses),
+		"responses", len(handler.responses),
 		"artifacts", len(result.Artifacts),
 	)
 
 	return result, nil
 }
 
-// ProgressChannel implements ports.StreamingSource
-func (s *SubfinderSource) ProgressChannel() <-chan ports.ProgressUpdate {
-	return s.progressCh
+// subfinderHandler implements common.OutputHandler for subfinder JSON output processing.
+type subfinderHandler struct {
+	parser    *Parser
+	target    domain.Target
+	logger    logx.Logger
+	responses []*SubfinderResponse
+
+	// State
+	mu sync.Mutex
 }
 
-// Stream implements ports.StreamingSource (no usado actualmente pero requerido por interfaz)
-func (s *SubfinderSource) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
-	artifactCh := make(chan *domain.Artifact, 100)
-	errorCh := make(chan error, 1)
+// ProcessLine handles each line of subfinder stdout (JSON lines).
+func (h *subfinderHandler) ProcessLine(line []byte) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 
-	go func() {
-		defer close(artifactCh)
-		defer close(errorCh)
-
-		result, err := s.Run(ctx, target)
-		if err != nil {
-			errorCh <- err
-			return
-		}
-
-		for _, artifact := range result.Artifacts {
-			select {
-			case artifactCh <- artifact:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return artifactCh, errorCh
-}
-
-// Close terminates the subfinder process and cleans up resources.
-func (s *SubfinderSource) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.logger.Debug("closing subfinder source")
-
-	// Close progress channel to prevent goroutine leaks
-	close(s.progressCh)
-
-	// Kill process if still running
-	if s.cmd != nil && s.cmd.Process != nil {
-		// Check if process is still running
-		if s.cmd.ProcessState == nil || !s.cmd.ProcessState.Exited() {
-			// Try SIGTERM first
-			if err := s.cmd.Process.Signal(os.Interrupt); err != nil {
-				// Check if process already finished (not a real error)
-				if err != os.ErrProcessDone {
-					s.logger.Warn("SIGTERM failed, forcing kill", "error", err.Error())
-					if killErr := s.cmd.Process.Kill(); killErr != nil && killErr != os.ErrProcessDone {
-						s.logger.Warn("failed to kill subfinder process", "error", killErr.Error())
-					}
-				}
-			}
-		}
-
-		s.cmd = nil
+	var resp SubfinderResponse
+	if err := json.Unmarshal(line, &resp); err != nil {
+		h.logger.Warn("failed to parse subfinder output", "line", string(line), "error", err.Error())
+		return nil // Non-fatal, continue processing
 	}
 
-	s.logger.Debug("subfinder source closed")
+	h.responses = append(h.responses, &resp)
+
+	h.logger.Debug("parsed subfinder response",
+		"host", resp.Host,
+		"sources", resp.Source,
+	)
+
 	return nil
+}
+
+// Finalize is called after all lines are processed.
+func (h *subfinderHandler) Finalize() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.logger.Info("parsing responses to artifacts", "count", len(h.responses))
+
+	// This is handled in Run() after ExecuteCLI returns
+	// We don't populate result here because ExecuteCLI creates a new result
+	// Instead, we store responses and let Run() handle artifact creation
+
+	return nil
+}
+
+// Stream implements ports.StreamingSource.
+func (s *SubfinderSource) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
+	return s.DefaultStream(ctx, target, s.Run)
 }
 
 // Initialize verifies that subfinder is installed and accessible.
 // Implements ports.AdvancedSource.
 func (s *SubfinderSource) Initialize() error {
-	s.logger.Debug("initializing subfinder source", "exec_path", s.execPath)
-
-	// Check if subfinder binary exists
-	execPath, err := exec.LookPath(s.execPath)
-	if err != nil {
-		return fmt.Errorf("subfinder not found in PATH: %w (install from: https://github.com/projectdiscovery/subfinder)", err)
-	}
-
-	s.execPath = execPath
-	s.logger.Debug("found subfinder binary", "path", execPath)
-
-	// Check version
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, s.execPath, "-version")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("failed to check subfinder version: %w", err)
-	}
-
-	version := string(output)
-	s.logger.Info("subfinder initialized successfully", "version", version)
-
-	return nil
+	return s.DefaultInitialize(
+		"subfinder",
+		"https://github.com/projectdiscovery/subfinder",
+	)
 }
 
 // Validate checks if the source configuration is valid.
 // Implements ports.AdvancedSource.
 func (s *SubfinderSource) Validate() error {
-	if s.execPath == "" {
-		return fmt.Errorf("subfinder exec path is empty")
+	// First check base validation
+	if err := s.DefaultValidate(); err != nil {
+		return err
 	}
 
-	if s.timeout <= 0 {
-		return fmt.Errorf("timeout must be positive")
-	}
-
+	// Additional subfinder-specific validation
 	if s.threads <= 0 || s.threads > 1000 {
 		return fmt.Errorf("threads must be between 1 and 1000")
 	}
@@ -371,19 +253,11 @@ func (s *SubfinderSource) Validate() error {
 // HealthCheck verifies that subfinder is responsive.
 // Implements ports.AdvancedSource.
 func (s *SubfinderSource) HealthCheck(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, s.execPath, "-version")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("subfinder health check failed: %w", err)
-	}
-
-	return nil
+	return s.DefaultHealthCheck(ctx)
 }
 
-// buildCommand constructs the subfinder command with appropriate flags.
-func (s *SubfinderSource) buildCommand(ctx context.Context, target domain.Target) *exec.Cmd {
+// buildCommandArgs constructs the subfinder command arguments.
+func (s *SubfinderSource) buildCommandArgs(target domain.Target) []string {
 	args := []string{
 		"-d", target.Root, // Target domain
 		"-oJ",             // JSON output
@@ -404,17 +278,14 @@ func (s *SubfinderSource) buildCommand(ctx context.Context, target domain.Target
 	}
 
 	// Add timeout flag (in seconds)
-	args = append(args, "-timeout", strconv.Itoa(int(s.timeout.Seconds())))
+	args = append(args, "-timeout", strconv.Itoa(int(s.GetTimeout().Seconds())))
 
-	// Use parent context directly
-	cmd := exec.CommandContext(ctx, s.execPath, args...)
-
-	s.logger.Debug("built subfinder command",
+	s.GetLogger().Debug("built subfinder command",
 		"args", args,
-		"timeout", s.timeout.String(),
+		"timeout", s.GetTimeout().String(),
 	)
 
-	return cmd
+	return args
 }
 
 // joinSources joins source names with commas for -s flag.

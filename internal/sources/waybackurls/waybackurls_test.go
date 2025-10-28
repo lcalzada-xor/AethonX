@@ -1,7 +1,6 @@
 package waybackurls
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -322,7 +321,6 @@ func TestURLAnalyzer_DetectAPI(t *testing.T) {
 
 func TestWaybackurlsSource_BuildCommand(t *testing.T) {
 	logger := logx.New()
-	target := domain.Target{Root: "example.com"}
 
 	tests := []struct {
 		name      string
@@ -339,10 +337,10 @@ func TestWaybackurlsSource_BuildCommand(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			source := NewWithConfig(logger, "waybackurls", 60*time.Second, tt.withDates, tt.noSubs, urlfilter.DefaultConfig())
-			cmd := source.buildCommand(context.Background(), target)
+			args := source.buildCommandArgs()
 
-			if len(cmd.Args)-1 != tt.wantArgs { // -1 because Args[0] is the command itself
-				t.Errorf("expected %d args, got %d", tt.wantArgs, len(cmd.Args)-1)
+			if len(args) != tt.wantArgs {
+				t.Errorf("expected %d args, got %d", tt.wantArgs, len(args))
 			}
 		})
 	}
