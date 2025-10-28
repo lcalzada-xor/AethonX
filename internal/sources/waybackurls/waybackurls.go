@@ -369,6 +369,9 @@ func (w *WaybackurlsSource) Close() error {
 
 	w.logger.Debug("closing waybackurls source")
 
+	// Close progress channel to prevent goroutine leaks
+	close(w.progressCh)
+
 	// Kill process if still running
 	if w.cmd != nil && w.cmd.Process != nil {
 		// Check if process is still running

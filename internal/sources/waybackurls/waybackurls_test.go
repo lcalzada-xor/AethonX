@@ -7,6 +7,7 @@ import (
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/platform/logx"
+	"aethonx/internal/platform/urlfilter"
 )
 
 func TestParser_ParseLine(t *testing.T) {
@@ -186,7 +187,7 @@ func TestParser_ExtractURLAndTimestamp(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url, timestamp := parser.extractURLAndTimestamp(tt.line)
+			url, timestamp := parser.ExtractURLAndTimestamp(tt.line)
 
 			if url != tt.expectedURL {
 				t.Errorf("expected URL %q, got %q", tt.expectedURL, url)
@@ -337,7 +338,7 @@ func TestWaybackurlsSource_BuildCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			source := NewWithConfig(logger, "waybackurls", 60*time.Second, tt.withDates, tt.noSubs)
+			source := NewWithConfig(logger, "waybackurls", 60*time.Second, tt.withDates, tt.noSubs, urlfilter.DefaultConfig())
 			cmd := source.buildCommand(context.Background(), target)
 
 			if len(cmd.Args)-1 != tt.wantArgs { // -1 because Args[0] is the command itself
@@ -364,7 +365,7 @@ func TestWaybackurlsSource_Validate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			source := NewWithConfig(logger, tt.execPath, tt.timeout, false, false)
+			source := NewWithConfig(logger, tt.execPath, tt.timeout, false, false, urlfilter.DefaultConfig())
 			err := source.Validate()
 
 			if tt.wantError && err == nil {

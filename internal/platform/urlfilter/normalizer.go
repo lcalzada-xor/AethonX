@@ -3,6 +3,7 @@ package urlfilter
 import (
 	"fmt"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -147,8 +148,9 @@ func (n *URLNormalizer) applyBasicNormalization(parsed *url.URL, result *Normali
 	parsed.Fragment = ""
 
 	// Normalize path (remove double slashes, clean)
+	// IMPORTANT: Use path.Clean() not filepath.Clean() to avoid OS-specific separators
 	if parsed.Path != "" {
-		parsed.Path = filepath.Clean(parsed.Path)
+		parsed.Path = path.Clean(parsed.Path)
 		// Add trailing slash for directories (paths without extension)
 		if !strings.Contains(filepath.Base(parsed.Path), ".") && !strings.HasSuffix(parsed.Path, "/") {
 			parsed.Path += "/"

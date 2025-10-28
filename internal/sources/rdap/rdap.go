@@ -614,6 +614,9 @@ func (r *RDAP) Stream(ctx context.Context, target domain.Target) (<-chan *domain
 func (r *RDAP) Close() error {
 	r.logger.Debug("closing RDAP source")
 
+	// Close progress channel to prevent goroutine leaks
+	close(r.progressCh)
+
 	if r.stopCleanup != nil {
 		r.stopCleanup()
 		r.logger.Debug("cache cleanup worker stopped")

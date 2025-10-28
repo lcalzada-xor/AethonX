@@ -286,6 +286,9 @@ func (s *SubfinderSource) Close() error {
 
 	s.logger.Debug("closing subfinder source")
 
+	// Close progress channel to prevent goroutine leaks
+	close(s.progressCh)
+
 	// Kill process if still running
 	if s.cmd != nil && s.cmd.Process != nil {
 		// Check if process is still running

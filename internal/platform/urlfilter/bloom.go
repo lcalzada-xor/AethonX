@@ -192,6 +192,12 @@ func (b *BloomFilter) Stats() BloomStats {
 	fillRatio := b.estimateFillRatio()
 	actualFP := math.Pow(fillRatio, float64(b.hashes))
 
+	// Calculate hit rate, avoiding division by zero
+	hitRate := 0.0
+	if b.checks > 0 {
+		hitRate = float64(b.hits) / float64(b.checks)
+	}
+
 	return BloomStats{
 		Size:              b.size,
 		Hashes:            b.hashes,
@@ -201,7 +207,7 @@ func (b *BloomFilter) Stats() BloomStats {
 		MemoryBytes:       int64(len(b.bits) * 8),
 		FillRatio:         fillRatio,
 		EstimatedFPRate:   actualFP,
-		HitRate:           float64(b.hits) / float64(b.checks),
+		HitRate:           hitRate,
 	}
 }
 

@@ -1,8 +1,6 @@
 package amass
 
 import (
-	"time"
-
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
@@ -43,7 +41,7 @@ func init() {
 
 			// Use configured timeout or default
 			if cfg.Timeout > 0 {
-				timeout = time.Duration(cfg.Timeout) * time.Second
+				timeout = cfg.Timeout
 			}
 
 			amassConfig := AmassConfig{
@@ -75,7 +73,7 @@ func init() {
 				domain.ArtifactTypeCIDR,
 				domain.ArtifactTypeASN,
 			},
-			Priority:  15, // Medium-high priority (after crtsh=20, before subfinder=10)
+			Priority:  15, // Medium-high priority (runs after passive sources like waybackurls=5, rdap=8, crtsh=10, subfinder=10)
 			StageHint: 0,  // Stage 0 explicit
 		},
 	); err != nil {

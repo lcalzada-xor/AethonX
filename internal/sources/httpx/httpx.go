@@ -43,6 +43,7 @@ type HTTPXSource struct {
 	customFlags []string
 	parser      *Parser
 	progressCh  chan ports.ProgressUpdate
+	chClosed    bool // Track if progressCh is closed
 
 	// Process management
 	mu  sync.Mutex
@@ -249,6 +250,12 @@ func (h *HTTPXSource) Close() error {
 	defer h.mu.Unlock()
 
 	h.logger.Debug("closing httpx source")
+
+	// Close progress channel to prevent goroutine leaks (only once)
+	if !h.chClosed {
+		close(h.progressCh)
+		h.chClosed = true
+	}
 
 	// Kill process if still running
 	// Note: The context cancellation from the orchestrator will handle termination

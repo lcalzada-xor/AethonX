@@ -481,6 +481,9 @@ func (a *AmassSource) Close() error {
 
 	a.logger.Debug("closing amass source")
 
+	// Close progress channel to prevent goroutine leaks
+	close(a.progressCh)
+
 	// Kill process if still running
 	if a.cmd != nil && a.cmd.Process != nil {
 		// Check if process is still running

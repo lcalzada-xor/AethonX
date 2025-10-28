@@ -266,6 +266,8 @@ func (c *CRT) Stream(ctx context.Context, target domain.Target) (<-chan *domain.
 // para cumplir con la interfaz ports.Source.
 func (c *CRT) Close() error {
 	c.logger.Debug("closing crtsh source")
+	// Close progress channel to prevent goroutine leaks
+	close(c.progressCh)
 	// http.Client no requiere Close() explícito
 	return nil
 }

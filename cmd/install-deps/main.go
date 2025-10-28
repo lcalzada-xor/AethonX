@@ -220,6 +220,7 @@ func displayResults(results []installer.InstallationResult, presenter ui.Present
 				ui.StatusSuccess,
 				result.Duration,
 				1,
+				nil, // No summary for install-deps
 			)
 			presenter.Info(fmt.Sprintf("✓ %s: %s", result.Dependency.Name, result.Message))
 
@@ -229,6 +230,7 @@ func displayResults(results []installer.InstallationResult, presenter ui.Present
 				ui.StatusSuccess,
 				result.Duration,
 				1,
+				nil, // No summary for install-deps
 			)
 			presenter.Info(fmt.Sprintf("✓ %s: %s", result.Dependency.Name, result.Message))
 
@@ -238,6 +240,7 @@ func displayResults(results []installer.InstallationResult, presenter ui.Present
 				ui.StatusError,
 				result.Duration,
 				0,
+				nil, // No summary for install-deps
 			)
 			presenter.Error(fmt.Sprintf("✗ %s: %s", result.Dependency.Name, result.Message))
 
@@ -247,6 +250,7 @@ func displayResults(results []installer.InstallationResult, presenter ui.Present
 				ui.StatusSkipped,
 				result.Duration,
 				0,
+				nil, // No summary for install-deps
 			)
 			presenter.Info(fmt.Sprintf("⊘ %s: %s", result.Dependency.Name, result.Message))
 		}

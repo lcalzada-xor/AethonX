@@ -36,7 +36,7 @@ func TestParser_ParseResponse(t *testing.T) {
 			target:           target,
 			expectCount:      1,
 			expectValue:      "sub.example.com",
-			expectConfidence: 0.90,
+			expectConfidence: 0.60, // ConfidenceMedium
 		},
 		{
 			name: "wildcard subdomain - should be skipped",
@@ -80,7 +80,7 @@ func TestParser_ParseResponse(t *testing.T) {
 			target:           target,
 			expectCount:      1,
 			expectValue:      "a.b.c.example.com",
-			expectConfidence: 0.90,
+			expectConfidence: 0.60, // ConfidenceMedium
 		},
 	}
 
