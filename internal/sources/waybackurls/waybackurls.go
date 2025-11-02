@@ -5,6 +5,8 @@ package waybackurls
 import (
 	"context"
 	"fmt"
+	"io"
+	"os/exec"
 	"sync"
 	"time"
 
@@ -98,8 +100,8 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 	// Build command arguments
 	args := w.buildCommandArgs()
 
-	// Create result early (handler needs it)
-	tempResult := domain.NewScanResult(target)
+	// Create result
+	result := domain.NewScanResult(target)
 
 	// Create handler for processing output
 	handler := &waybackurlsHandler{
@@ -108,36 +110,86 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 		filterCfg: w.filterCfg,
 		target:    target,
 		logger:    w.GetLogger(),
-		result:    tempResult,
+		result:    result,
 		rawURLs:   make([]string, 0, 10000),
 	}
 
-	// Execute CLI with handler (BaseCLISource handles all subprocess logic)
-	result, stderrOutput, err := w.ExecuteCLI(ctx, target, args, handler)
+	// waybackurls requires the domain to be passed via stdin (not as argument)
+	// We need to manually create the command with StdinPipe
+	cmd := exec.CommandContext(ctx, w.GetExecPath(), args...)
 
-	// Handle fatal errors (e.g., failed to start process)
-	if result == nil {
-		return nil, fmt.Errorf("waybackurls failed to start: %w", err)
+	// Create stdout pipe for streaming output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
 
-	// Handle stderr warnings
+	// Create stderr pipe for warnings
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	// Create stdin pipe to send domain
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+
+	// Start waybackurls process
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start waybackurls: %w", err)
+	}
+
+	w.GetLogger().Debug("waybackurls process started", "pid", cmd.Process.Pid)
+
+	// Write domain to stdin in goroutine
+	go func() {
+		defer stdin.Close()
+		fmt.Fprintln(stdin, target.Root)
+	}()
+
+	// Process stdout using handler
+	if err := w.ProcessOutput(stdout, handler); err != nil {
+		w.GetLogger().Warn("output processing error", "error", err.Error())
+	}
+
+	// Finalize handler (applies filtering and creates artifacts)
+	if err := handler.Finalize(); err != nil {
+		w.GetLogger().Warn("handler finalization error", "error", err.Error())
+	}
+
+	// Capture stderr for warnings
+	stderrBytes, _ := io.ReadAll(stderr)
+	stderrOutput := string(stderrBytes)
 	if len(stderrOutput) > 0 {
 		w.GetLogger().Debug("waybackurls stderr", "output", stderrOutput)
 		result.AddWarning("waybackurls", fmt.Sprintf("stderr output: %s", stderrOutput))
 	}
 
-	// Handle errors (partial results tolerated)
-	if err != nil {
-		artifactCount := len(result.Artifacts)
+	// Wait for process to complete
+	waitErr := cmd.Wait()
+	artifactCount := len(result.Artifacts)
+
+	if waitErr != nil {
+		// Log error pero SIEMPRE retornar resultados parciales
+		w.GetLogger().Warn("waybackurls exited with error",
+			"error", waitErr.Error(),
+			"artifacts", artifactCount,
+		)
+		result.AddWarning("waybackurls", fmt.Sprintf("process exited with error: %v", waitErr))
+
+		// Si hay resultados parciales, retornarlos con error (orchestrator los consolidará)
 		if artifactCount > 0 {
-			w.GetLogger().Warn("waybackurls exited with error but produced results",
-				"error", err.Error(),
+			w.GetLogger().Info("returning partial results from waybackurls",
 				"artifacts", artifactCount,
 			)
-			result.AddWarning("waybackurls", fmt.Sprintf("process exited with error: %v", err))
-		} else {
-			return nil, fmt.Errorf("waybackurls failed: %w", err)
+			// Retornar resultado parcial + error para que orchestrator decida
+			return result, fmt.Errorf("waybackurls timeout/cancelled but produced %d partial results: %w", artifactCount, waitErr)
 		}
+
+		// Sin resultados: retornar error total
+		return nil, fmt.Errorf("waybackurls failed without results: %w", waitErr)
 	}
 
 	// Log warnings if no results

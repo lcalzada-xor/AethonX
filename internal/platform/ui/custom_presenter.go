@@ -305,15 +305,10 @@ func (c *CustomPresenter) Finish(stats ScanStats) {
 		)
 	}
 
-	// Artifacts por tipo
-	if len(stats.ArtifactsByType) > 0 {
-		fmt.Printf("\n%s %s\n\n", terminal.Colorize(IconStats, terminal.RGB(255, 107, 53)), terminal.BoldText("ARTIFACTS BY TYPE"))
-		for aType, count := range stats.ArtifactsByType {
-			fmt.Printf("  %s: %s\n",
-				terminal.Colorize(aType, terminal.White),
-				terminal.Colorize(fmt.Sprintf("%d", count), terminal.BrightCyan),
-			)
-		}
+	// Artifacts por tipo (resumen detallado con categorías y samples)
+	if len(stats.ArtifactsByType) > 0 && stats.AllArtifacts != nil {
+		summary := FormatArtifactSummary(stats.ArtifactsByType, stats.AllArtifacts)
+		fmt.Print(summary)
 	}
 
 	fmt.Println()

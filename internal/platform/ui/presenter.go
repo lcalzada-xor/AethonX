@@ -3,6 +3,8 @@ package ui
 
 import (
 	"time"
+
+	"aethonx/internal/core/domain"
 )
 
 // UIMode define el modo de visualización
@@ -86,6 +88,7 @@ type ScanStats struct {
 	SourcesFailed      int
 	ArtifactsByType    map[string]int
 	RelationshipsBuilt int
+	AllArtifacts       []*domain.Artifact // Para samples en resumen
 }
 
 // DiscoveryStats contiene estadísticas de descubrimiento en tiempo real

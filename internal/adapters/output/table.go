@@ -10,7 +10,8 @@ import (
 	"aethonx/internal/core/domain"
 )
 
-// OutputTable imprime una tabla legible en terminal.
+// OutputTable imprime información del scan sin listar todos los artifacts individuales.
+// Los artifacts detallados están disponibles en el JSON output.
 func OutputTable(result *domain.ScanResult) error {
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 
@@ -22,32 +23,13 @@ func OutputTable(result *domain.ScanResult) error {
 	fmt.Fprintf(w, "Artifacts:\t%d\n", len(result.Artifacts))
 	fmt.Fprintf(w, "Sources:\t%s\n\n", strings.Join(result.Metadata.SourcesUsed, ", "))
 
-	// Tabla de artifacts
-	if len(result.Artifacts) > 0 {
-		fmt.Fprintln(w, "TYPE\tVALUE\tSOURCES\tCONFIDENCE")
-		fmt.Fprintln(w, "----\t-----\t-------\t----------")
-
-		for _, a := range result.Artifacts {
-			sources := strings.Join(a.Sources, ",")
-			confidence := fmt.Sprintf("%.2f", a.Confidence)
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-				a.Type,
-				a.Value,
-				sources,
-				confidence,
-			)
-		}
-	} else {
-		fmt.Fprintln(w, "No artifacts discovered.")
-	}
-
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("failed to flush table: %w", err)
 	}
 
 	// Warnings
 	if len(result.Warnings) > 0 {
-		fmt.Fprintf(os.Stdout, "\n⚠️  Warnings (%d):\n", len(result.Warnings))
+		fmt.Fprintf(os.Stdout, "\n⚠ Warnings (%d):\n", len(result.Warnings))
 		for i, warning := range result.Warnings {
 			fmt.Fprintf(os.Stdout, "  %d. [%s] %s\n", i+1, warning.Source, warning.Message)
 		}
@@ -55,22 +37,13 @@ func OutputTable(result *domain.ScanResult) error {
 
 	// Errors
 	if len(result.Errors) > 0 {
-		fmt.Fprintf(os.Stdout, "\n❌ Errors (%d):\n", len(result.Errors))
+		fmt.Fprintf(os.Stdout, "\n✖ Errors (%d):\n", len(result.Errors))
 		for i, err := range result.Errors {
 			fatal := ""
 			if err.Fatal {
 				fatal = " (FATAL)"
 			}
 			fmt.Fprintf(os.Stdout, "  %d. [%s] %s%s\n", i+1, err.Source, err.Message, fatal)
-		}
-	}
-
-	// Stats summary
-	if len(result.Artifacts) > 0 {
-		fmt.Fprintln(os.Stdout, "\n📊 Statistics by Type:")
-		stats := result.Stats()
-		for artifactType, count := range stats {
-			fmt.Fprintf(os.Stdout, "  - %s: %d\n", artifactType, count)
 		}
 	}
 

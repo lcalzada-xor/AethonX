@@ -140,19 +140,6 @@ func DefaultConfig() Config {
 						"exec_path":  "httpx",
 					},
 				},
-				"amass": {
-					Enabled:   true,
-					Timeout:   300 * time.Second, // amass can be slow (5 minutes)
-					Retries:   2,
-					RateLimit: 0,
-					Priority:  15, // Medium-high priority (after crtsh, before subfinder)
-					Custom: map[string]interface{}{
-						"max_dns_qps": 0,     // 0 = unlimited
-						"brute":       false, // Disable brute force by default
-						"alts":        false, // Disable alterations by default
-						"exec_path":   "amass",
-					},
-				},
 				"waybackurls": {
 					Enabled:   true,
 					Timeout:   120 * time.Second, // Wayback Machine can be slow
@@ -416,13 +403,28 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 	pflag.IntVarP(&cfg.Core.TimeoutS, "timeout", "T", cfg.Core.TimeoutS, "Global timeout in seconds (0=none)")
 
 	// === SOURCE FLAGS ===
+	// NOTE: We need to store pointers to enabled/priority flags for each source
+	// because pflag.BoolVar requires a pointer to the actual variable, not a copy.
+	// We'll apply these values back to the config after pflag.Parse().
+	sourceEnabledFlags := make(map[string]*bool)
+	sourcePriorityFlags := make(map[string]*int)
+
 	for name := range cfg.Source.Sources {
 		sourceCfg := cfg.Source.Sources[name]
-		pflag.BoolVar(&sourceCfg.Enabled, fmt.Sprintf("src.%s", name), sourceCfg.Enabled,
+
+		// Create temporary variables to hold flag values
+		enabled := sourceCfg.Enabled
+		priority := sourceCfg.Priority
+
+		// Register flags with pointers to temporary variables
+		pflag.BoolVar(&enabled, fmt.Sprintf("src.%s", name), sourceCfg.Enabled,
 			fmt.Sprintf("Enable %s source", name))
-		pflag.IntVar(&sourceCfg.Priority, fmt.Sprintf("src.%s.priority", name), sourceCfg.Priority,
+		pflag.IntVar(&priority, fmt.Sprintf("src.%s.priority", name), sourceCfg.Priority,
 			fmt.Sprintf("Priority for %s (higher=first)", name))
-		cfg.Source.Sources[name] = sourceCfg
+
+		// Store pointers for later application
+		sourceEnabledFlags[name] = &enabled
+		sourcePriorityFlags[name] = &priority
 	}
 
 	// === SHODAN-SPECIFIC FLAGS ===
@@ -489,6 +491,23 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 	// Parse flags
 	pflag.Parse()
 
+	// Apply source-specific flags back to config
+	for name := range cfg.Source.Sources {
+		sourceCfg := cfg.Source.Sources[name]
+
+		// Apply enabled flag if it was set
+		if enabledPtr, ok := sourceEnabledFlags[name]; ok && enabledPtr != nil {
+			sourceCfg.Enabled = *enabledPtr
+		}
+
+		// Apply priority flag if it was set
+		if priorityPtr, ok := sourcePriorityFlags[name]; ok && priorityPtr != nil {
+			sourceCfg.Priority = *priorityPtr
+		}
+
+		cfg.Source.Sources[name] = sourceCfg
+	}
+
 	// Apply Shodan-specific flags back to config
 	if shodanCfg, ok := cfg.Source.Sources["shodan"]; ok {
 		shodanCfg.Custom["api_key"] = shodanAPIKey
@@ -535,10 +554,10 @@ func detectCommonFlagMistakes(cfg *Config) {
 		 strings.HasPrefix(target, "orkers"))
 
 	if suspiciousTruncated || suspiciousPrefix {
-		fmt.Fprintf(os.Stderr, "\n⚠️  WARNING: Suspicious target detected: %q\n", cfg.Core.Target)
+		fmt.Fprintf(os.Stderr, "\n⚠ WARNING: Suspicious target detected: %q\n", cfg.Core.Target)
 		fmt.Fprintf(os.Stderr, "   Did you mean to use --target (double dash) instead of -target (single dash)?\n")
 		fmt.Fprintf(os.Stderr, "\n   Common mistake:\n")
-		fmt.Fprintf(os.Stderr, "     ❌  aethonx -target example.com    (interprets as: -t -a -r -g -e -t)\n")
+		fmt.Fprintf(os.Stderr, "     ✖  aethonx -target example.com    (interprets as: -t -a -r -g -e -t)\n")
 		fmt.Fprintf(os.Stderr, "\n   Correct usage:\n")
 		fmt.Fprintf(os.Stderr, "     ✓  aethonx --target example.com   (double dash for long flags)\n")
 		fmt.Fprintf(os.Stderr, "     ✓  aethonx -t example.com         (single dash for short flags)\n\n")

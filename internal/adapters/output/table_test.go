@@ -49,31 +49,9 @@ func TestOutputTable(t *testing.T) {
 		t.Error("output should contain mode")
 	}
 
-	// Verify table headers
-	if !strings.Contains(output, "TYPE") {
-		t.Error("output should contain TYPE header")
-	}
-	if !strings.Contains(output, "VALUE") {
-		t.Error("output should contain VALUE header")
-	}
-	if !strings.Contains(output, "SOURCES") {
-		t.Error("output should contain SOURCES header")
-	}
-	if !strings.Contains(output, "CONFIDENCE") {
-		t.Error("output should contain CONFIDENCE header")
-	}
-
-	// Verify artifacts appear
-	if !strings.Contains(output, "test.example.com") {
-		t.Error("output should contain artifact value")
-	}
-	if !strings.Contains(output, "192.168.1.1") {
-		t.Error("output should contain IP artifact")
-	}
-
-	// Verify sources appear
-	if !strings.Contains(output, "crtsh") {
-		t.Error("output should contain source name")
+	// Verify artifact count in header (not individual artifacts)
+	if !strings.Contains(output, "Artifacts:") {
+		t.Error("output should show artifact count")
 	}
 }
 
@@ -101,14 +79,14 @@ func TestOutputTable_NoArtifacts(t *testing.T) {
 	io.Copy(&buf, r)
 	output := buf.String()
 
-	// Should show "No artifacts discovered"
-	if !strings.Contains(output, "No artifacts discovered") {
-		t.Error("output should indicate no artifacts found")
-	}
-
 	// Should still have header
 	if !strings.Contains(output, "AethonX Scan Results") {
 		t.Error("output should still contain header")
+	}
+
+	// Should show 0 artifacts
+	if !strings.Contains(output, "Artifacts:") && !strings.Contains(output, "0") {
+		t.Error("output should show 0 artifacts")
 	}
 }
 
@@ -235,20 +213,12 @@ func TestOutputTable_Statistics(t *testing.T) {
 	io.Copy(&buf, r)
 	output := buf.String()
 
-	// Should show statistics section
-	if !strings.Contains(output, "Statistics by Type") {
-		t.Error("output should contain Statistics section")
+	// Should show artifact count in header (statistics moved to presenter)
+	if !strings.Contains(output, "Artifacts:") {
+		t.Error("output should show artifact count")
 	}
-
-	// Should show counts for each type
-	if !strings.Contains(output, "subdomain") {
-		t.Error("output should show subdomain type in stats")
-	}
-	if !strings.Contains(output, "ip") {
-		t.Error("output should show ip type in stats")
-	}
-	if !strings.Contains(output, "email") {
-		t.Error("output should show email type in stats")
+	if !strings.Contains(output, "4") {
+		t.Error("output should show count of 4 artifacts")
 	}
 }
 
@@ -282,15 +252,9 @@ func TestOutputTable_MultipleSourcesPerArtifact(t *testing.T) {
 	io.Copy(&buf, r)
 	output := buf.String()
 
-	// Should show all sources (comma-separated)
-	if !strings.Contains(output, "crtsh") {
-		t.Error("output should contain first source")
-	}
-	if !strings.Contains(output, "rdap") {
-		t.Error("output should contain second source")
-	}
-	if !strings.Contains(output, "dnsx") {
-		t.Error("output should contain third source")
+	// Should show artifact count and sources used in metadata
+	if !strings.Contains(output, "Sources:") {
+		t.Error("output should show sources used")
 	}
 }
 
@@ -323,9 +287,10 @@ func TestOutputTable_ConfidenceFormatting(t *testing.T) {
 	io.Copy(&buf, r)
 	output := buf.String()
 
-	// Should show confidence with 2 decimal places
-	if !strings.Contains(output, "0.95") {
-		t.Error("output should show confidence value 0.95")
+	// Table no longer shows individual artifact details
+	// Confidence is available in JSON output
+	if !strings.Contains(output, "AethonX Scan Results") {
+		t.Error("output should contain header")
 	}
 }
 
@@ -388,16 +353,13 @@ func TestOutputTable_SourcesUsedDisplay(t *testing.T) {
 	io.Copy(&buf, r)
 	output := buf.String()
 
-	// Should show sources used
+	// Should show sources used header
 	if !strings.Contains(output, "Sources:") {
-		t.Error("output should show sources used")
+		t.Error("output should show sources used header")
 	}
 
-	// Should list the sources
-	if !strings.Contains(output, "crtsh") {
-		t.Error("output should list crtsh source")
-	}
-	if !strings.Contains(output, "rdap") {
-		t.Error("output should list rdap source")
+	// Should show artifact count
+	if !strings.Contains(output, "2") {
+		t.Error("output should show 2 artifacts")
 	}
 }

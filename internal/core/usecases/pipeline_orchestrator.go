@@ -52,6 +52,9 @@ type PipelineOrchestrator struct {
 
 	// stageResults almacena resultados de todos los stages para estadísticas
 	stageResults []StageResult
+
+	// sigintChannel recibe señales SIGINT para cancelación por stage
+	sigintChannel chan struct{}
 }
 
 // PipelineOrchestratorOptions configura el pipeline orchestrator.
@@ -67,6 +70,7 @@ type PipelineOrchestratorOptions struct {
 	UIConfig                       UIConfig
 	VulnerabilityEnrichmentService *VulnerabilityEnrichmentService
 	VulnerabilityEnrichmentEnabled bool
+	SigintChannel                  chan struct{}
 }
 
 // UIConfig contiene configuración de UI
@@ -106,6 +110,7 @@ func NewPipelineOrchestrator(opts PipelineOrchestratorOptions) *PipelineOrchestr
 		uiConfig:                       opts.UIConfig,
 		vulnEnrichmentService:          opts.VulnerabilityEnrichmentService,
 		vulnerabilityEnrichmentEnabled: opts.VulnerabilityEnrichmentEnabled,
+		sigintChannel:                  opts.SigintChannel,
 	}
 }
 
@@ -250,8 +255,31 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 			}
 		}
 
+		// Goroutine para escuchar SIGINT durante la ejecución del stage
+		sigintDone := make(chan struct{})
+		if p.sigintChannel != nil {
+			go func() {
+				select {
+				case <-p.sigintChannel:
+					// SIGINT recibido, cancelar stage
+					p.logger.Info("stage cancelled by SIGINT",
+						"stage_id", stage.ID,
+						"stage_name", stage.Name,
+					)
+					p.presenter.Warning(fmt.Sprintf("Stage %d cancelled by user (Ctrl-C), continuing to next stage...", i+1))
+					stageCancel()
+				case <-sigintDone:
+					// Stage terminó normalmente
+				}
+			}()
+		}
+
 		// Ejecutar stage con artifacts acumulados como input
 		stageResult, err := p.executeStage(stageCtx, stage, result)
+
+		// Señalar que el stage terminó
+		close(sigintDone)
+
 		stageCancel() // Limpiar contexto del stage
 
 		if err != nil {
@@ -402,6 +430,7 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		SourcesFailed:      sourcesFailed,
 		ArtifactsByType:    artifactsByType,
 		RelationshipsBuilt: graphStats.TotalRelations,
+		AllArtifacts:       result.Artifacts,
 	})
 
 	return result, nil
@@ -450,9 +479,10 @@ func (p *PipelineOrchestrator) executeStage(ctx context.Context, stage Stage, in
 		execResult := <-results
 		stageResult.SourceResults = append(stageResult.SourceResults, execResult)
 
-		// Consolidar resultado si exitoso
-		if execResult.Error == nil && execResult.Result != nil {
-			// Merge artifacts
+		// Consolidar resultado si hay artifacts (INCLUSO con error)
+		// Esto permite aprovechar resultados parciales cuando una source da timeout o se cancela
+		if execResult.Result != nil && len(execResult.Result.Artifacts) > 0 {
+			// Merge artifacts parciales
 			stageResult.ConsolidatedResult.Artifacts = append(
 				stageResult.ConsolidatedResult.Artifacts,
 				execResult.Result.Artifacts...,
@@ -467,7 +497,19 @@ func (p *PipelineOrchestrator) executeStage(ctx context.Context, stage Stage, in
 				stageResult.ConsolidatedResult.Errors,
 				execResult.Result.Errors...,
 			)
-		} else if execResult.Error != nil {
+
+			// Log si hay resultados parciales con error
+			if execResult.Error != nil {
+				p.logger.Info("consolidated partial results from failed source",
+					"source", execResult.SourceName,
+					"artifacts", len(execResult.Result.Artifacts),
+					"error", execResult.Error.Error(),
+				)
+			}
+		}
+
+		// Registrar error (independientemente de si hay artifacts)
+		if execResult.Error != nil {
 			stageResult.Errors = append(stageResult.Errors, execResult.Error)
 		}
 	}
@@ -521,31 +563,60 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 
 	duration := time.Since(startTime)
 
-	execResult := SourceExecutionResult{
-		SourceName: sourceName,
-		Result:     result,
-		Error:      err,
-		Duration:   duration,
+	// Calcular artifact count (puede ser 0 si hubo error total o resultados parciales)
+	artifactCount := 0
+	if result != nil {
+		artifactCount = len(result.Artifacts)
 	}
 
-	if err != nil {
-		p.logger.Warn("source failed", "source", sourceName, "error", err.Error())
-		p.notifyEvent(ctx, ports.NewEvent(
-			ports.EventTypeSourceFailed,
-			sourceName,
-			err,
-		))
-		// Generar summary para error
-		summary := p.buildSourceSummary(sourceName, nil, err, 0)
-		execResult.Summary = summary
+	execResult := SourceExecutionResult{
+		SourceName:    sourceName,
+		Result:        result,
+		Error:         err,
+		Duration:      duration,
+		ArtifactCount: artifactCount,
+	}
 
-		// Notificar error al presenter
-		p.presenter.FinishSource(sourceName, ui.StatusError, duration, 0, summary)
+	// Manejar error (pero conservar resultados parciales)
+	if err != nil {
+		if artifactCount > 0 {
+			// Resultados parciales: warning en lugar de error
+			p.logger.Warn("source exited with error but produced partial results",
+				"source", sourceName,
+				"error", err.Error(),
+				"artifacts", artifactCount,
+			)
+			p.notifyEvent(ctx, ports.NewEvent(
+				ports.EventTypeSourceCompleted,
+				sourceName,
+				artifactCount,
+			))
+
+			// Generar summary con resultados parciales
+			summary := p.buildSourceSummary(sourceName, result, nil, artifactCount)
+			execResult.Summary = summary
+
+			// Notificar warning al presenter
+			p.presenter.FinishSource(sourceName, ui.StatusWarning, duration, artifactCount, summary)
+		} else {
+			// Error total sin resultados
+			p.logger.Warn("source failed without results", "source", sourceName, "error", err.Error())
+			p.notifyEvent(ctx, ports.NewEvent(
+				ports.EventTypeSourceFailed,
+				sourceName,
+				err,
+			))
+
+			// Generar summary para error
+			summary := p.buildSourceSummary(sourceName, nil, err, 0)
+			execResult.Summary = summary
+
+			// Notificar error al presenter
+			p.presenter.FinishSource(sourceName, ui.StatusError, duration, 0, summary)
+		}
+
 		return execResult
 	}
-
-	artifactCount := len(result.Artifacts)
-	execResult.ArtifactCount = artifactCount
 
 	p.logger.Debug("source completed",
 		"source", sourceName,

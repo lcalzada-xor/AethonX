@@ -46,26 +46,6 @@ external_tools:
       expected_contains: "Current Version"
     min_version: "1.6.0"
 
-  - name: amass
-    description: "OWASP Amass - Network mapping and attack surface discovery"
-    required: true
-    type: binary
-    install:
-      github:
-        repo: owasp-amass/amass
-        asset_patterns:
-          linux_amd64: "amass_linux_amd64.tar.gz"
-          linux_arm64: "amass_linux_arm64.tar.gz"
-          darwin_amd64: "amass_darwin_amd64.tar.gz"
-          darwin_arm64: "amass_darwin_arm64.tar.gz"
-          windows_amd64: "amass_windows_amd64.tar.gz"
-        binary_name: "amass"
-    health_check:
-      command: "amass"
-      args: ["-version"]
-      expected_contains: "v"
-    min_version: "4.0.0"
-
   - name: waybackurls
     description: "Fetch URLs from Wayback Machine for a domain"
     required: true

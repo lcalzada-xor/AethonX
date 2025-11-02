@@ -126,32 +126,42 @@ func (h *HTTPXSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 		result.AddWarning("httpx", fmt.Sprintf("stderr output: %s", stderrOutput))
 	}
 
-	// Handle errors (partial results tolerated)
-	if err != nil {
-		responseCount := len(handler.responses)
-		if responseCount > 0 {
-			h.GetLogger().Warn("httpx exited with error but produced results",
-				"error", err.Error(),
-				"responses", responseCount,
-			)
-			result.AddWarning("httpx", fmt.Sprintf("process exited with error: %v", err))
-		} else {
-			return nil, fmt.Errorf("httpx failed: %w", err)
-		}
-	}
-
-	// Parse responses into artifacts (after ExecuteCLI completes)
+	// Parse responses into artifacts (siempre, incluso con error)
 	artifacts := h.parser.ParseMultipleResponses(handler.responses, target)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
 
 	duration := time.Since(startTime)
+	responseCount := len(handler.responses)
+	artifactCount := len(result.Artifacts)
+
+	// Handle errors (partial results tolerados y retornados)
+	if err != nil {
+		if artifactCount > 0 {
+			h.GetLogger().Warn("httpx exited with error but produced partial results",
+				"error", err.Error(),
+				"responses", responseCount,
+				"artifacts", artifactCount,
+			)
+			result.AddWarning("httpx", fmt.Sprintf("process exited with error: %v", err))
+
+			h.GetLogger().Info("returning partial results from httpx",
+				"artifacts", artifactCount,
+			)
+			// Retornar resultado parcial + error para que orchestrator decida
+			return result, fmt.Errorf("httpx timeout/cancelled but produced %d partial results: %w", artifactCount, err)
+		}
+
+		// Sin resultados: retornar error total
+		return nil, fmt.Errorf("httpx failed without results: %w", err)
+	}
+
 	h.GetLogger().Info("httpx scan completed",
 		"target", target.Root,
 		"duration", duration.String(),
-		"responses", len(handler.responses),
-		"artifacts", len(result.Artifacts),
+		"responses", responseCount,
+		"artifacts", artifactCount,
 	)
 
 	return result, nil
@@ -526,34 +536,51 @@ func (h *HTTPXSource) runWithProfile(ctx context.Context, target domain.Target, 
 	}
 
 	// Wait for process to complete
-	if err := cmd.Wait(); err != nil {
-		// Don't fail if we got some results
-		if len(handler.responses) > 0 {
-			h.GetLogger().Warn("httpx exited with error but produced results", "error", err.Error())
-			result.AddWarning("httpx", fmt.Sprintf("process exited with error: %v", err))
-		} else {
-			return nil, fmt.Errorf("httpx failed: %w", err)
-		}
-	}
+	waitErr := cmd.Wait()
 
-	// Finalize handler
+	// Finalize handler (siempre, incluso con error)
 	if err := handler.Finalize(); err != nil {
 		h.GetLogger().Warn("handler finalization error", "error", err.Error())
 	}
 
-	// Parse responses into artifacts with confidence upgrade
+	// Parse responses into artifacts with confidence upgrade (siempre, incluso con error)
 	artifacts := h.parser.ParseMultipleResponsesWithInput(handler.responses, target, inputArtifacts)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
 
 	duration := time.Since(startTime)
+	responseCount := len(handler.responses)
+	artifactCount := len(result.Artifacts)
+
+	// Handle errors (partial results tolerados y retornados)
+	if waitErr != nil {
+		if artifactCount > 0 {
+			h.GetLogger().Warn("httpx exited with error but produced partial results",
+				"error", waitErr.Error(),
+				"responses", responseCount,
+				"artifacts", artifactCount,
+			)
+			result.AddWarning("httpx", fmt.Sprintf("process exited with error: %v", waitErr))
+
+			h.GetLogger().Info("returning partial results from httpx profile",
+				"profile", profile,
+				"artifacts", artifactCount,
+			)
+			// Retornar resultado parcial + error para que orchestrator decida
+			return result, fmt.Errorf("httpx timeout/cancelled but produced %d partial results: %w", artifactCount, waitErr)
+		}
+
+		// Sin resultados: retornar error total
+		return nil, fmt.Errorf("httpx profile failed without results: %w", waitErr)
+	}
+
 	h.GetLogger().Info("httpx profile execution completed",
 		"target", target.Root,
 		"duration", duration.String(),
 		"input_targets", len(targets),
-		"responses", len(handler.responses),
-		"artifacts", len(result.Artifacts),
+		"responses", responseCount,
+		"artifacts", artifactCount,
 	)
 
 	return result, nil

@@ -22,7 +22,6 @@ import (
 	"aethonx/internal/platform/ui"
 
 	// Import sources for auto-registration via init()
-	_ "aethonx/internal/sources/amass"
 	_ "aethonx/internal/sources/crtsh"
 	_ "aethonx/internal/sources/httpx"
 	_ "aethonx/internal/sources/rdap"
@@ -77,7 +76,7 @@ func main() {
 	}
 
 	// 3. Context and signals for clean shutdown
-	ctx, cancel := rootContextWithSignals(cfg.Core.TimeoutS)
+	ctx, cancel, sigintChannel := rootContextWithSignals(cfg.Core.TimeoutS)
 	defer cancel()
 
 	// 4. Build target domain
@@ -94,7 +93,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Inject active mode into all source configs (for hybrid sources like amass)
+	// Inject active mode into all source configs (for hybrid sources)
 	for sourceName, sourceConfig := range cfg.Source.Sources {
 		if sourceConfig.Custom == nil {
 			sourceConfig.Custom = make(map[string]interface{})
@@ -228,6 +227,7 @@ func main() {
 		},
 		VulnerabilityEnrichmentService: vulnEnrichmentSvc,
 		VulnerabilityEnrichmentEnabled: cfg.Enrichment.Enabled,
+		SigintChannel:                  sigintChannel,
 	})
 
 	// 11. Execute scan workflow
@@ -341,8 +341,16 @@ func writeOutputs(cfg config.Config, result *domain.ScanResult) error {
 }
 
 // rootContextWithSignals creates a root context with optional timeout and signal cancellation.
-// Returns a context and cancel function that cleans up all resources (signals, goroutines).
-func rootContextWithSignals(timeoutSeconds int) (context.Context, context.CancelFunc) {
+// Returns:
+//   - context: root context for the entire application
+//   - cancelFunc: cleanup function that cleans up all resources
+//   - sigintChannel: channel that receives SIGINT notifications for per-stage cancellation
+//
+// Signal handling behavior:
+//   - First Ctrl-C: sends notification to sigintChannel (cancels current stage)
+//   - Second Ctrl-C (within 2s): cancels entire context (exits application)
+//   - SIGTERM: immediately cancels entire context
+func rootContextWithSignals(timeoutSeconds int) (context.Context, context.CancelFunc, chan struct{}) {
 	var base context.Context
 	var baseCancel context.CancelFunc
 
@@ -352,33 +360,73 @@ func rootContextWithSignals(timeoutSeconds int) (context.Context, context.Cancel
 		base, baseCancel = context.WithCancel(context.Background())
 	}
 
-	// System signal channel
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	// System signal channel (buffered to avoid blocking)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Goroutine waiting for signals OR context cancellation
+	// Stage cancellation channel (used by orchestrator)
+	sigintChannel := make(chan struct{}, 1)
+
+	// Track last SIGINT time for double-Ctrl-C detection
+	var lastSigintTime time.Time
+	const doubleCtrlCWindow = 2 * time.Second
+
+	// Goroutine waiting for signals
 	go func() {
-		select {
-		case sig := <-ch:
-			// Signal received, cancel context
-			_ = sig // Avoid unused variable warning
-			baseCancel()
-			// Goroutine terminates after canceling
-		case <-base.Done():
-			// Context canceled by timeout or other reason
-			// Goroutine can terminate cleanly
+		defer func() {
+			signal.Stop(sigCh)
+			close(sigCh)
+			close(sigintChannel)
+		}()
+
+		for {
+			select {
+			case sig, ok := <-sigCh:
+				if !ok {
+					return
+				}
+
+				// SIGTERM: immediate exit
+				if sig == syscall.SIGTERM {
+					fmt.Fprintf(os.Stderr, "\nReceived SIGTERM, shutting down...\n")
+					baseCancel()
+					return
+				}
+
+				// SIGINT: check if it's a double Ctrl-C
+				now := time.Now()
+				if !lastSigintTime.IsZero() && now.Sub(lastSigintTime) < doubleCtrlCWindow {
+					// Second Ctrl-C within window: force exit
+					fmt.Fprintf(os.Stderr, "\nReceived second Ctrl-C, forcing shutdown...\n")
+					baseCancel()
+					return
+				}
+
+				// First Ctrl-C: notify stage cancellation
+				lastSigintTime = now
+				fmt.Fprintf(os.Stderr, "\nReceived Ctrl-C, cancelling current stage... (press Ctrl-C again within 2s to force exit)\n")
+
+				// Non-blocking send to sigintChannel
+				select {
+				case sigintChannel <- struct{}{}:
+				default:
+					// Channel full, skip (stage is already being cancelled)
+				}
+
+			case <-base.Done():
+				// Context canceled by timeout or other reason
+				return
+			}
 		}
-		// Goroutine always terminates here
 	}()
 
 	// Cleanup function that cleans up EVERYTHING
 	cleanupCancel := func() {
-		signal.Stop(ch) // Stop signal handler
-		close(ch)       // Close channel
-		baseCancel()    // Cancel base context
+		signal.Stop(sigCh)
+		baseCancel()
 	}
 
-	return base, cleanupCancel
+	return base, cleanupCancel, sigintChannel
 }
 
 func max(a, b int) int {

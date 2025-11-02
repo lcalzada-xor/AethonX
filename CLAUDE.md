@@ -8,7 +8,7 @@ AethonX: Modular recon engine for passive/active web enum. Go. Clean Architectur
 cmd/aethonx (main.go) → CLI entry, DI, config, registry-based source building
 internal/adapters/ → output (JSON,Table,Streaming)
 internal/core/ → domain (Entities,Metadata), usecases (Orchestrator,Services), ports (Interfaces)
-internal/sources/ → common(BaseCLISource), crtsh, rdap, httpx, subfinder, waybackurls, amass, shodan
+internal/sources/ → common(BaseCLISource), crtsh, rdap, httpx, subfinder, waybackurls, shodan
 internal/platform/ → config(ENV+pflag), logx, ui, httpclient, cache, rate, errors, workerpool, resilience, registry, adaptive, validator, cveapi
 ```
 **Dependency Rule**: Inner layers NEVER depend on outer layers.
@@ -34,7 +34,7 @@ Build: `make build` | Test: `make test` (with `-race`) | Run: `./aethonx -t exam
 **Flags**: pflag library. MUST use `--` for long (`--target`), `-` for short (`-t`). Priority: CLI>ENV>.env>defaults
 
 **Core Flags**: `-t/--target`, `-a/--active`, `-w/--workers(16)`, `-T/--timeout(30)`, `-o/--out(aethonx_out)`, `-q/--quiet`, `-s/--streaming(1000)`, `-r/--retries(3)`, `--circuit-breaker(true)`, `-p/--proxy`
-**Source Flags**: `--src.{crtsh|rdap|waybackurls|subfinder|amass|httpx|shodan}`, `--src.shodan.api_key`, `--src.shodan.use_cli`, `--src.shodan.rate_limit(1.0)`
+**Source Flags**: `--src.{crtsh|rdap|waybackurls|subfinder|httpx|shodan}`, `--src.shodan.api_key`, `--src.shodan.use_cli`, `--src.shodan.rate_limit(1.0)`
 **Enrichment Flags**: `--enrich(true)`, `--enrich-nvd-api-key`, `--enrich-provider(nvd)`, `--enrich-cache-ttl(168h)`
 
 **.env file**: Auto-loads from CWD. `cp .env.example .env`. Supports: `AETHONX_SOURCES_SHODAN_API_KEY`, `AETHONX_SRC_SHODAN_API_KEY` (both formats work), `AETHONX_ENRICHMENT_NVD_API_KEY`, etc.
@@ -44,7 +44,6 @@ Build: `make build` | Test: `make test` (with `-race`) | Run: `./aethonx -t exam
 **rdap** (`internal/sources/rdap/`): RDAP protocol, 24h cache, returns Domain+Email+Nameserver, metadata: registrar,dates,contacts
 **subfinder** (`internal/sources/subfinder/`): CLI subprocess, multi-source subdomain discovery (30+ sources), passive, requires binary in PATH
 **httpx** (`internal/sources/httpx/`): CLI subprocess, HTTP probing/fingerprinting, active, profiles: Fast|Standard|Full
-**amass** (`internal/sources/amass/`): CLI subprocess, hybrid (passive default, active with `--active`), returns Subdomain+IP+CIDR+ASN, writes to SQLite DB, priority:15
 **shodan** (`internal/sources/shodan/`): Hybrid: InternetDB(FREE,no key)+DNS fallback(Cloudflare→Google→System)+REST API(free+paid endpoints)+CLI. Passive. Max endpoint execution philosophy, graceful degradation. InternetDB: `https://internetdb.shodan.io/{ip}`, 1req/s, returns IP+Port+Subdomain+Vulnerability+Technology. DNS: Cloudflare DoH primary, Google fallback, system final. API: FREE endpoints (/shodan/host/count, /api-info, /tools/myip), PAID endpoints tolerate failures (/dns/domain, /shodan/host/search, /shodan/host/{ip}). Priority:12. Modes: No key(InternetDB+DNS), Free key(+free API), Paid(+paid API)
 **waybackurls** (`internal/sources/waybackurls/`): Internet Archive, historical URLs, passive, returns URL+Subdomain, priority:5
 
@@ -66,7 +65,7 @@ type OutputHandler interface {
 **Thread-safe**: mutex-protected cmd, chClosed flag prevents double-close panics, passes `-race`
 **Default Methods**: DefaultInitialize (verify binary in PATH), DefaultValidate, DefaultHealthCheck (-version/-h), DefaultStream, ProcessOutput (stdin mode)
 **Usage**: 1.Embed BaseCLISource 2.Implement OutputHandler 3.Use ExecuteCLI in Run() 4.Use Default*
-**Special Cases**: Amass (doesn't use OutputHandler, reads SQLite DB), HTTPx (stdin support, ProcessOutput method)
+**Special Cases**: HTTPx (stdin support, ProcessOutput method)
 
 ## Registry Helpers (`internal/platform/registry/helpers.go`)
 Type-safe config extraction. Functions: `GetStringConfig`, `GetIntConfig`, `GetBoolConfig`, `GetDurationConfig`, `GetSliceConfig`, `GetFloat64Config`. Validation: `ValidateRequiredString`, `ValidatePositiveInt`, `ValidateIntRange`, `ValidateNonNegativeInt`, `ValidatePositiveDuration`, `ValidateNonEmptySlice`. Benefits: type/nil safety, defaults, ~75% code reduction.
@@ -127,7 +126,7 @@ Presenter Pattern. Files: presenter.go (interface), custom_presenter.go (visual/
 ## Key Files
 Core: 1.`internal/core/ports/source.go` 2.`internal/core/domain/artifact.go` 3.`internal/core/usecases/pipeline_orchestrator.go` 4.`cmd/aethonx/main.go`
 CLI Abstractions: 5.`internal/sources/common/cli_source.go` 6.`internal/platform/registry/helpers.go`
-Sources: 7.`internal/sources/{crtsh,rdap,subfinder,httpx,waybackurls,amass,shodan}/`
+Sources: 7.`internal/sources/{crtsh,rdap,subfinder,httpx,waybackurls,shodan}/`
 Data: 8.`internal/core/usecases/dedupe_service.go` 9.`internal/adapters/output/streaming.go` 10.`internal/core/usecases/merge_service.go`
 Platform: 11.`internal/platform/{workerpool,resilience,registry,validator,config,cveapi}/`
 UI: 12.`internal/platform/ui/{presenter,custom_presenter,raw_presenter,global_progress,symbols}.go`

@@ -26,7 +26,6 @@ SOURCES
   --src.crtsh              Certificate Transparency logs (default: enabled)
   --src.rdap               RDAP/WHOIS queries (default: enabled)
   --src.subfinder          Multi-source subdomain discovery (default: enabled)
-  --src.amass              OWASP Amass enumeration (default: enabled)
   --src.httpx              HTTP probing (default: enabled)
   --src.shodan             Shodan internet database (default: disabled, API key optional)
   --src.waybackurls        Wayback Machine URL history (default: enabled)
@@ -66,7 +65,6 @@ EXAMPLES
 
   # Source management
   aethonx -t example.com --src.httpx=false      # Disable httpx source
-  aethonx -t example.com --src.amass=false      # Disable amass source
   aethonx -t example.com --src.subfinder=false  # Disable subfinder
 
   # Shodan integration

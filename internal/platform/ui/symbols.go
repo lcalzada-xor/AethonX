@@ -41,9 +41,9 @@ func (s Status) Symbol() string {
 	case StatusRunning:
 		return "◉" // Brasa ardiendo (será animado)
 	case StatusSuccess:
-		return "⚡" // Rayo de iluminación
+		return "⚡" // Rayo de iluminación (Unicode compatible)
 	case StatusWarning:
-		return "🔶" // Advertencia flamígera
+		return "⚠" // Warning sign (Unicode compatible)
 	case StatusError:
 		return "✖" // Cruz de muerte
 	case StatusSkipped:
