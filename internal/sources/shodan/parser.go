@@ -262,9 +262,7 @@ func (p *Parser) createVulnerabilityArtifacts(resp *ShodanHostResponse, target d
 		}
 
 		vulnMeta := NewVulnerabilityMetadata(cve)
-		vulnMeta.Severity = InferSeverityFromCVE(cve)
 		vulnMeta.AffectedPorts = []int{resp.Port}
-		vulnMeta.DiscoveryTool = "shodan"
 
 		artifact := domain.NewArtifactWithMetadata(
 			domain.ArtifactTypeVulnerability,
@@ -396,4 +394,154 @@ func (p *Parser) inferRiskLevel(vulnCount int) string {
 	default:
 		return "info"
 	}
+}
+
+// =================================================================
+// NEW PARSERS FOR FREE ENDPOINTS
+// =================================================================
+
+// ParseInternetDBResponse converts InternetDB response into artifacts.
+// Creates artifacts for: IP, Ports, Subdomains, Vulnerabilities, Technologies (CPEs).
+func (p *Parser) ParseInternetDBResponse(resp *InternetDBResponse, target domain.Target) []*domain.Artifact {
+	if resp == nil {
+		return nil
+	}
+
+	artifacts := make([]*domain.Artifact, 0)
+
+	// 1. IP artifact
+	if resp.IP != "" {
+		ipMeta := metadata.NewIPMetadata()
+		// InternetDB doesn't provide detailed metadata, just basic info
+		// Tags field doesn't exist in IPMetadata, so we skip it
+
+		ipArtifact := domain.NewArtifactWithMetadata(
+			domain.ArtifactTypeIP,
+			resp.IP,
+			p.sourceName,
+			ipMeta,
+		)
+
+		artifacts = append(artifacts, ipArtifact)
+	}
+
+	// 2. Port artifacts
+	for _, port := range resp.Ports {
+		serviceMeta := metadata.NewServiceMetadata("unknown", port)
+		serviceMeta.ParentIP = resp.IP
+		serviceMeta.State = "open"
+
+		portArtifact := domain.NewArtifactWithMetadata(
+			domain.ArtifactTypePort,
+			fmt.Sprintf("%s:%d", resp.IP, port),
+			p.sourceName,
+			serviceMeta,
+		)
+
+		artifacts = append(artifacts, portArtifact)
+	}
+
+	// 3. Hostname/Subdomain artifacts
+	for _, hostname := range resp.Hostnames {
+		if hostname == "" {
+			continue
+		}
+
+		domainMeta := metadata.NewDomainMetadata()
+		domainMeta.ResolvedIPs = []string{resp.IP}
+
+		subdomainArtifact := domain.NewArtifactWithMetadata(
+			domain.ArtifactTypeSubdomain,
+			hostname,
+			p.sourceName,
+			domainMeta,
+		)
+
+		artifacts = append(artifacts, subdomainArtifact)
+	}
+
+	// 4. Vulnerability artifacts
+	for _, cve := range resp.Vulns {
+		if cve == "" {
+			continue
+		}
+
+		vulnMeta := NewVulnerabilityMetadata(cve)
+
+		vulnArtifact := domain.NewArtifactWithMetadata(
+			domain.ArtifactTypeVulnerability,
+			cve,
+			p.sourceName,
+			vulnMeta,
+		)
+
+		artifacts = append(artifacts, vulnArtifact)
+	}
+
+	// 5. Technology artifacts (CPEs)
+	for _, cpe := range resp.CPEs {
+		if cpe == "" {
+			continue
+		}
+
+		// Parse CPE to extract name and version
+		techMeta := metadata.NewTechnologyMetadata("", "")
+		techMeta.CPE = cpe
+		techMeta.DetectionMethod = "shodan-internetdb"
+		techMeta.ConfidenceScore = 0.90 // InternetDB is reliable
+
+		techArtifact := domain.NewArtifactWithMetadata(
+			domain.ArtifactTypeTechnology,
+			cpe,
+			p.sourceName,
+			techMeta,
+		)
+
+		artifacts = append(artifacts, techArtifact)
+	}
+
+	p.logger.Debug("parsed internetdb response",
+		"ip", resp.IP,
+		"artifacts", len(artifacts),
+	)
+
+	return artifacts
+}
+
+// ParseIPFromDNS creates an IP artifact from DNS resolve results.
+func (p *Parser) ParseIPFromDNS(ip, hostname string, target domain.Target) *domain.Artifact {
+	if ip == "" {
+		return nil
+	}
+
+	ipMeta := metadata.NewIPMetadata()
+	// IPMetadata doesn't have Hostname field, but we can use empty metadata
+
+	artifact := domain.NewArtifactWithMetadata(
+		domain.ArtifactTypeIP,
+		ip,
+		p.sourceName,
+		ipMeta,
+	)
+
+	return artifact
+}
+
+// ParseSubdomainFromReverse creates a subdomain artifact from reverse DNS results.
+func (p *Parser) ParseSubdomainFromReverse(hostname, ip string, target domain.Target) *domain.Artifact {
+	if hostname == "" {
+		return nil
+	}
+
+	domainMeta := metadata.NewDomainMetadata()
+	domainMeta.ResolvedIPs = []string{ip}
+
+	artifact := domain.NewArtifactWithMetadata(
+		domain.ArtifactTypeSubdomain,
+		hostname,
+		p.sourceName,
+		domainMeta,
+	)
+
+	return artifact
 }

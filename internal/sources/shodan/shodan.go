@@ -20,12 +20,15 @@ const (
 // ShodanSource implements ports.Source and ports.AdvancedSource.
 // It provides passive reconnaissance by querying Shodan's database of internet-facing devices.
 type ShodanSource struct {
-	apiClient *ShodanAPIClient
-	cliExec   *ShodanCLIExecutor
-	parser    *Parser
-	logger    logx.Logger
-	useCLI    bool
-	apiKey    string
+	apiClient        *ShodanAPIClient
+	internetDBClient *InternetDBClient // No API key required
+	dnsResolver      *DNSResolver      // NEW: Free DNS fallback chain (Cloudflare → Google → System)
+	cliExec          *ShodanCLIExecutor
+	parser           *Parser
+	logger           logx.Logger
+	useCLI           bool
+	apiKey           string
+	useInternetDB    bool // Enable/disable InternetDB
 }
 
 // New creates a new ShodanSource with default configuration.
@@ -36,12 +39,26 @@ func New(logger logx.Logger) *ShodanSource {
 
 // NewWithConfig creates a ShodanSource with custom configuration.
 func NewWithConfig(logger logx.Logger, apiKey string, useCLI bool, timeout time.Duration, rateLimit float64) *ShodanSource {
+	return NewWithFullConfig(logger, apiKey, useCLI, true, timeout, rateLimit)
+}
+
+// NewWithFullConfig creates a ShodanSource with all configuration options.
+func NewWithFullConfig(logger logx.Logger, apiKey string, useCLI bool, useInternetDB bool, timeout time.Duration, rateLimit float64) *ShodanSource {
 	src := &ShodanSource{
-		parser: NewParser(logger, sourceName),
-		logger: logger.With("source", sourceName),
-		useCLI: useCLI,
-		apiKey: apiKey,
+		parser:        NewParser(logger, sourceName),
+		logger:        logger.With("source", sourceName),
+		useCLI:        useCLI,
+		apiKey:        apiKey,
+		useInternetDB: useInternetDB,
 	}
+
+	// Initialize InternetDB client (always available, no API key needed)
+	if useInternetDB {
+		src.internetDBClient = NewInternetDBClient(logger)
+	}
+
+	// Initialize DNS resolver (always available, free fallback chain)
+	src.dnsResolver = NewDNSResolver(logger)
 
 	if useCLI {
 		src.cliExec = NewCLIExecutor(logger)
@@ -49,9 +66,9 @@ func NewWithConfig(logger logx.Logger, apiKey string, useCLI bool, timeout time.
 	} else {
 		if apiKey != "" {
 			src.apiClient = NewAPIClientWithConfig(apiKey, logger, rateLimit, timeout)
-			src.logger.Info("shodan source initialized in API mode")
+			src.logger.Info("shodan source initialized in API mode with free DNS fallback")
 		} else {
-			src.logger.Warn("shodan API key not provided, source may fail during execution")
+			src.logger.Warn("shodan API key not provided, using InternetDB and free DNS resolver")
 		}
 	}
 
@@ -125,63 +142,197 @@ func (s *ShodanSource) Run(ctx context.Context, target domain.Target) (*domain.S
 }
 
 // runAPIMode executes reconnaissance using Shodan REST API.
+// Attempts to execute ALL available endpoints (free + paid).
+// Graceful degradation: failures are logged as warnings, execution continues.
 func (s *ShodanSource) runAPIMode(ctx context.Context, target domain.Target, result *domain.ScanResult) ([]*domain.Artifact, error) {
-	if s.apiClient == nil {
-		return nil, fmt.Errorf("API client not initialized (API key required)")
-	}
-
 	artifacts := make([]*domain.Artifact, 0)
 
-	// Step 1: Discover subdomains via /dns/domain/{domain}
-	s.logger.Debug("fetching subdomains via DNS API", "target", target.Root)
-	domainRecords, err := s.apiClient.GetDomainInfo(ctx, target.Root)
-	if err != nil {
-		s.logger.Warn("failed to fetch domain info",
-			"error", err.Error(),
-			"note", "This endpoint requires Shodan Membership plan",
-		)
-		result.AddWarning(s.Name(), fmt.Sprintf("DNS domain enumeration failed: %v", err))
-	} else {
-		s.logger.Info("discovered subdomains from DNS API", "count", len(domainRecords))
-		for _, record := range domainRecords {
-			artifact := s.parser.ParseDomainResponse(&record, target)
-			if artifact != nil {
-				artifacts = append(artifacts, artifact)
+	// Track discovered IPs for enrichment
+	discoveredIPs := make(map[string]bool)
+
+	// =================================================================
+	// PAID ENDPOINTS (attempt, tolerate failures)
+	// =================================================================
+
+	if s.apiClient != nil {
+		// Endpoint 1: /dns/domain/{domain} (PAID - Membership required)
+		s.logger.Debug("attempting /dns/domain (paid endpoint)", "target", target.Root)
+		domainRecords, err := s.apiClient.GetDomainInfo(ctx, target.Root)
+		if err != nil {
+			s.logger.Warn("paid endpoint failed: /dns/domain",
+				"error", err.Error(),
+				"note", "Requires Shodan Membership plan",
+			)
+			result.AddWarning(s.Name(), fmt.Sprintf("[PAID] DNS domain enumeration unavailable: %v", err))
+		} else {
+			s.logger.Info("✓ /dns/domain successful", "count", len(domainRecords))
+			for _, record := range domainRecords {
+				artifact := s.parser.ParseDomainResponse(&record, target)
+				if artifact != nil {
+					artifacts = append(artifacts, artifact)
+				}
 			}
 		}
-	}
 
-	// Step 2: Search for hosts via /shodan/host/search?query=hostname:example.com
-	s.logger.Debug("searching hosts via search API", "target", target.Root)
-	query := fmt.Sprintf("hostname:%s", target.Root)
-	hostResults, err := s.apiClient.SearchHosts(ctx, query)
-	if err != nil {
-		s.logger.Warn("failed to search hosts", "error", err.Error())
-		result.AddWarning(s.Name(), fmt.Sprintf("Host search failed: %v", err))
-	} else {
-		s.logger.Info("discovered hosts from search API", "count", len(hostResults))
-		for _, hostResp := range hostResults {
-			hostArtifacts := s.parser.ParseHostResponse(&hostResp, target)
-			artifacts = append(artifacts, hostArtifacts...)
-		}
-	}
-
-	// Step 3: Additional search by organization (if we discovered org info)
-	// This is optional and can discover related infrastructure
-	if len(hostResults) > 0 && hostResults[0].Org != "" {
-		org := hostResults[0].Org
-		s.logger.Debug("searching by organization", "org", org)
-
-		orgQuery := fmt.Sprintf("org:\"%s\" hostname:%s", org, target.Root)
-		orgResults, err := s.apiClient.SearchHosts(ctx, orgQuery)
-		if err == nil && len(orgResults) > 0 {
-			s.logger.Info("discovered additional hosts by org", "count", len(orgResults))
-			for _, hostResp := range orgResults {
+		// Endpoint 2: /shodan/host/search (PAID - Consumes query credits)
+		s.logger.Debug("attempting /shodan/host/search (paid endpoint)", "target", target.Root)
+		query := fmt.Sprintf("hostname:%s", target.Root)
+		hostResults, err := s.apiClient.SearchHosts(ctx, query)
+		if err != nil {
+			s.logger.Warn("paid endpoint failed: /shodan/host/search",
+				"error", err.Error(),
+				"note", "Consumes query credits (free tier has 0 credits)",
+			)
+			result.AddWarning(s.Name(), fmt.Sprintf("[PAID] Host search unavailable: %v", err))
+		} else {
+			s.logger.Info("✓ /shodan/host/search successful", "count", len(hostResults))
+			for _, hostResp := range hostResults {
 				hostArtifacts := s.parser.ParseHostResponse(&hostResp, target)
 				artifacts = append(artifacts, hostArtifacts...)
+
+				// Track IPs for enrichment
+				if hostResp.IPStr != "" {
+					discoveredIPs[hostResp.IPStr] = true
+				}
+			}
+
+			// Endpoint 3: Search by organization (if discovered)
+			if len(hostResults) > 0 && hostResults[0].Org != "" {
+				org := hostResults[0].Org
+				s.logger.Debug("attempting org search (paid)", "org", org)
+
+				orgQuery := fmt.Sprintf("org:\"%s\" hostname:%s", org, target.Root)
+				orgResults, err := s.apiClient.SearchHosts(ctx, orgQuery)
+				if err != nil {
+					s.logger.Warn("org search failed", "error", err.Error())
+				} else {
+					s.logger.Info("✓ org search successful", "count", len(orgResults))
+					for _, hostResp := range orgResults {
+						hostArtifacts := s.parser.ParseHostResponse(&hostResp, target)
+						artifacts = append(artifacts, hostArtifacts...)
+
+						if hostResp.IPStr != "" {
+							discoveredIPs[hostResp.IPStr] = true
+						}
+					}
+				}
 			}
 		}
 	}
+
+	// =================================================================
+	// FREE DNS RESOLUTION (Cloudflare → Google → System fallback)
+	// =================================================================
+
+	// DNS Resolution: Resolve target domain to IPs
+	s.logger.Debug("attempting DNS resolution via free fallback chain", "target", target.Root)
+	hostnames := []string{target.Root, "www." + target.Root}
+	ipMap := make(map[string]string)
+
+	for _, hostname := range hostnames {
+		ips, err := s.dnsResolver.ResolveWithFallback(ctx, hostname)
+		if err != nil {
+			s.logger.Warn("DNS resolution failed for hostname", "hostname", hostname, "error", err.Error())
+			continue
+		}
+		if len(ips) > 0 {
+			ipMap[hostname] = ips[0] // Take first IP
+			s.logger.Info("✓ DNS resolved", "hostname", hostname, "ip", ips[0])
+
+			// Create IP artifact
+			artifact := s.parser.ParseIPFromDNS(ips[0], hostname, target)
+			if artifact != nil {
+				artifacts = append(artifacts, artifact)
+				discoveredIPs[ips[0]] = true
+			}
+		}
+	}
+
+	// Reverse DNS: Lookup hostnames for discovered IPs
+	if len(discoveredIPs) > 0 {
+		s.logger.Debug("attempting reverse DNS via free fallback chain", "ips", len(discoveredIPs))
+
+		for ip := range discoveredIPs {
+			hostnames, err := s.dnsResolver.ReverseLookupWithFallback(ctx, ip)
+			if err != nil {
+				s.logger.Debug("reverse DNS failed for IP", "ip", ip, "error", err.Error())
+				continue
+			}
+
+			if len(hostnames) > 0 {
+				s.logger.Info("✓ reverse DNS resolved", "ip", ip, "hostnames", len(hostnames))
+				for _, hostname := range hostnames {
+					artifact := s.parser.ParseSubdomainFromReverse(hostname, ip, target)
+					if artifact != nil {
+						artifacts = append(artifacts, artifact)
+					}
+				}
+			}
+		}
+	}
+
+	// =================================================================
+	// FREE SHODAN API ENDPOINTS (with API key)
+	// =================================================================
+
+	if s.apiClient != nil {
+
+		// Endpoint 6: /shodan/host/count (FREE)
+		s.logger.Debug("attempting /shodan/host/count (free)", "target", target.Root)
+		query := fmt.Sprintf("hostname:%s", target.Root)
+		facets := []string{"org", "country", "port", "product", "asn", "domain"}
+		countResp, err := s.apiClient.GetHostCount(ctx, query, facets)
+		if err != nil {
+			s.logger.Warn("free endpoint failed: /shodan/host/count", "error", err.Error())
+			result.AddWarning(s.Name(), fmt.Sprintf("[FREE] Host count failed: %v", err))
+		} else {
+			s.logger.Info("✓ /shodan/host/count successful",
+				"total_results", countResp.Total,
+				"facets", len(countResp.Facets),
+			)
+			// Intelligence data logged for analysis, not added as artifacts
+		}
+
+		// Endpoint 7: /api-info (FREE - informational)
+		s.logger.Debug("attempting /api-info (free)")
+		apiInfo, err := s.apiClient.GetAPIInfo(ctx)
+		if err != nil {
+			s.logger.Warn("free endpoint failed: /api-info", "error", err.Error())
+		} else {
+			s.logger.Info("✓ /api-info successful", "plan", apiInfo["plan"])
+			// API plan info logged for analysis
+		}
+	}
+
+	// =================================================================
+	// INTERNETDB (FREE - No API key required)
+	// =================================================================
+
+	if s.useInternetDB && s.internetDBClient != nil && len(discoveredIPs) > 0 {
+		s.logger.Debug("attempting InternetDB enrichment (free, no auth)", "ips", len(discoveredIPs))
+
+		ips := make([]string, 0, len(discoveredIPs))
+		for ip := range discoveredIPs {
+			ips = append(ips, ip)
+		}
+
+		idbResults, err := s.internetDBClient.LookupBatch(ctx, ips)
+		if err != nil {
+			s.logger.Warn("InternetDB batch lookup failed", "error", err.Error())
+			result.AddWarning(s.Name(), fmt.Sprintf("[FREE] InternetDB enrichment failed: %v", err))
+		} else {
+			s.logger.Info("✓ InternetDB successful", "enriched_ips", len(idbResults))
+			for _, idbResp := range idbResults {
+				idbArtifacts := s.parser.ParseInternetDBResponse(idbResp, target)
+				artifacts = append(artifacts, idbArtifacts...)
+			}
+		}
+	}
+
+	s.logger.Info("shodan API execution completed",
+		"total_artifacts", len(artifacts),
+		"unique_ips_discovered", len(discoveredIPs),
+	)
 
 	return artifacts, nil
 }

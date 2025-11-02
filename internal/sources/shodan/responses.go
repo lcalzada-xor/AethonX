@@ -114,6 +114,21 @@ type HTTPData struct {
 	Redirects    []string          `json:"redirects,omitempty"`
 }
 
+// HostCountResponse represents the response from /shodan/host/count endpoint.
+// This endpoint returns counts and facet information without consuming query credits.
+type HostCountResponse struct {
+	Total  int                    `json:"total"`
+	Facets map[string][]FacetItem `json:"facets,omitempty"`
+}
+
+// FacetItem represents a single facet value with its count.
+// Used in HostCountResponse for aggregated intelligence.
+// Value can be string or number, so we use interface{} for flexibility.
+type FacetItem struct {
+	Value interface{} `json:"value"`
+	Count int         `json:"count"`
+}
+
 // ParsedTime safely parses Shodan timestamp strings.
 func ParsedTime(timestamp string) (time.Time, error) {
 	// Shodan uses ISO 8601 format: "2024-01-15T10:30:45.123456"

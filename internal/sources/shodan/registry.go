@@ -58,18 +58,27 @@ func factory(cfg ports.SourceConfig, logger logx.Logger) (ports.Source, error) {
 	// Extract configuration using type-safe registry helpers
 	apiKey := registry.GetStringConfig(cfg.Custom, "api_key", "")
 	useCLI := registry.GetBoolConfig(cfg.Custom, "use_cli", false)
+	useInternetDB := registry.GetBoolConfig(cfg.Custom, "use_internetdb", true) // NEW: Default true
 	timeout := registry.GetDurationConfig(cfg.Custom, "timeout", 60*time.Second)
 	rateLimit := registry.GetFloat64Config(cfg.Custom, "rate_limit", 1.0)
 
+	// Log configuration
+	if apiKey == "" && !useCLI {
+		logger.Info("shodan API key not provided, only InternetDB endpoints will be available (free, no auth)")
+	} else if apiKey != "" {
+		logger.Info("shodan API key provided, all endpoints will be attempted (free + paid)")
+	}
+
 	logger.Debug("creating shodan source",
 		"use_cli", useCLI,
+		"use_internetdb", useInternetDB,
 		"timeout", timeout.String(),
 		"rate_limit", rateLimit,
 		"api_key_provided", apiKey != "",
 	)
 
-	// Create source with configuration
-	source := NewWithConfig(logger, apiKey, useCLI, timeout, rateLimit)
+	// Create source with full configuration
+	source := NewWithFullConfig(logger, apiKey, useCLI, useInternetDB, timeout, rateLimit)
 
 	return source, nil
 }

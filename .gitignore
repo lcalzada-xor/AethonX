@@ -7,6 +7,8 @@
 *.dll
 *.so
 *.dylib
+aethonx
+install-deps
 
 # Test binary, built with `go test -c`
 *.test
@@ -27,6 +29,26 @@ go.work.sum
 # env file
 .env
 
+# Output directories
+aethonx_out/
+results/
+output/
+
+# Temporary and auxiliary files
+*.tmp
+*.temp
+*.cfg
+resume.cfg
+*.log
+*.pid
+
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

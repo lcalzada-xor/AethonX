@@ -28,8 +28,20 @@ SOURCES
   --src.subfinder          Multi-source subdomain discovery (default: enabled)
   --src.amass              OWASP Amass enumeration (default: enabled)
   --src.httpx              HTTP probing (default: enabled)
+  --src.shodan             Shodan internet database (default: disabled, API key optional)
+  --src.waybackurls        Wayback Machine URL history (default: enabled)
 
-  Disable with: --src.<name>=false
+  Enable/disable with: --src.<name>=true/false
+
+SHODAN CONFIGURATION (optional API key)
+  --src.shodan.api_key <key>         Shodan API key (optional, enables more endpoints)
+  --src.shodan.use_cli               Use Shodan CLI instead of API (default: false)
+  --src.shodan.use_internetdb        Use free InternetDB for IP enrichment (default: true, no auth)
+  --src.shodan.rate_limit <rps>      Requests per second (default: 1.0 for free tier)
+
+  Environment variable: AETHONX_SOURCES_SHODAN_API_KEY
+
+  Note: Works without API key using InternetDB (free IP enrichment)
 
 ADVANCED
   -T, --timeout <sec>      Global timeout in seconds (default: 30, 0=none)
@@ -47,12 +59,22 @@ INFO
   -v, --version            Version information
 
 EXAMPLES
+  # Basic scans
   aethonx -t example.com                        # Passive scan (pretty UI)
   aethonx -t example.com -a -w 8                # Active scan, 8 workers
   aethonx -t example.com -q                     # Quiet mode (CI/CD)
+
+  # Source management
   aethonx -t example.com --src.httpx=false      # Disable httpx source
   aethonx -t example.com --src.amass=false      # Disable amass source
   aethonx -t example.com --src.subfinder=false  # Disable subfinder
+
+  # Shodan integration
+  export AETHONX_SOURCES_SHODAN_API_KEY="your-api-key"
+  aethonx -t example.com --src.shodan           # Enable Shodan with API
+  aethonx -t example.com --src.shodan --src.shodan.use_cli  # Use CLI mode
+
+  # UI modes
   aethonx -t example.com --ui-mode=raw          # Raw logs (for debugging)
 
 ENVIRONMENT VARIABLES

@@ -14,6 +14,8 @@ import (
 	"aethonx/internal/core/ports"
 	"aethonx/internal/core/usecases"
 	"aethonx/internal/platform/config"
+	"aethonx/internal/platform/cveapi"
+	"aethonx/internal/platform/cveapi/providers"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
 	"aethonx/internal/platform/resilience"
@@ -143,10 +145,51 @@ func main() {
 		)
 	}
 
-	// 7. Get source metadata from registry
+	// 7. Create enrichment service if enabled
+	var vulnEnrichmentSvc *usecases.VulnerabilityEnrichmentService
+	if cfg.Enrichment.Enabled {
+		// Create CVE enrichment service
+		enrichmentConfig := cveapi.EnrichmentConfig{
+			CacheTTL:      cfg.Enrichment.CacheTTL,
+			Timeout:       cfg.Enrichment.Timeout,
+			MaxConcurrent: cfg.Enrichment.MaxConcurrent,
+		}
+		cveEnrichmentSvc := cveapi.NewEnrichmentService(enrichmentConfig, logger)
+
+		// Register providers
+		// Primary: NVD
+		nvdProvider := providers.NewNVDProvider(providers.NVDConfig{
+			APIKey: cfg.Enrichment.NVDAPIKey,
+		}, logger)
+		if err := cveEnrichmentSvc.RegisterProvider(nvdProvider); err != nil {
+			logger.Warn("failed to register NVD provider", "error", err)
+		}
+
+		// Fallback: circl
+		circlProvider := providers.NewCirclProvider(providers.CirclConfig{}, logger)
+		if err := cveEnrichmentSvc.RegisterProvider(circlProvider); err != nil {
+			logger.Warn("failed to register circl provider", "error", err)
+		}
+
+		// Create vulnerability enrichment service
+		vulnEnrichmentSvc = usecases.NewVulnerabilityEnrichmentService(
+			cveEnrichmentSvc,
+			cfg.Enrichment.MaxConcurrent,
+			logger,
+		)
+
+		if !usingVisualUI {
+			logger.Info("CVE enrichment enabled",
+				"provider", cfg.Enrichment.Provider,
+				"cache_ttl", cfg.Enrichment.CacheTTL,
+			)
+		}
+	}
+
+	// 8. Get source metadata from registry
 	sourceMetadata := registry.Global().GetAllMetadata()
 
-	// 8. Create UI presenter based on configuration
+	// 9. Create UI presenter based on configuration
 	var presenter ui.Presenter
 	switch cfg.Output.UIMode {
 	case "raw":
@@ -164,14 +207,14 @@ func main() {
 		presenter = ui.NewCustomPresenter()
 	}
 
-	// 9. Create pipeline orchestrator (stage-based execution)
+	// 10. Create pipeline orchestrator (stage-based execution)
 	orch := usecases.NewPipelineOrchestrator(usecases.PipelineOrchestratorOptions{
-		Sources:         sources,
-		SourceMetadata:  sourceMetadata,
-		Logger:          logger,
-		Observers:       []ports.Notifier{}, // Future: webhooks, metrics, etc.
-		MaxWorkers:      max(1, cfg.Core.Workers),
-		StreamingWriter: streamingWriter,
+		Sources:                        sources,
+		SourceMetadata:                 sourceMetadata,
+		Logger:                         logger,
+		Observers:                      []ports.Notifier{}, // Future: webhooks, metrics, etc.
+		MaxWorkers:                     max(1, cfg.Core.Workers),
+		StreamingWriter:                streamingWriter,
 		StreamingConfig: usecases.StreamingConfig{
 			ArtifactThreshold: cfg.Streaming.ArtifactThreshold,
 			OutputDir:         cfg.Output.Dir,
@@ -183,9 +226,11 @@ func main() {
 			ShowPhases:  cfg.Output.ShowPhases,
 			TimeoutS:    cfg.Core.TimeoutS,
 		},
+		VulnerabilityEnrichmentService: vulnEnrichmentSvc,
+		VulnerabilityEnrichmentEnabled: cfg.Enrichment.Enabled,
 	})
 
-	// 10. Execute scan workflow
+	// 11. Execute scan workflow
 	start := time.Now()
 	result, runErr := orch.Run(ctx, *target)
 	elapsed := time.Since(start)
@@ -199,13 +244,13 @@ func main() {
 		}
 	}
 
-	// 11. Handle execution errors
+	// 12. Handle execution errors
 	if runErr != nil {
 		logger.Err(runErr, "phase", "run", "elapsed_ms", elapsed.Milliseconds())
 		// Continue to emit partial results (useful in pipelines)
 	}
 
-	// 12. Write outputs
+	// 13. Write outputs
 	if result != nil {
 		outErr := writeOutputs(cfg, result)
 		if outErr != nil {
@@ -214,7 +259,7 @@ func main() {
 		}
 	}
 
-	// 12. Summary (only in non-visual mode)
+	// 14. Summary (only in non-visual mode)
 	if result != nil && !usingVisualUI {
 		logger.Info("AethonX finished",
 			"elapsed_ms", elapsed.Milliseconds(),

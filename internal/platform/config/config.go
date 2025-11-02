@@ -11,6 +11,7 @@ import (
 
 	"aethonx/internal/core/ports"
 
+	"github.com/joho/godotenv"
 	"github.com/spf13/pflag"
 )
 
@@ -22,6 +23,7 @@ type Config struct {
 	Streaming  StreamingConfig
 	Resilience ResilienceConfig
 	Network    NetworkConfig
+	Enrichment EnrichmentConfig
 }
 
 // CoreConfig contains fundamental scan parameters.
@@ -71,6 +73,16 @@ type ResilienceConfig struct {
 // NetworkConfig contains network-related settings.
 type NetworkConfig struct {
 	ProxyURL string // HTTP(S) proxy URL for outbound requests
+}
+
+// EnrichmentConfig contains CVE enrichment settings.
+type EnrichmentConfig struct {
+	Enabled       bool          // Enable CVE enrichment
+	Provider      string        // Primary provider: nvd, circl
+	NVDAPIKey     string        // NVD API key (optional, increases rate limit)
+	CacheTTL      time.Duration // Cache TTL for enriched CVEs
+	Timeout       time.Duration // Timeout per CVE enrichment request
+	MaxConcurrent int           // Max concurrent enrichment requests
 }
 
 // DefaultConfig returns a default configuration organized by categories.
@@ -193,14 +205,28 @@ func DefaultConfig() Config {
 		Network: NetworkConfig{
 			ProxyURL: "",
 		},
+
+		Enrichment: EnrichmentConfig{
+			Enabled:       true,
+			Provider:      "nvd",
+			NVDAPIKey:     "",
+			CacheTTL:      168 * time.Hour, // 7 days
+			Timeout:       10 * time.Second,
+			MaxConcurrent: 5,
+		},
 	}
 }
 
-// Load initializes configuration: ENV -> defaults, then FLAGS (flags take priority).
+// Load initializes configuration: .env -> ENV -> defaults, then FLAGS (flags take priority).
+// Priority: FLAGS > ENV > .env > defaults
 func Load(version, commit, date string) (Config, error) {
 	cfg := DefaultConfig()
 
-	// Load from ENV
+	// Load .env file if it exists (silently ignore if not found)
+	// This allows users to optionally use .env files for configuration
+	_ = godotenv.Load() // Ignore error - .env is optional
+
+	// Load from ENV (includes variables from .env)
 	loadFromEnv(&cfg)
 
 	// Parse flags (overrides ENV)
@@ -248,6 +274,30 @@ func loadFromEnv(cfg *Config) {
 	// === NETWORK CONFIG ===
 	if v := getenv("AETHONX_PROXY_URL", ""); v != "" {
 		cfg.Network.ProxyURL = v
+	}
+
+	// === ENRICHMENT CONFIG ===
+	if v := getenv("AETHONX_ENRICHMENT_ENABLED", ""); v != "" {
+		cfg.Enrichment.Enabled = parseBool(v)
+	}
+	if v := getenv("AETHONX_ENRICHMENT_PROVIDER", ""); v != "" {
+		cfg.Enrichment.Provider = v
+	}
+	if v := getenv("AETHONX_ENRICHMENT_NVD_API_KEY", ""); v != "" {
+		cfg.Enrichment.NVDAPIKey = v
+	}
+	if v := getenv("AETHONX_ENRICHMENT_CACHE_TTL", ""); v != "" {
+		if duration, err := time.ParseDuration(v); err == nil {
+			cfg.Enrichment.CacheTTL = duration
+		}
+	}
+	if v := getenv("AETHONX_ENRICHMENT_TIMEOUT", ""); v != "" {
+		if duration, err := time.ParseDuration(v); err == nil {
+			cfg.Enrichment.Timeout = duration
+		}
+	}
+	if v := getenv("AETHONX_ENRICHMENT_MAX_CONCURRENT", ""); v != "" {
+		cfg.Enrichment.MaxConcurrent = parseInt(v, cfg.Enrichment.MaxConcurrent)
 	}
 
 	// === SOURCE CONFIG ===
@@ -309,9 +359,16 @@ func loadFromEnv(cfg *Config) {
 
 		// Shodan-specific custom config
 		if name == "shodan" {
-			if v := getenv(prefix+"API_KEY", ""); v != "" {
-				sourceCfg.Custom["api_key"] = v
+			// Try both AETHONX_SOURCES_SHODAN_API_KEY and AETHONX_SRC_SHODAN_API_KEY
+			// (backward compatibility with documentation examples)
+			apiKey := getenv(prefix+"API_KEY", "")
+			if apiKey == "" {
+				apiKey = getenv("AETHONX_SRC_SHODAN_API_KEY", "")
 			}
+			if apiKey != "" {
+				sourceCfg.Custom["api_key"] = apiKey
+			}
+
 			if v := getenv(prefix+"USE_CLI", ""); v != "" {
 				sourceCfg.Custom["use_cli"] = parseBool(v)
 			}
@@ -368,6 +425,33 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 		cfg.Source.Sources[name] = sourceCfg
 	}
 
+	// === SHODAN-SPECIFIC FLAGS ===
+	// Note: Using temporary variables since we can't directly modify Custom map via pflag
+	var shodanAPIKey string
+	var shodanUseCLI bool
+	var shodanRateLimit float64
+
+	if shodanCfg, ok := cfg.Source.Sources["shodan"]; ok {
+		if v, ok := shodanCfg.Custom["api_key"].(string); ok {
+			shodanAPIKey = v
+		}
+		if v, ok := shodanCfg.Custom["use_cli"].(bool); ok {
+			shodanUseCLI = v
+		}
+		if v, ok := shodanCfg.Custom["rate_limit"].(float64); ok {
+			shodanRateLimit = v
+		} else {
+			shodanRateLimit = 1.0 // Default
+		}
+
+		pflag.StringVar(&shodanAPIKey, "src.shodan.api_key", shodanAPIKey,
+			"Shodan API key (required for API mode)")
+		pflag.BoolVar(&shodanUseCLI, "src.shodan.use_cli", shodanUseCLI,
+			"Use Shodan CLI instead of API (default: false)")
+		pflag.Float64Var(&shodanRateLimit, "src.shodan.rate_limit", shodanRateLimit,
+			"Shodan API rate limit in requests/second (default: 1.0 for free tier)")
+	}
+
 	// === OUTPUT FLAGS ===
 	pflag.StringVarP(&cfg.Output.Dir, "out", "o", cfg.Output.Dir, "Output directory")
 	pflag.StringVar(&cfg.Output.UIMode, "ui-mode", cfg.Output.UIMode,
@@ -392,8 +476,26 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 	// === NETWORK FLAGS ===
 	pflag.StringVarP(&cfg.Network.ProxyURL, "proxy", "p", cfg.Network.ProxyURL, "HTTP(S) proxy URL")
 
+	// === ENRICHMENT FLAGS ===
+	pflag.BoolVar(&cfg.Enrichment.Enabled, "enrich", cfg.Enrichment.Enabled,
+		"Enable CVE enrichment (default: true)")
+	pflag.BoolVar(&cfg.Enrichment.Enabled, "no-enrich", !cfg.Enrichment.Enabled,
+		"Disable CVE enrichment")
+	pflag.StringVar(&cfg.Enrichment.Provider, "enrich-provider", cfg.Enrichment.Provider,
+		"CVE enrichment provider: nvd, circl (default: nvd)")
+	pflag.StringVar(&cfg.Enrichment.NVDAPIKey, "enrich-nvd-api-key", cfg.Enrichment.NVDAPIKey,
+		"NVD API key (optional, increases rate limit from 0.6/s to 50/s)")
+
 	// Parse flags
 	pflag.Parse()
+
+	// Apply Shodan-specific flags back to config
+	if shodanCfg, ok := cfg.Source.Sources["shodan"]; ok {
+		shodanCfg.Custom["api_key"] = shodanAPIKey
+		shodanCfg.Custom["use_cli"] = shodanUseCLI
+		shodanCfg.Custom["rate_limit"] = shodanRateLimit
+		cfg.Source.Sources["shodan"] = shodanCfg
+	}
 
 	// Handle help and version flags
 	if *showHelp {

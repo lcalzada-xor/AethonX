@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"aethonx/internal/platform/httpclient"
@@ -16,11 +17,20 @@ const (
 	// Shodan API base URL
 	defaultBaseURL = "https://api.shodan.io"
 
-	// API endpoints
-	endpointHostInfo    = "/shodan/host/%s"           // /shodan/host/{ip}
-	endpointHostSearch  = "/shodan/host/search"       // /shodan/host/search
-	endpointDomainInfo  = "/dns/domain/%s"            // /dns/domain/{domain}
-	endpointAPIInfo     = "/api-info"                 // /api-info (account info)
+	// Existing endpoints (PAID)
+	endpointHostInfo   = "/shodan/host/%s"      // /shodan/host/{ip} (PAID)
+	endpointHostSearch = "/shodan/host/search"  // /shodan/host/search (PAID)
+	endpointDomainInfo = "/dns/domain/%s"       // /dns/domain/{domain} (PAID - Membership)
+
+	// Free endpoints
+	endpointAPIInfo   = "/api-info"           // /api-info (FREE)
+	endpointHostCount = "/shodan/host/count"  // /shodan/host/count (FREE)
+	endpointToolsMyIP = "/tools/myip"         // /tools/myip (FREE)
+
+	// NOTE: DNS endpoints removed - using free fallback chain instead:
+	// - Cloudflare DNS over HTTPS (primary)
+	// - Google Public DNS JSON API (fallback)
+	// - System DNS resolver (final fallback)
 )
 
 // ShodanAPIClient wraps the Shodan REST API.
@@ -277,4 +287,64 @@ func (c *ShodanAPIClient) ValidateAPIKey(ctx context.Context) error {
 
 	c.logger.Info("API key validated successfully")
 	return nil
+}
+
+// =================================================================
+// FREE ENDPOINTS (Do not consume query credits)
+// =================================================================
+
+// NOTE: DNS resolution methods removed - these endpoints require PAID Shodan plans.
+// Use DNSResolver (dns_resolver.go) instead, which provides:
+// - Cloudflare DNS over HTTPS (free, no auth)
+// - Google Public DNS JSON API (free, no auth)
+// - System DNS resolver (fallback)
+
+// GetHostCount returns the number of results and facet information for a search query.
+// FREE - Does not consume query credits (only returns counts, not host data).
+// Facets: org, country, port, product, asn, domain, etc.
+func (c *ShodanAPIClient) GetHostCount(ctx context.Context, query string, facets []string) (*HostCountResponse, error) {
+	params := map[string]string{
+		"query": query,
+	}
+
+	if len(facets) > 0 {
+		params["facets"] = strings.Join(facets, ",")
+	}
+
+	apiURL := c.buildURL(endpointHostCount, params)
+	c.logger.Debug("fetching host count", "query", query, "facets", facets)
+
+	body, err := c.client.FetchJSON(ctx, apiURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch host count: %w", err)
+	}
+
+	var result HostCountResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse host count response: %w", err)
+	}
+
+	c.logger.Debug("host count retrieved", "total", result.Total, "facets", len(result.Facets))
+	return &result, nil
+}
+
+// GetMyIP returns your current public IP address.
+// FREE - Does not consume query credits.
+func (c *ShodanAPIClient) GetMyIP(ctx context.Context) (string, error) {
+	apiURL := c.buildURL(endpointToolsMyIP, nil)
+	c.logger.Debug("fetching public IP")
+
+	body, err := c.client.FetchJSON(ctx, apiURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch public IP: %w", err)
+	}
+
+	// Response is a plain JSON string: "113.161.57.41"
+	var ip string
+	if err := json.Unmarshal(body, &ip); err != nil {
+		return "", fmt.Errorf("failed to parse IP response: %w", err)
+	}
+
+	c.logger.Debug("public IP retrieved", "ip", ip)
+	return ip, nil
 }

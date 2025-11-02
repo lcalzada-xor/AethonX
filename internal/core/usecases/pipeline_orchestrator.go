@@ -29,10 +29,11 @@ type PipelineOrchestrator struct {
 	stages []Stage
 
 	// Servicios auxiliares
-	dedupeService  *DedupeService
-	mergeService   *MergeService
-	graphService   *GraphService
-	logger         logx.Logger
+	dedupeService              *DedupeService
+	mergeService               *MergeService
+	graphService               *GraphService
+	vulnEnrichmentService      *VulnerabilityEnrichmentService
+	logger                     logx.Logger
 
 	// Configuración de ejecución
 	maxWorkers      int
@@ -46,21 +47,26 @@ type PipelineOrchestrator struct {
 	presenter ui.Presenter
 	uiConfig  UIConfig
 
+	// Enrichment configuration
+	vulnerabilityEnrichmentEnabled bool
+
 	// stageResults almacena resultados de todos los stages para estadísticas
 	stageResults []StageResult
 }
 
 // PipelineOrchestratorOptions configura el pipeline orchestrator.
 type PipelineOrchestratorOptions struct {
-	Sources         []ports.Source
-	SourceMetadata  map[string]ports.SourceMetadata
-	Logger          logx.Logger
-	Observers       []ports.Notifier
-	MaxWorkers      int
-	StreamingWriter StreamingWriter
-	StreamingConfig StreamingConfig
-	Presenter       ui.Presenter
-	UIConfig        UIConfig
+	Sources                        []ports.Source
+	SourceMetadata                 map[string]ports.SourceMetadata
+	Logger                         logx.Logger
+	Observers                      []ports.Notifier
+	MaxWorkers                     int
+	StreamingWriter                StreamingWriter
+	StreamingConfig                StreamingConfig
+	Presenter                      ui.Presenter
+	UIConfig                       UIConfig
+	VulnerabilityEnrichmentService *VulnerabilityEnrichmentService
+	VulnerabilityEnrichmentEnabled bool
 }
 
 // UIConfig contiene configuración de UI
@@ -87,17 +93,19 @@ func NewPipelineOrchestrator(opts PipelineOrchestratorOptions) *PipelineOrchestr
 	}
 
 	return &PipelineOrchestrator{
-		sources:         opts.Sources,
-		sourceMetadata:  opts.SourceMetadata,
-		dedupeService:   NewDedupeService(),
-		mergeService:    NewMergeService(opts.Logger),
-		logger:          opts.Logger.With("component", "pipeline_orchestrator"),
-		observers:       opts.Observers,
-		maxWorkers:      opts.MaxWorkers,
-		streamingWriter: opts.StreamingWriter,
-		streamingConfig: opts.StreamingConfig,
-		presenter:       opts.Presenter,
-		uiConfig:        opts.UIConfig,
+		sources:                        opts.Sources,
+		sourceMetadata:                 opts.SourceMetadata,
+		dedupeService:                  NewDedupeService(),
+		mergeService:                   NewMergeService(opts.Logger),
+		logger:                         opts.Logger.With("component", "pipeline_orchestrator"),
+		observers:                      opts.Observers,
+		maxWorkers:                     opts.MaxWorkers,
+		streamingWriter:                opts.StreamingWriter,
+		streamingConfig:                opts.StreamingConfig,
+		presenter:                      opts.Presenter,
+		uiConfig:                       opts.UIConfig,
+		vulnEnrichmentService:          opts.VulnerabilityEnrichmentService,
+		vulnerabilityEnrichmentEnabled: opts.VulnerabilityEnrichmentEnabled,
 	}
 }
 
@@ -319,6 +327,14 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 
 	// Deduplicación final
 	result.Artifacts = p.dedupeService.Deduplicate(result.Artifacts)
+
+	// Enrich vulnerabilities if enabled
+	if p.vulnerabilityEnrichmentEnabled && p.vulnEnrichmentService != nil {
+		p.logger.Info("enriching vulnerabilities")
+		if err := p.vulnEnrichmentService.EnrichVulnerabilities(ctx, result); err != nil {
+			p.logger.Warn("vulnerability enrichment failed", "error", err)
+		}
+	}
 
 	// Construir grafo de relaciones
 	p.graphService = NewGraphService(result.Artifacts, p.logger)
