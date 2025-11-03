@@ -1,0 +1,25 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\\.s3\\.amazonaws\\.com",
+    "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\\.s3-[a-z0-9-]+\\.amazonaws\\.com",
+    "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\\.s3\\.[a-z0-9-]+\\.amazonaws\\.com",
+    "s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](/[^\\s\"']*)?",
+    "s3-[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]",
+    "[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\\.blob\\.core\\.windows\\.net",
+    "https://[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\\.blob\\.core\\.windows\\.net",
+    "storage\\.googleapis\\.com/[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]",
+    "gs://[a-z0-9][a-z0-9._-]{1,61}[a-z0-9](/[^\\s\"']*)?",
+    "[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\\.storage\\.googleapis\\.com",
+    "[a-z0-9][a-z0-9-]{1,61}[a-z0-9]\\.appspot\\.com",
+    "[a-z0-9-]+\\.cloudfunctions\\.net",
+    "[a-z0-9-]+\\.azurewebsites\\.net",
+    "[a-z0-9-]+\\.cloudfront\\.net",
+    "[a-z0-9-]+\\.execute-api\\.[a-z0-9-]+\\.amazonaws\\.com",
+    "[a-z0-9-]+\\.lambda-url\\.[a-z0-9-]+\\.on\\.aws",
+    "digitaloceanspaces\\.com/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]",
+    "[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]\\.r2\\.dev",
+    "wasabisys\\.com/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]",
+    "[a-z0-9-]+\\.backblazeb2\\.com"
+  ]
+}

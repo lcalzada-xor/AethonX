@@ -26,9 +26,11 @@ SOURCES
   --src.crtsh              Certificate Transparency logs (default: enabled)
   --src.rdap               RDAP/WHOIS queries (default: enabled)
   --src.subfinder          Multi-source subdomain discovery (default: enabled)
+  --src.dnsx               DNS resolution and validation (default: enabled)
   --src.httpx              HTTP probing (default: enabled)
   --src.shodan             Shodan internet database (default: disabled, API key optional)
   --src.waybackurls        Wayback Machine URL history (default: enabled)
+  --src.golinkfinderevo    Endpoint/secret discovery in JS/HTML (default: enabled in active mode)
 
   Enable/disable with: --src.<name>=true/false
 
@@ -41,6 +43,19 @@ SHODAN CONFIGURATION (optional API key)
   Environment variable: AETHONX_SOURCES_SHODAN_API_KEY
 
   Note: Works without API key using InternetDB (free IP enrichment)
+
+GOLINKFINDEREVO CONFIGURATION (requires binary: https://github.com/lcalzada-xor/GoLinkfinderEVO)
+  --src.golinkfinderevo.profile <name>          Scan profile: quick, standard, deep (default: standard)
+  --src.golinkfinderevo.workers <int>           Concurrent workers (default: 20)
+  --src.golinkfinderevo.max-script-files <int>  Max JS files to analyze (default: 50)
+  --src.golinkfinderevo.max-html-files <int>    Max HTML files to analyze (default: 50)
+  --src.golinkfinderevo.gf-patterns <list>      GF patterns (comma-separated, default: all)
+
+  Available GF patterns: api-keys, jwt, credentials, sqli, xss, sensitive-files,
+                         endpoints, cloud-resources, crypto, custom-params
+
+  Note: Runs in Stage 3 (Crawl), consuming alive URLs from httpx
+        Requires golinkfinder binary in PATH
 
 ADVANCED
   -T, --timeout <sec>      Global timeout in seconds (default: 30, 0=none)
@@ -71,6 +86,11 @@ EXAMPLES
   export AETHONX_SOURCES_SHODAN_API_KEY="your-api-key"
   aethonx -t example.com --src.shodan           # Enable Shodan with API
   aethonx -t example.com --src.shodan --src.shodan.use_cli  # Use CLI mode
+
+  # GoLinkfinderEVO (Stage 3 crawling)
+  aethonx -t example.com -a                     # Active mode enables golinkfinderevo
+  aethonx -t example.com -a --src.golinkfinderevo.profile=deep  # Deep scan
+  aethonx -t example.com -a --src.golinkfinderevo.gf-patterns=api-keys,jwt  # Specific patterns
 
   # UI modes
   aethonx -t example.com --ui-mode=raw          # Raw logs (for debugging)

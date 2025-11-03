@@ -34,7 +34,7 @@ Build: `make build` | Test: `make test` (with `-race`) | Run: `./aethonx -t exam
 **Flags**: pflag library. MUST use `--` for long (`--target`), `-` for short (`-t`). Priority: CLI>ENV>.env>defaults
 
 **Core Flags**: `-t/--target`, `-a/--active`, `-w/--workers(16)`, `-T/--timeout(30)`, `-o/--out(aethonx_out)`, `-q/--quiet`, `-s/--streaming(1000)`, `-r/--retries(3)`, `--circuit-breaker(true)`, `-p/--proxy`
-**Source Flags**: `--src.{crtsh|rdap|waybackurls|subfinder|httpx|shodan}`, `--src.shodan.api_key`, `--src.shodan.use_cli`, `--src.shodan.rate_limit(1.0)`
+**Source Flags**: `--src.{crtsh|rdap|waybackurls|subfinder|httpx|shodan|golinkfinderevo}`, `--src.shodan.api_key`, `--src.shodan.use_cli`, `--src.shodan.rate_limit(1.0)`, `--src.golinkfinderevo.profile(standard)`, `--src.golinkfinderevo.workers(20)`, `--src.golinkfinderevo.max-script-files(50)`, `--src.golinkfinderevo.max-html-files(50)`, `--src.golinkfinderevo.gf-patterns(all)`
 **Enrichment Flags**: `--enrich(true)`, `--enrich-nvd-api-key`, `--enrich-provider(nvd)`, `--enrich-cache-ttl(168h)`
 
 **.env file**: Auto-loads from CWD. `cp .env.example .env`. Supports: `AETHONX_SOURCES_SHODAN_API_KEY`, `AETHONX_SRC_SHODAN_API_KEY` (both formats work), `AETHONX_ENRICHMENT_NVD_API_KEY`, etc.
@@ -46,6 +46,7 @@ Build: `make build` | Test: `make test` (with `-race`) | Run: `./aethonx -t exam
 **httpx** (`internal/sources/httpx/`): CLI subprocess, HTTP probing/fingerprinting, active, profiles: Fast|Standard|Full
 **shodan** (`internal/sources/shodan/`): Hybrid: InternetDB(FREE,no key)+DNS fallback(Cloudflare→Google→System)+REST API(free+paid endpoints)+CLI. Passive. Max endpoint execution philosophy, graceful degradation. InternetDB: `https://internetdb.shodan.io/{ip}`, 1req/s, returns IP+Port+Subdomain+Vulnerability+Technology. DNS: Cloudflare DoH primary, Google fallback, system final. API: FREE endpoints (/shodan/host/count, /api-info, /tools/myip), PAID endpoints tolerate failures (/dns/domain, /shodan/host/search, /shodan/host/{ip}). Priority:12. Modes: No key(InternetDB+DNS), Free key(+free API), Paid(+paid API)
 **waybackurls** (`internal/sources/waybackurls/`): Internet Archive, historical URLs, passive, returns URL+Subdomain, priority:5
+**golinkfinderevo** (`internal/sources/golinkfinderevo/`): CLI subprocess, endpoint/secret discovery in JS/HTML, active, Stage 3 (Crawl). Consumes alive HTTP URLs from httpx (max 50 JS + 50 HTML files). GF integration with 10 modern templates (api-keys, jwt, credentials, sqli, xss, sensitive-files, endpoints, cloud-resources, crypto, custom-params). Profiles: Quick(10 workers,30s,no recursion,25 files)|Standard(20 workers,60s,1 level,50 files)|Deep(30 workers,120s,2 levels,100 files). Priority:20, StageHint:3. Requires `golinkfinder` binary: https://github.com/lcalzada-xor/GoLinkfinderEVO. Returns: Endpoint+Parameter+Credential+SensitiveFile+API+StorageBucket. Smart filtering by file extension (.js,.html) and HTTP status (200-399), requires DomainMetadata from httpx
 
 ## Adding Source
 1. Create `internal/sources/mytool/mytool.go` (implement Source interface with Close()), `mytool_test.go`, `registry.go`
@@ -80,6 +81,22 @@ Auto-enriches vulnerability artifacts with NVD/circl.lu data. Flow: Scan→Vulns
 **Enriched Data (40+ fields)**: CVE ID, source_identifier, vuln_status, dates, CVSS v2/v3 (vector,score,severity,metrics), CWE[], CPE[], refs[]. Example: CVE-2021-44228 CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H, score:10.0, CRITICAL.
 **Files**: `internal/platform/cveapi/{types,enrichment_service,converter,providers/{nvd,circl}}.go`, `internal/core/usecases/vulnerability_enrichment_service.go`, `internal/core/domain/metadata/vulnerability.go`
 **Features**: provider pattern, auto fallback, in-mem cache, rate limiting, concurrent enrichment, fail-soft, skip dupes, error tracking.
+
+## Stage 3 (Crawl) & GF Integration
+**Stage 3** executes after httpx (Stage 1) completes. Sources with `StageHint:3` consume alive HTTP URLs to perform deep content analysis.
+**golinkfinderevo** runs in Stage 3, analyzing JS/HTML files for endpoints, API routes, secrets, and sensitive data. Implements smart filtering: selects only alive URLs (status 200-399) with `.js` or `.html` extensions, max 50 of each type. Requires `DomainMetadata` from httpx.
+**GF Templates** (`internal/platform/gf_templates/`): 10 modern pattern templates for detecting embedded artifacts:
+1. **api-keys.json**: AWS (AKIA*), GCP, Azure, GitHub (ghp_*), Slack (xoxb-*), Stripe, SendGrid, Twilio, DigitalOcean, Mailgun
+2. **jwt.json**: JWT tokens (eyJ*.eyJ*.*)
+3. **credentials.json**: passwords, secrets, tokens, Basic/Bearer auth
+4. **sqli.json**: SQL injection-prone parameters (id, user, search, filter, query, etc.)
+5. **xss.json**: XSS-vulnerable parameters (q, query, callback, redirect, url, etc.)
+6. **sensitive-files.json**: .env, config files, backups, .git/, composer.json, package.json
+7. **endpoints.json**: API routes (/api/v*, /graphql, REST patterns)
+8. **cloud-resources.json**: S3 buckets, Azure blobs, GCP storage (s3.amazonaws.com, blob.core.windows.net, storage.googleapis.com)
+9. **crypto.json**: Private keys, certificates, SSH keys (BEGIN RSA/EC/OPENSSH PRIVATE KEY)
+10. **custom-params.json**: admin, debug, dev, test, command injection (cmd, exec, command, etc.)
+**Usage**: Set `AETHONX_SOURCES_GOLINKFINDEREVO_GF_PATTERNS=all` or comma-separated list. Templates in `./internal/platform/gf_templates/` directory. See `internal/platform/gf_templates/README.md` for pattern documentation.
 
 ## Artifact Types (42 total)
 Critical: Subdomain, IP, Email, URL, Certificate. Metadata types (13 total, `internal/core/domain/metadata/`): DomainMetadata (SSL,DNS,techs), CertificateMetadata (issuer,serial,dates), IPMetadata (geo,ASN,cloud), ServiceMetadata (port,protocol,version,banner), VulnerabilityMetadata (40+ CVE fields), etc.
@@ -126,10 +143,11 @@ Presenter Pattern. Files: presenter.go (interface), custom_presenter.go (visual/
 ## Key Files
 Core: 1.`internal/core/ports/source.go` 2.`internal/core/domain/artifact.go` 3.`internal/core/usecases/pipeline_orchestrator.go` 4.`cmd/aethonx/main.go`
 CLI Abstractions: 5.`internal/sources/common/cli_source.go` 6.`internal/platform/registry/helpers.go`
-Sources: 7.`internal/sources/{crtsh,rdap,subfinder,httpx,waybackurls,shodan}/`
+Sources: 7.`internal/sources/{crtsh,rdap,subfinder,httpx,waybackurls,shodan,golinkfinderevo}/`
 Data: 8.`internal/core/usecases/dedupe_service.go` 9.`internal/adapters/output/streaming.go` 10.`internal/core/usecases/merge_service.go`
 Platform: 11.`internal/platform/{workerpool,resilience,registry,validator,config,cveapi}/`
 UI: 12.`internal/platform/ui/{presenter,custom_presenter,raw_presenter,global_progress,symbols}.go`
+GF Templates: 13.`internal/platform/gf_templates/` (10 modern templates for golinkfinderevo pattern matching)
 
 ## Testing
 Files: `*_test.go` (unit tests same package), `fixtures_test.go` (test fixtures), `mocks_test.go` (mocks). Preferred: table-driven tests. Always test with `-race`. Use `registry.Global().Clear()` in test setup.

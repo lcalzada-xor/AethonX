@@ -1,0 +1,20 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "[?&](q|query|search|keyword|term|find)=",
+    "[?&](name|username|user|email|mail)=",
+    "[?&](message|msg|comment|text|content|body)=",
+    "[?&](title|subject|topic|heading)=",
+    "[?&](callback|jsonp|cb|function|func)=",
+    "[?&](redirect|url|return|returnurl|ret|next)=",
+    "[?&](dest|destination|target|goto|go)=",
+    "[?&](data|input|value|val|param)=",
+    "[?&](html|code|script|js)=",
+    "[?&](error|err|warning|warn|notice)=",
+    "[?&](debug|test|dev|development)=",
+    "[?&](preview|view|display|show)=",
+    "[?&](ref|referer|referrer|from)=",
+    "[?&](lang|language|locale|l10n|i18n)=",
+    "[?&](template|tmpl|theme|skin|style)="
+  ]
+}

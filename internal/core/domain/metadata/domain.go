@@ -1,11 +1,32 @@
 // internal/core/domain/metadata/domain.go
 package metadata
 
+// SOARecord represents DNS Start of Authority record.
+type SOARecord struct {
+	Name     string `json:"name"`
+	NS       string `json:"ns"`
+	Mailbox  string `json:"mailbox"`
+	Serial   int64  `json:"serial"`
+	Refresh  int    `json:"refresh"`
+	Retry    int    `json:"retry"`
+	Expire   int    `json:"expire"`
+	MinTTL   int    `json:"minttl"`
+}
+
 // DomainMetadata contiene información detallada sobre un dominio o subdominio.
 type DomainMetadata struct {
 	// Resolución DNS
 	ResolvedIPs []string // IPs a las que resuelve
 	DNSRecords  []string // Tipos de records (A, AAAA, MX, TXT, etc.)
+
+	// DNS Resolution (dnsx enrichment)
+	DNSResolved   bool     // true if DNS resolution succeeded
+	TTL           int      // DNS TTL in seconds
+	Resolvers     []string // DNS resolvers used
+	AliasTarget   string   // CNAME target if applicable
+	Zone          *SOARecord // SOA record information
+	WildcardMatch bool     // true if wildcard subdomain
+	ASN           string   // Autonomous System Number
 
 	// Registrador (WHOIS)
 	Registrar          string
@@ -122,6 +143,22 @@ func (d *DomainMetadata) ToMap() map[string]string {
 		SetInt(m, "subdomain_level", d.SubdomainLevel)
 	}
 
+	// DNS Resolution (dnsx)
+	SetBool(m, "dns_resolved", d.DNSResolved)
+	if d.TTL > 0 {
+		SetInt(m, "ttl", d.TTL)
+	}
+	if len(d.Resolvers) > 0 {
+		m["resolvers"] = StringSliceToCSV(d.Resolvers)
+	}
+	SetIfNotEmpty(m, "alias_target", d.AliasTarget)
+	if d.Zone != nil {
+		m["zone_ns"] = d.Zone.NS
+		m["zone_mailbox"] = d.Zone.Mailbox
+	}
+	SetBool(m, "wildcard_match", d.WildcardMatch)
+	SetIfNotEmpty(m, "asn", d.ASN)
+
 	return m
 }
 
@@ -178,6 +215,15 @@ func (d *DomainMetadata) FromMap(m map[string]string) error {
 
 	// Tags
 	d.SubdomainLevel = GetInt(m, "subdomain_level", 0)
+
+	// DNS Resolution (dnsx)
+	d.DNSResolved = GetBool(m, "dns_resolved", false)
+	d.TTL = GetInt(m, "ttl", 0)
+	d.Resolvers = CSVToStringSlice(GetString(m, "resolvers", ""))
+	d.AliasTarget = GetString(m, "alias_target", "")
+	// Zone is not restored from map (complex structure)
+	d.WildcardMatch = GetBool(m, "wildcard_match", false)
+	d.ASN = GetString(m, "asn", "")
 
 	return nil
 }

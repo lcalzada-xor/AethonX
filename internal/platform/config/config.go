@@ -127,6 +127,22 @@ func DefaultConfig() Config {
 						"exec_path":   "subfinder",
 					},
 				},
+				"dnsx": {
+					Enabled:   true,
+					Timeout:   60 * time.Second,
+					Retries:   2,
+					RateLimit: 0,
+					Priority:  15, // Stage 2: Same as httpx, run in parallel
+					Custom: map[string]interface{}{
+						"threads":         100,
+						"rate_limit":      -1, // unlimited
+						"query_types":     []string{"a", "aaaa", "cname", "mx", "txt", "ns", "soa"},
+						"enable_cdn":      true,
+						"enable_asn":      true,
+						"wildcard_filter": true,
+						"exec_path":       "dnsx",
+					},
+				},
 				"httpx": {
 					Enabled:   true,
 					Timeout:   120 * time.Second, // httpx can be slow with tech detection
@@ -162,6 +178,22 @@ func DefaultConfig() Config {
 						"api_key":    "",    // Must be set via env or flag
 						"use_cli":    false, // Use API by default
 						"rate_limit": 1.0,   // Requests per second
+					},
+				},
+				"golinkfinderevo": {
+					Enabled:   true,
+					Timeout:   60 * time.Second, // Standard profile timeout
+					Retries:   2,
+					RateLimit: 0, // Managed by worker pool
+					Priority:  20, // Stage 3 (Crawl) - after httpx
+					Custom: map[string]interface{}{
+						"profile":           "standard",                         // quick, standard, deep
+						"workers":           20,                                 // Concurrent workers
+						"max_script_files":  50,                                 // Max JS files to analyze
+						"max_html_files":    50,                                 // Max HTML files to analyze
+						"exec_path":         "golinkfinder",                     // Binary path
+						"gf_templates_path": "./internal/platform/gf_templates", // GF templates directory
+						"gf_patterns":       []string{"all"},                    // GF patterns to apply
 					},
 				},
 			},
@@ -454,6 +486,69 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 			"Shodan API rate limit in requests/second (default: 1.0 for free tier)")
 	}
 
+	// GoLinkfinderEVO flags
+	var golinkfinderevoProfile string
+	var golinkfinderevoWorkers int
+	var golinkfinderevoMaxScriptFiles int
+	var golinkfinderevoMaxHTMLFiles int
+	var golinkfinderevoExecPath string
+	var golinkfinderevoGFTemplatesPath string
+	var golinkfinderevoGFPatterns string
+
+	if glCfg, ok := cfg.Source.Sources["golinkfinderevo"]; ok {
+		if v, ok := glCfg.Custom["profile"].(string); ok {
+			golinkfinderevoProfile = v
+		} else {
+			golinkfinderevoProfile = "standard"
+		}
+		if v, ok := glCfg.Custom["workers"].(int); ok {
+			golinkfinderevoWorkers = v
+		} else {
+			golinkfinderevoWorkers = 20
+		}
+		if v, ok := glCfg.Custom["max_script_files"].(int); ok {
+			golinkfinderevoMaxScriptFiles = v
+		} else {
+			golinkfinderevoMaxScriptFiles = 50
+		}
+		if v, ok := glCfg.Custom["max_html_files"].(int); ok {
+			golinkfinderevoMaxHTMLFiles = v
+		} else {
+			golinkfinderevoMaxHTMLFiles = 50
+		}
+		if v, ok := glCfg.Custom["exec_path"].(string); ok {
+			golinkfinderevoExecPath = v
+		} else {
+			golinkfinderevoExecPath = "golinkfinder"
+		}
+		if v, ok := glCfg.Custom["gf_templates_path"].(string); ok {
+			golinkfinderevoGFTemplatesPath = v
+		} else {
+			golinkfinderevoGFTemplatesPath = "./internal/platform/gf_templates"
+		}
+		// Handle gf_patterns as slice or string
+		if v, ok := glCfg.Custom["gf_patterns"].([]string); ok && len(v) > 0 {
+			golinkfinderevoGFPatterns = strings.Join(v, ",")
+		} else {
+			golinkfinderevoGFPatterns = "all"
+		}
+
+		pflag.StringVar(&golinkfinderevoProfile, "src.golinkfinderevo.profile", golinkfinderevoProfile,
+			"GoLinkfinderEVO scan profile: quick, standard (default), deep")
+		pflag.IntVar(&golinkfinderevoWorkers, "src.golinkfinderevo.workers", golinkfinderevoWorkers,
+			"Number of concurrent workers (default: 20)")
+		pflag.IntVar(&golinkfinderevoMaxScriptFiles, "src.golinkfinderevo.max-script-files", golinkfinderevoMaxScriptFiles,
+			"Maximum JavaScript files to analyze (default: 50)")
+		pflag.IntVar(&golinkfinderevoMaxHTMLFiles, "src.golinkfinderevo.max-html-files", golinkfinderevoMaxHTMLFiles,
+			"Maximum HTML files to analyze (default: 50)")
+		pflag.StringVar(&golinkfinderevoExecPath, "src.golinkfinderevo.exec-path", golinkfinderevoExecPath,
+			"Path to golinkfinder binary (default: golinkfinder)")
+		pflag.StringVar(&golinkfinderevoGFTemplatesPath, "src.golinkfinderevo.gf-templates-path", golinkfinderevoGFTemplatesPath,
+			"Path to gf templates directory (default: ./internal/platform/gf_templates)")
+		pflag.StringVar(&golinkfinderevoGFPatterns, "src.golinkfinderevo.gf-patterns", golinkfinderevoGFPatterns,
+			"GF patterns to apply (comma-separated, default: all)")
+	}
+
 	// === OUTPUT FLAGS ===
 	pflag.StringVarP(&cfg.Output.Dir, "out", "o", cfg.Output.Dir, "Output directory")
 	pflag.StringVar(&cfg.Output.UIMode, "ui-mode", cfg.Output.UIMode,
@@ -514,6 +609,21 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 		shodanCfg.Custom["use_cli"] = shodanUseCLI
 		shodanCfg.Custom["rate_limit"] = shodanRateLimit
 		cfg.Source.Sources["shodan"] = shodanCfg
+	}
+
+	// Apply GoLinkfinderEVO-specific flags back to config
+	if glCfg, ok := cfg.Source.Sources["golinkfinderevo"]; ok {
+		glCfg.Custom["profile"] = golinkfinderevoProfile
+		glCfg.Custom["workers"] = golinkfinderevoWorkers
+		glCfg.Custom["max_script_files"] = golinkfinderevoMaxScriptFiles
+		glCfg.Custom["max_html_files"] = golinkfinderevoMaxHTMLFiles
+		glCfg.Custom["exec_path"] = golinkfinderevoExecPath
+		glCfg.Custom["gf_templates_path"] = golinkfinderevoGFTemplatesPath
+		// Parse comma-separated patterns back to slice
+		if golinkfinderevoGFPatterns != "" {
+			glCfg.Custom["gf_patterns"] = strings.Split(golinkfinderevoGFPatterns, ",")
+		}
+		cfg.Source.Sources["golinkfinderevo"] = glCfg
 	}
 
 	// Handle help and version flags

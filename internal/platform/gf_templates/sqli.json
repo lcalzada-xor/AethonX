@@ -1,0 +1,20 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "[?&](id|user|account|userid|accountid|uid|aid)=",
+    "[?&](page|p|pagenum|pageno|pagenumber)=",
+    "[?&](product|productid|prod|item|itemid)=",
+    "[?&](category|cat|categoryid|catid)=",
+    "[?&](search|query|q|keyword|term)=",
+    "[?&](filter|sort|order|orderby|sortby)=",
+    "[?&](table|column|field|from|where)=",
+    "[?&](select|union|insert|update|delete|drop)=",
+    "[?&](sql|exec|execute|cmd|command)=",
+    "[?&](db|database|schema|proc|procedure)=",
+    "[?&](limit|offset|start|count|rows)=",
+    "[?&](email|mail|username|user_name)=",
+    "[?&](file|path|dir|folder|include)=",
+    "[?&](name|title|description|comment|message)=",
+    "[?&](key|value|param|parameter|var)="
+  ]
+}

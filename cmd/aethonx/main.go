@@ -23,6 +23,8 @@ import (
 
 	// Import sources for auto-registration via init()
 	_ "aethonx/internal/sources/crtsh"
+	_ "aethonx/internal/sources/dnsx"
+	_ "aethonx/internal/sources/golinkfinderevo"
 	_ "aethonx/internal/sources/httpx"
 	_ "aethonx/internal/sources/rdap"
 	_ "aethonx/internal/sources/shodan"

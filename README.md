@@ -76,6 +76,46 @@ go mod tidy
 go build -o aethonx ./cmd/aethonx
 ```
 
+### 4️⃣ Instalar dependencias externas (opcional)
+
+AethonX requiere algunas herramientas externas para funcionar completamente:
+
+**Herramientas requeridas:**
+- `subfinder` - Subdomain discovery
+- `httpx` - HTTP probing
+- `dnsx` - DNS resolution
+- `waybackurls` - Historical URLs from Wayback Machine
+- `golinkfinder` - Endpoint/secret discovery in JS/HTML (Stage 3)
+
+**Instalación rápida:**
+
+```bash
+# Instalar herramientas de ProjectDiscovery (subfinder, httpx, dnsx)
+make install-tools
+
+# O instalar golinkfinder manualmente:
+bash scripts/install-golinkfinder.sh
+```
+
+**Instalación manual de golinkfinder:**
+
+```bash
+cd /tmp
+git clone https://github.com/lcalzada-xor/GoLinkfinderEVO.git
+cd GoLinkfinderEVO
+go build -o ~/go/bin/golinkfinder
+```
+
+**Verificar instalación:**
+
+```bash
+subfinder -version
+httpx -version
+dnsx -version
+waybackurls -h
+golinkfinder -h
+```
+
 ---
 
 ## 🧰 Uso

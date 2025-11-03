@@ -35,8 +35,11 @@ type IPMetadata struct {
 	CloudProvider   string // aws, azure, gcp, etc.
 
 	// DNS
-	PTRRecord  string // Reverse DNS
-	ReverseDNS string // Hostname
+	PTRRecord  string   // Reverse DNS (legacy single)
+	PTRRecords []string // Reverse DNS records (dnsx enrichment)
+	ReverseDNS string   // Hostname
+	DNSSource  string   // Source of DNS data (dnsx, shodan, etc.)
+	CDNProvider string  // CDN detection from dnsx
 
 	// Puertos y servicios
 	OpenPorts       []int            // Lista simple de puertos abiertos
@@ -80,7 +83,12 @@ func (i *IPMetadata) ToMap() map[string]string {
 
 	// DNS
 	SetIfNotEmpty(m, "ptr_record", i.PTRRecord)
+	if len(i.PTRRecords) > 0 {
+		m["ptr_records"] = StringSliceToCSV(i.PTRRecords)
+	}
 	SetIfNotEmpty(m, "reverse_dns", i.ReverseDNS)
+	SetIfNotEmpty(m, "dns_source", i.DNSSource)
+	SetIfNotEmpty(m, "cdn_provider", i.CDNProvider)
 
 	// Puertos
 	if len(i.OpenPorts) > 0 {
@@ -131,7 +139,10 @@ func (i *IPMetadata) FromMap(m map[string]string) error {
 
 	// DNS
 	i.PTRRecord = GetString(m, "ptr_record", "")
+	i.PTRRecords = CSVToStringSlice(GetString(m, "ptr_records", ""))
 	i.ReverseDNS = GetString(m, "reverse_dns", "")
+	i.DNSSource = GetString(m, "dns_source", "")
+	i.CDNProvider = GetString(m, "cdn_provider", "")
 
 	// Puertos
 	i.OpenPorts = CSVToIntSlice(GetString(m, "open_ports", ""))

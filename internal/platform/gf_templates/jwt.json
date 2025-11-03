@@ -1,0 +1,9 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}",
+    "['\"]Bearer\\s+eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+['\"]",
+    "Authorization[\"']?\\s*[:=]\\s*[\"']?Bearer\\s+eyJ[A-Za-z0-9_-]+",
+    "token[\"']?\\s*[:=]\\s*[\"']?eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+  ]
+}

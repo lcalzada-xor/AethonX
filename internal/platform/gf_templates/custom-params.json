@@ -1,0 +1,25 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "[?&](admin|debug|test|dev|development|staging)=(true|1|yes|on)",
+    "[?&](role|permission|privilege|access|level)=",
+    "[?&](cmd|command|exec|execute|run|system)=",
+    "[?&](file|path|dir|folder|directory)=",
+    "[?&](include|require|load|import|source)=",
+    "[?&](eval|assert|execute)=",
+    "[?&](shell|bash|sh|powershell|ps1)=",
+    "[?&](daemon|service|process|pid)=",
+    "[?&](log|logs|logfile|logging)=",
+    "[?&](download|upload|transfer|copy)=",
+    "[?&](read|write|open|create|delete)=",
+    "[?&](backup|restore|dump|export|import)=",
+    "[?&](config|configuration|settings|options)=",
+    "[?&](password|passwd|pwd|pass|secret)=",
+    "[?&](key|token|auth|session|cookie)=",
+    "[?&](user|username|userid|uid|account)=",
+    "[?&](root|administrator|superuser|su)=",
+    "[?&](localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0)=",
+    "[?&](proxy|socks|vpn|tunnel)=",
+    "[?&](port|socket|bind|listen)="
+  ]
+}

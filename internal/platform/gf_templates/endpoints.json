@@ -1,0 +1,30 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "/api/v[0-9]+/[a-zA-Z0-9/_-]+",
+    "/v[0-9]+/[a-zA-Z0-9/_-]+",
+    "/api/[a-zA-Z0-9/_-]+",
+    "/(rest|restful)/[a-zA-Z0-9/_-]+",
+    "/(graphql|gql)(/[a-zA-Z0-9/_-]+)?",
+    "/oauth2?/[a-zA-Z0-9/_-]+",
+    "/auth/[a-zA-Z0-9/_-]+",
+    "/admin/[a-zA-Z0-9/_-]+",
+    "/internal/[a-zA-Z0-9/_-]+",
+    "/private/[a-zA-Z0-9/_-]+",
+    "/secure/[a-zA-Z0-9/_-]+",
+    "/swagger(/ui)?",
+    "/openapi\\.json",
+    "/api-docs",
+    "/docs/api",
+    "/redoc",
+    "\\.(json|xml|yaml|yml)([?#]|$)",
+    "/[a-zA-Z0-9/_-]+\\.(json|xml|yaml|yml)([?#]|$)",
+    "https?://[^\\s\"'<>]+/api/",
+    "https?://[^\\s\"'<>]+/v[0-9]+/",
+    "https?://api\\.[^\\s\"'<>]+",
+    "/health(/check)?",
+    "/status",
+    "/metrics",
+    "/actuator(/[a-zA-Z0-9/_-]+)?"
+  ]
+}

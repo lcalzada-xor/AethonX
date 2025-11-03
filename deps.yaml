@@ -66,6 +66,34 @@ external_tools:
       expected_contains: "Usage"
     min_version: "0.1.0"
 
+  - name: dnsx
+    description: "Project Discovery's DNS resolution and validation tool"
+    required: true
+    type: binary
+    install:
+      github:
+        repo: projectdiscovery/dnsx
+        asset_patterns:
+          linux_amd64: "dnsx_*_linux_amd64.zip"
+          linux_arm64: "dnsx_*_linux_arm64.zip"
+          darwin_amd64: "dnsx_*_macOS_amd64.zip"
+          darwin_arm64: "dnsx_*_macOS_arm64.zip"
+          windows_amd64: "dnsx_*_windows_amd64.zip"
+        binary_name: "dnsx"
+    health_check:
+      command: "dnsx"
+      args: ["-version"]
+      expected_contains: "Current Version"
+    min_version: "1.2.0"
+
+  # Note: golinkfinder must be installed manually as it doesn't have GitHub releases yet
+  # Manual installation:
+  #   cd /tmp && git clone https://github.com/lcalzada-xor/GoLinkfinderEVO.git
+  #   cd GoLinkfinderEVO && go build -o golinkfinder
+  #   sudo mv golinkfinder /usr/local/bin/ (or ~/go/bin/)
+  #
+  # Quick install: cd /tmp && git clone https://github.com/lcalzada-xor/GoLinkfinderEVO.git && cd GoLinkfinderEVO && go build -o ~/go/bin/golinkfinder
+
   - name: shodan
     description: "Shodan command-line interface (optional, requires API key)"
     required: false

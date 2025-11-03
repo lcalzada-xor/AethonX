@@ -29,7 +29,8 @@ func init() {
 			domain.ArtifactTypeIP,          // Resolved IPs
 			domain.ArtifactTypeTechnology,  // Detected technologies
 			domain.ArtifactTypeCertificate, // SSL certificates
-			domain.ArtifactTypeSubdomain,   // Subdomains from SANs
+			// NOTE: Removed Subdomain from outputs to avoid circular dependency with dnsx
+			// Subdomains from SANs are still extracted but not declared as output
 		},
 	})
 
