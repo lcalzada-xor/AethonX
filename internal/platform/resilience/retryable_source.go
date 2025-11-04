@@ -157,6 +157,112 @@ func (r *RetryableSource) Run(ctx context.Context, target domain.Target) (*domai
 	return nil, fmt.Errorf("source %s failed after %d attempts: %w", r.source.Name(), attempt+1, lastErr)
 }
 
+// RunWithInput executes the source with input artifacts if the wrapped source supports it.
+// Implements ports.InputConsumer interface by delegation.
+func (r *RetryableSource) RunWithInput(ctx context.Context, target domain.Target, input *domain.ScanResult) (*domain.ScanResult, error) {
+	// Validate input
+	if input == nil {
+		r.logger.Warn("nil input provided to RunWithInput, falling back to Run()")
+		return r.Run(ctx, target)
+	}
+
+	// Check if wrapped source implements InputConsumer
+	consumer, ok := r.source.(ports.InputConsumer)
+	if !ok {
+		// Wrapped source doesn't implement InputConsumer, fall back to Run
+		r.logger.Debug("wrapped source does not implement InputConsumer, using Run()")
+		return r.Run(ctx, target)
+	}
+
+	// Check circuit breaker
+	if r.circuitBreaker != nil && !r.circuitBreaker.Allow() {
+		r.logger.Warn("circuit breaker open, skipping source")
+		return nil, fmt.Errorf("circuit breaker open for source %s: %w", r.source.Name(), ErrCircuitOpen)
+	}
+
+	var lastErr error
+	attempt := 0
+
+	for attempt <= r.maxRetries {
+		// Log attempt
+		if attempt > 0 {
+			r.logger.Info("retrying source with input",
+				"attempt", attempt,
+				"max_retries", r.maxRetries,
+			)
+		}
+
+		// Execute source with input
+		result, err := consumer.RunWithInput(ctx, target, input)
+
+		if err == nil {
+			// Success
+			if r.circuitBreaker != nil {
+				r.circuitBreaker.RecordSuccess()
+			}
+			if attempt > 0 {
+				r.logger.Info("source succeeded after retry",
+					"attempts", attempt+1,
+				)
+			}
+			return result, nil
+		}
+
+		// Error occurred
+		lastErr = err
+		r.logger.Warn("source with input failed",
+			"attempt", attempt+1,
+			"error", err.Error(),
+		)
+
+		// Check if we should retry
+		if attempt >= r.maxRetries {
+			break
+		}
+
+		// Check context cancellation before retry
+		if ctx.Err() != nil {
+			r.logger.Warn("context cancelled, aborting retries")
+			if r.circuitBreaker != nil {
+				r.circuitBreaker.RecordFailure()
+			}
+			return nil, fmt.Errorf("context cancelled after %d attempts: %w", attempt+1, ctx.Err())
+		}
+
+		// Calculate backoff delay
+		backoff := r.calculateBackoff(attempt)
+		r.logger.Debug("backing off before retry",
+			"delay_ms", backoff.Milliseconds(),
+		)
+
+		// Wait with context cancellation support
+		select {
+		case <-time.After(backoff):
+			// Continue to next attempt
+		case <-ctx.Done():
+			r.logger.Warn("context cancelled during backoff")
+			if r.circuitBreaker != nil {
+				r.circuitBreaker.RecordFailure()
+			}
+			return nil, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
+		}
+
+		attempt++
+	}
+
+	// All retries exhausted
+	if r.circuitBreaker != nil {
+		r.circuitBreaker.RecordFailure()
+	}
+
+	r.logger.Warn("source with input failed after all retries",
+		"attempts", attempt+1,
+		"last_error", lastErr.Error(),
+	)
+
+	return nil, fmt.Errorf("source %s failed after %d attempts: %w", r.source.Name(), attempt+1, lastErr)
+}
+
 // Close cierra el source subyacente.
 func (r *RetryableSource) Close() error {
 	return r.source.Close()

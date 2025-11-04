@@ -548,10 +548,18 @@ func (p *PipelineOrchestrator) executeSourceInStage(ctx context.Context, source 
 
 	// Verificar si la source implementa InputConsumer
 	if consumer, ok := source.(ports.InputConsumer); ok {
+		p.logger.Debug("source implements InputConsumer",
+			"source", sourceName,
+			"type", fmt.Sprintf("%T", source),
+		)
 		// Filtrar artifacts según InputArtifacts declarados
 		filteredInput := p.filterInputArtifacts(source, inputArtifacts)
 		result, err = consumer.RunWithInput(ctx, inputArtifacts.Target, filteredInput)
 	} else {
+		p.logger.Debug("source does NOT implement InputConsumer, using Run()",
+			"source", sourceName,
+			"type", fmt.Sprintf("%T", source),
+		)
 		// Fallback: ejecutar sin inputs (source legacy)
 		result, err = source.Run(ctx, inputArtifacts.Target)
 	}
@@ -668,6 +676,16 @@ func (p *PipelineOrchestrator) filterInputArtifacts(source ports.Source, input *
 	meta, exists := p.sourceMetadata[sourceName]
 	if !exists || len(meta.InputArtifacts) == 0 {
 		// Sin metadata o sin InputArtifacts: retornar vacío
+		p.logger.Warn("no input artifacts metadata for source",
+			"source", sourceName,
+			"exists", exists,
+			"input_artifacts_len", func() int {
+				if exists {
+					return len(meta.InputArtifacts)
+				}
+				return 0
+			}(),
+		)
 		return domain.NewScanResult(input.Target)
 	}
 
@@ -679,15 +697,19 @@ func (p *PipelineOrchestrator) filterInputArtifacts(source ports.Source, input *
 
 	// Filtrar artifacts
 	filtered := domain.NewScanResult(input.Target)
+	inputTypeCount := make(map[domain.ArtifactType]int)
 	for _, artifact := range input.Artifacts {
+		inputTypeCount[artifact.Type]++
 		if requiredTypes[artifact.Type] {
 			filtered.Artifacts = append(filtered.Artifacts, artifact)
 		}
 	}
 
-	p.logger.Debug("filtered input artifacts",
+	p.logger.Info("filtered input artifacts",
 		"source", sourceName,
 		"total_input", len(input.Artifacts),
+		"input_types", inputTypeCount,
+		"required_types", meta.InputArtifacts,
 		"filtered_output", len(filtered.Artifacts),
 	)
 

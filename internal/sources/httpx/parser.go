@@ -134,35 +134,62 @@ func (p *Parser) ParseResponse(resp *HTTPXResponse, target domain.Target) []*dom
 	return artifacts
 }
 
-// createURLArtifact creates a URL artifact with ServiceMetadata.
+// createURLArtifact creates a URL artifact with DomainMetadata.
 func (p *Parser) createURLArtifact(resp *HTTPXResponse, hostname string) *domain.Artifact {
 	artifact := domain.NewArtifact(domain.ArtifactTypeURL, resp.URL, p.sourceName)
 
-	// Create ServiceMetadata
-	serviceMeta := &metadata.ServiceMetadata{
-		Port:            parsePort(resp.Port),
-		Protocol:        strings.ToLower(resp.Scheme),
-		State:           "open",
-		Banner:          resp.Webserver,
-		Product:         extractProduct(resp.Webserver),
-		Version:         extractVersion(resp.Webserver),
-		DetectionMethod: "http_probe",
-		Confidence:      1.0,
-		ScanTool:        "httpx",
-		ParentIP:        resp.Host, // resp.Host contains the resolved IP
+	// Create DomainMetadata (URLs are web resources, not network services)
+	domainMeta := metadata.NewDomainMetadata()
+
+	// HTTP information
+	domainMeta.HTTPStatus = resp.StatusCode
+	domainMeta.HTTPTitle = resp.Title
+	domainMeta.HTTPServer = resp.Webserver
+	domainMeta.IsAlive = true
+	domainMeta.ProbeStatus = "alive"
+	domainMeta.LastProbed = time.Now().Format(time.RFC3339)
+	domainMeta.ProbeSource = "httpx"
+
+	// Resolved IP
+	if resp.Host != "" {
+		domainMeta.ResolvedIPs = []string{resp.Host}
 	}
 
-	// Add SSL info if HTTPS
+	// Add redirect if present (use chain if available)
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 && len(resp.Chain) > 0 {
+		// Get the final URL from the last chain item
+		lastChainItem := resp.Chain[len(resp.Chain)-1]
+		if lastChainItem.Location != "" {
+			domainMeta.HTTPRedirect = lastChainItem.Location
+		} else {
+			domainMeta.HTTPRedirect = lastChainItem.RequestURL
+		}
+	}
+
+	// Add SSL information if HTTPS
 	if resp.Scheme == "https" && resp.TLS != nil {
-		serviceMeta.SSLEnabled = true
-		serviceMeta.SSLCert = resp.TLS.SubjectCN
+		domainMeta.HasSSL = true
+		domainMeta.SSLIssuer = resp.TLS.IssuerCN
+		domainMeta.SSLValidFrom = resp.TLS.NotBefore
+		domainMeta.SSLValidUntil = resp.TLS.NotAfter
+		domainMeta.SSLWildcard = resp.TLS.WildcardCert
 	}
 
-	artifact.TypedMetadata = serviceMeta
+	// Add CDN/WAF information
+	if resp.CDN.Bool() {
+		domainMeta.CDN = resp.CDNName
+	}
+
+	artifact.TypedMetadata = domainMeta
 	artifact.Confidence = 1.0
 
 	// Add status-based tags to URL artifact
 	p.addStatusTags(artifact, resp.StatusCode)
+
+	// Add content-type as tag for downstream filtering
+	if resp.ContentType != "" {
+		artifact.Tags = append(artifact.Tags, "content-type:"+resp.ContentType)
+	}
 
 	// Add relation to parent domain
 	if hostname != "" {

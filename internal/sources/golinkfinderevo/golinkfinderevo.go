@@ -4,8 +4,10 @@ package golinkfinderevo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/core/domain/metadata"
+	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/sources/common"
 )
@@ -24,6 +27,23 @@ const (
 	defaultMaxScriptFiles = 50
 	defaultMaxHTMLFiles   = 50
 )
+
+// GoLinkfinderResponse represents the JSON output structure from golinkfinder binary.
+type GoLinkfinderResponse struct {
+	Meta struct {
+		GeneratedAt    string `json:"GeneratedAt"`
+		TotalResources int    `json:"TotalResources"`
+		TotalEndpoints int    `json:"TotalEndpoints"`
+	} `json:"meta"`
+	Resources []struct {
+		Resource  string `json:"Resource"`
+		Endpoints []struct {
+			Link    string `json:"Link"`
+			Context string `json:"Context"`
+			Line    int    `json:"Line"`
+		} `json:"Endpoints"`
+	} `json:"resources"`
+}
 
 // URLCategory categorizes URLs by content type.
 type URLCategory string
@@ -57,6 +77,12 @@ type GoLinkfinderEvoSource struct {
 	gfParser        *GFParser
 	customFlags     []string
 }
+
+// Compile-time interface assertions
+var (
+	_ ports.Source        = (*GoLinkfinderEvoSource)(nil)
+	_ ports.InputConsumer = (*GoLinkfinderEvoSource)(nil)
+)
 
 // New creates a new GoLinkfinderEvoSource with default configuration.
 func New(logger logx.Logger) *GoLinkfinderEvoSource {
@@ -141,10 +167,32 @@ func (g *GoLinkfinderEvoSource) RunWithInput(
 ) (*domain.ScanResult, error) {
 	startTime := time.Now()
 
+	// Validate input
+	if input == nil {
+		g.GetLogger().Warn("nil input provided to RunWithInput")
+		result := domain.NewScanResult(target)
+		result.AddWarning(sourceName, "nil input provided")
+		return result, nil
+	}
+
+	if input.Artifacts == nil {
+		g.GetLogger().Warn("nil artifacts array in input")
+		result := domain.NewScanResult(target)
+		result.AddWarning(sourceName, "nil artifacts array in input")
+		return result, nil
+	}
+
+	// Debug: log artifact types received
+	artifactTypes := make(map[domain.ArtifactType]int)
+	for _, a := range input.Artifacts {
+		artifactTypes[a.Type]++
+	}
+
 	g.GetLogger().Info("starting golinkfinderevo scan",
 		"target", target.Root,
 		"profile", g.profile,
 		"input_artifacts", len(input.Artifacts),
+		"artifact_types", artifactTypes,
 	)
 
 	// Filter input URLs: only alive HTTP URLs with JS/HTML content
@@ -167,20 +215,11 @@ func (g *GoLinkfinderEvoSource) RunWithInput(
 		"max_html_files", g.maxHTMLFiles,
 	)
 
-	// Build command arguments
-	args := g.buildCommandArgs(target, processURLs)
-
-	// Execute golinkfinderevo with stdin input (similar to httpx pattern)
-	result, stderrOutput, err := g.executeWithStdin(ctx, target, processURLs, args)
+	// Execute golinkfinderevo with temp files (golinkfinder doesn't support stdin)
+	result, err := g.executeWithTempFiles(ctx, target, processURLs)
 
 	if result == nil {
 		return nil, fmt.Errorf("golinkfinderevo failed to start: %w", err)
-	}
-
-	// Handle stderr warnings
-	if len(stderrOutput) > 0 {
-		g.GetLogger().Debug("golinkfinderevo stderr", "output", stderrOutput)
-		result.AddWarning(sourceName, fmt.Sprintf("stderr: %s", stderrOutput))
 	}
 
 	duration := time.Since(startTime)
@@ -228,11 +267,14 @@ func (g *GoLinkfinderEvoSource) filterURLsForCrawling(artifacts []*domain.Artifa
 			continue
 		}
 
+		// Extract content-type for logging/debugging
+		contentType := g.extractContentType(a.Tags)
+
 		candidates = append(candidates, URLCandidate{
 			URL:         a.Value,
 			Category:    category,
 			StatusCode:  statusCode,
-			ContentType: "", // Content-type detection via extension/tags
+			ContentType: contentType,
 		})
 	}
 
@@ -244,75 +286,95 @@ func (g *GoLinkfinderEvoSource) filterURLsForCrawling(artifacts []*domain.Artifa
 	return candidates
 }
 
-// categorizeURL categorizes a URL by file extension and metadata.
+// categorizeURL categorizes a URL based on content-type and file extension.
+// JavaScript: Scripts with .js/.mjs/.jsx extension OR application/javascript content-type
+// HTML: ANY endpoint that returns text/html content-type (regardless of extension)
 func (g *GoLinkfinderEvoSource) categorizeURL(artifact *domain.Artifact) URLCategory {
 	urlLower := strings.ToLower(artifact.Value)
 
-	// Check by file extension first - explicit JS files
+	// Extract content-type from tags (format: "content-type:text/html; charset=utf-8")
+	contentType := g.extractContentType(artifact.Tags)
+	contentTypeLower := strings.ToLower(contentType)
+
+	// Priority 1: JavaScript detection
+	// Check content-type for JavaScript MIME types
+	if strings.Contains(contentTypeLower, "application/javascript") ||
+		strings.Contains(contentTypeLower, "application/x-javascript") ||
+		strings.Contains(contentTypeLower, "text/javascript") ||
+		strings.Contains(contentTypeLower, "application/ecmascript") {
+		return URLCategoryJavaScript
+	}
+
+	// Check file extension for JavaScript files (.js, .mjs, .jsx)
 	if strings.HasSuffix(urlLower, ".js") ||
 		strings.HasSuffix(urlLower, ".mjs") ||
 		strings.HasSuffix(urlLower, ".jsx") {
 		return URLCategoryJavaScript
 	}
 
-	// Explicit HTML files
-	if strings.HasSuffix(urlLower, ".html") ||
-		strings.HasSuffix(urlLower, ".htm") {
+	// Priority 2: HTML detection
+	// ANY endpoint that returns text/html is categorized as HTML
+	// This includes /api/users, /login, /dashboard, etc. - not just .html files
+	if strings.Contains(contentTypeLower, "text/html") {
 		return URLCategoryHTML
 	}
 
-	// Skip non-HTML resource types by extension
-	// (images, videos, documents, etc.)
+	// Priority 3: Exclude known non-HTML/non-JS resources
+	// Images, videos, documents, data files, etc.
 	skipExtensions := []string{
-		".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", // Images
-		".css", ".woff", ".woff2", ".ttf", ".eot", // Styles/Fonts
-		".pdf", ".zip", ".tar", ".gz", ".rar", // Documents/Archives
-		".mp4", ".avi", ".mov", ".webm", // Videos
-		".mp3", ".wav", ".ogg", // Audio
-		".xml", ".json", ".txt", ".csv", // Data files (not HTML)
+		".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp", // Images
+		".css", ".woff", ".woff2", ".ttf", ".eot", ".otf", // Styles/Fonts
+		".pdf", ".zip", ".tar", ".gz", ".rar", ".7z", // Documents/Archives
+		".mp4", ".avi", ".mov", ".webm", ".mkv", // Videos
+		".mp3", ".wav", ".ogg", ".flac", // Audio
+		".xml", ".json", ".txt", ".csv", ".yml", ".yaml", // Data files
 	}
+
 	for _, ext := range skipExtensions {
 		if strings.HasSuffix(urlLower, ext) {
 			return URLCategoryOther
 		}
 	}
 
-	// Check tags for content-type hints
-	hasHTMLContentType := false
-	for _, tag := range artifact.Tags {
-		tagLower := strings.ToLower(tag)
+	// Exclude known non-HTML content-types
+	excludeContentTypes := []string{
+		"application/json",
+		"application/xml",
+		"text/plain",
+		"text/css",
+		"image/",
+		"video/",
+		"audio/",
+		"application/pdf",
+		"application/zip",
+	}
 
-		// Exclude JSON/XML/plain text content types
-		if strings.Contains(tagLower, "application/json") ||
-			strings.Contains(tagLower, "application/xml") ||
-			strings.Contains(tagLower, "text/plain") ||
-			strings.Contains(tagLower, "text/css") {
+	for _, excludeType := range excludeContentTypes {
+		if strings.Contains(contentTypeLower, excludeType) {
 			return URLCategoryOther
 		}
-
-		// Match "javascript" or "ecmascript" but not "json"
-		if strings.Contains(tagLower, "javascript") || strings.Contains(tagLower, "ecmascript") {
-			return URLCategoryJavaScript
-		}
-		// Match "text/javascript" explicitly
-		if strings.Contains(tagLower, "text/javascript") {
-			return URLCategoryJavaScript
-		}
-		// Match HTML content type
-		if strings.Contains(tagLower, "text/html") {
-			hasHTMLContentType = true
-		}
 	}
 
-	// If explicit HTML content-type, categorize as HTML
-	if hasHTMLContentType {
-		return URLCategoryHTML
-	}
+	// Default: Unknown content-type, skip to avoid false positives
+	// We only want explicit JavaScript files or HTML content
+	return URLCategoryOther
+}
 
-	// Default: if it's an alive URL from httpx without a non-HTML extension,
-	// assume it's HTML (most web pages don't have .html extension)
-	// GoLinkfinderEVO will handle it and extract any embedded JS
-	return URLCategoryHTML
+// extractContentType extracts the content-type value from artifact tags.
+// Tags format: "content-type:text/html; charset=utf-8"
+func (g *GoLinkfinderEvoSource) extractContentType(tags []string) string {
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, "content-type:") {
+			// Extract everything after "content-type:"
+			contentType := strings.TrimPrefix(tag, "content-type:")
+			// Remove charset and other parameters (e.g., "text/html; charset=utf-8" -> "text/html")
+			if idx := strings.Index(contentType, ";"); idx != -1 {
+				contentType = contentType[:idx]
+			}
+			return strings.TrimSpace(contentType)
+		}
+	}
+	return ""
 }
 
 // applyURLLimits applies max file limits to URL candidates.
@@ -322,17 +384,24 @@ func (g *GoLinkfinderEvoSource) applyURLLimits(candidates []URLCandidate) []stri
 	urls := make([]string, 0)
 
 	for _, c := range candidates {
-		if c.Category == URLCategoryJavaScript && jsCount < g.maxScriptFiles {
-			urls = append(urls, c.URL)
-			jsCount++
-		} else if c.Category == URLCategoryHTML && htmlCount < g.maxHTMLFiles {
-			urls = append(urls, c.URL)
-			htmlCount++
+		// Add JavaScript files up to limit
+		if c.Category == URLCategoryJavaScript {
+			if jsCount < g.maxScriptFiles {
+				urls = append(urls, c.URL)
+				jsCount++
+			}
+			// Skip if limit reached, but continue processing other categories
+			continue
 		}
 
-		// Stop if both limits reached
-		if jsCount >= g.maxScriptFiles && htmlCount >= g.maxHTMLFiles {
-			break
+		// Add HTML files up to limit
+		if c.Category == URLCategoryHTML {
+			if htmlCount < g.maxHTMLFiles {
+				urls = append(urls, c.URL)
+				htmlCount++
+			}
+			// Skip if limit reached, but continue processing
+			continue
 		}
 	}
 
@@ -346,39 +415,41 @@ func (g *GoLinkfinderEvoSource) applyURLLimits(candidates []URLCandidate) []stri
 }
 
 // buildCommandArgs builds golinkfinderevo command arguments.
-func (g *GoLinkfinderEvoSource) buildCommandArgs(target domain.Target, urls []string) []string {
+// Note: golinkfinder uses single-dash flags (e.g., -input, -output, -workers)
+func (g *GoLinkfinderEvoSource) buildCommandArgs(target domain.Target, inputFile, outputFile string) []string {
 	profileCfg := GetProfile(g.profile)
 
 	args := []string{
-		"-i", "-", // Read from stdin
-		"--json", // JSON output
-		"--workers", strconv.Itoa(g.workers),
-		"--timeout", fmt.Sprintf("%ds", int(profileCfg.Timeout.Seconds())),
-		"--scope", target.Root, // Restrict to target domain
-		"--scope-include-subdomains",
+		"-input", inputFile, // Input URLs file
+		"-output", fmt.Sprintf("json=%s", outputFile), // JSON output file
+		"-workers", strconv.Itoa(g.workers),
+		"-timeout", profileCfg.Timeout.String(), // e.g., "60s"
+		"-scope", target.Root,                   // Restrict to target domain
+		"-scope-include-subdomains",
 	}
 
 	// Recursion depth
 	if profileCfg.MaxRecursion > 0 {
-		args = append(args, "--recursion-depth", strconv.Itoa(profileCfg.MaxRecursion))
+		args = append(args, "-recursive", strconv.Itoa(profileCfg.MaxRecursion))
 	}
 
-	// GF integration
-	if len(g.gfPatterns) > 0 && g.gfPatterns[0] != "" {
-		args = append(args,
-			"--gf", strings.Join(g.gfPatterns, ","),
-			"--gf-path", g.gfTemplatesPath,
-		)
-	} else if len(profileCfg.GFPatterns) > 0 {
-		args = append(args,
-			"--gf", strings.Join(profileCfg.GFPatterns, ","),
-			"--gf-path", g.gfTemplatesPath,
-		)
-	}
+	// GF integration - temporarily disabled due to incompatibility
+	// TODO: Fix GF integration - golinkfinder may not support these flags or template format
+	// if len(g.gfPatterns) > 0 && g.gfPatterns[0] != "" {
+	// 	args = append(args,
+	// 		"-gf", strings.Join(g.gfPatterns, ","),
+	// 		"-gf-path", g.gfTemplatesPath,
+	// 	)
+	// } else if len(profileCfg.GFPatterns) > 0 {
+	// 	args = append(args,
+	// 		"-gf", strings.Join(profileCfg.GFPatterns, ","),
+	// 		"-gf-path", g.gfTemplatesPath,
+	// 	)
+	// }
 
 	// JavaScript rendering (for ProfileDeep)
 	if profileCfg.EnableJSRendering {
-		args = append(args, "--render")
+		args = append(args, "-render")
 	}
 
 	// Custom flags
@@ -444,87 +515,136 @@ func (g *GoLinkfinderEvoSource) SetCustomFlags(flags []string) {
 	g.customFlags = flags
 }
 
-// executeWithStdin executes golinkfinderevo with stdin input (follows httpx pattern).
-func (g *GoLinkfinderEvoSource) executeWithStdin(
+// executeWithTempFiles executes golinkfinderevo using temporary input/output files.
+// golinkfinder doesn't support stdin, so we write URLs to a temp file and read JSON output from another temp file.
+func (g *GoLinkfinderEvoSource) executeWithTempFiles(
 	ctx context.Context,
 	target domain.Target,
 	urls []string,
-	args []string,
-) (*domain.ScanResult, string, error) {
+) (*domain.ScanResult, error) {
 	result := domain.NewScanResult(target)
 
-	// Create handler for processing output
-	handler := &GoLinkfinderEvoHandler{
-		parser:     g.parser,
-		gfParser:   g.gfParser,
-		target:     target,
-		logger:     g.GetLogger(),
-		reports:    make([]*ResourceReport, 0),
-		gfFindings: make(GFResults),
+	// Apply timeout to context if not already set
+	execCtx := ctx
+	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > defaultTimeout {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, defaultTimeout)
+		defer cancel()
 	}
 
-	// Build command with context
-	cmd := exec.CommandContext(ctx, g.GetExecPath(), args...)
-
-	// Create stdout pipe for streaming JSON
-	stdout, err := cmd.StdoutPipe()
+	// Create temporary input file with URLs
+	inputFile, err := os.CreateTemp("", "golinkfinder-input-*.txt")
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create stdout pipe: %w", err)
+		return nil, fmt.Errorf("failed to create temp input file: %w", err)
+	}
+	defer os.Remove(inputFile.Name())
+
+	// Write URLs to input file
+	for _, url := range urls {
+		if _, err := fmt.Fprintln(inputFile, url); err != nil {
+			return nil, fmt.Errorf("failed to write URL to input file: %w", err)
+		}
 	}
 
-	// Create stderr pipe for warnings
-	stderr, err := cmd.StderrPipe()
+	// Close input file before executing command
+	if err := inputFile.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close input file: %w", err)
+	}
+
+	// Create temporary output file
+	outputFile, err := os.CreateTemp("", "golinkfinder-output-*.json")
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create stderr pipe: %w", err)
+		return nil, fmt.Errorf("failed to create temp output file: %w", err)
 	}
+	outputFileName := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputFileName)
 
-	// Create stdin pipe to send URLs
-	stdin, err := cmd.StdinPipe()
+	// Build command arguments
+	args := g.buildCommandArgs(target, inputFile.Name(), outputFileName)
+
+	// Build command with timeout-enforced context
+	cmd := exec.CommandContext(execCtx, g.GetExecPath(), args...)
+
+	// Capture stderr for debugging
+	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create stdin pipe: %w", err)
+		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
 
-	// Start golinkfinderevo process
+	// Start process
 	if err := cmd.Start(); err != nil {
-		return nil, "", fmt.Errorf("failed to start golinkfinderevo: %w", err)
+		return nil, fmt.Errorf("failed to start golinkfinderevo: %w", err)
 	}
 
 	g.GetLogger().Debug("golinkfinderevo process started", "pid", cmd.Process.Pid)
 
-	// Write URLs to stdin in goroutine
+	// Read stderr in background
+	stderrChan := make(chan string, 1)
 	go func() {
-		defer stdin.Close()
-		for _, url := range urls {
-			fmt.Fprintln(stdin, url)
+		stderrBytes, err := io.ReadAll(stderrPipe)
+		if err != nil {
+			g.GetLogger().Debug("failed to read stderr", "error", err)
 		}
-		g.GetLogger().Debug("wrote URLs to stdin", "count", len(urls))
+		stderrChan <- string(stderrBytes)
 	}()
-
-	// Process stdout line-by-line using ProcessOutput
-	if err := g.ProcessOutput(stdout, handler); err != nil {
-		g.GetLogger().Warn("output processing error", "error", err.Error())
-	}
-
-	// Capture stderr for warnings
-	stderrBytes, _ := io.ReadAll(stderr)
-	stderrStr := string(stderrBytes)
 
 	// Wait for process to complete
 	waitErr := cmd.Wait()
 
-	// Finalize handler (always, even with error)
-	if err := handler.Finalize(); err != nil {
-		g.GetLogger().Warn("handler finalization error", "error", err.Error())
+	// Get stderr output
+	stderrStr := <-stderrChan
+	if len(stderrStr) > 0 {
+		g.GetLogger().Debug("golinkfinderevo stderr", "output", stderrStr)
+	}
+
+	// Handle process error
+	if waitErr != nil {
+		g.GetLogger().Warn("golinkfinderevo process failed",
+			"error", waitErr.Error(),
+			"stderr", stderrStr,
+			"exit_code", cmd.ProcessState.ExitCode(),
+		)
+		return nil, fmt.Errorf("golinkfinderevo failed: %w (stderr: %s)", waitErr, stderrStr)
+	}
+
+	// Read and parse JSON output file
+	jsonData, err := os.ReadFile(outputFileName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read output file: %w", err)
+	}
+
+	// Parse JSON response
+	var response GoLinkfinderResponse
+	if err := json.Unmarshal(jsonData, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON output: %w", err)
+	}
+
+	// Convert resources to reports
+	reports := make([]*ResourceReport, 0, len(response.Resources))
+	for _, resource := range response.Resources {
+		// Extract endpoint URLs from the structured endpoints
+		endpoints := make([]string, 0, len(resource.Endpoints))
+		for _, ep := range resource.Endpoints {
+			endpoints = append(endpoints, ep.Link)
+		}
+
+		report := &ResourceReport{
+			URL:       resource.Resource,
+			Endpoints: endpoints,
+		}
+		reports = append(reports, report)
 	}
 
 	// Parse GF results if they exist
 	gfFindings, gfErr := g.parseGFResults()
 	if gfErr != nil {
-		g.GetLogger().Warn("failed to parse gf results", "error", gfErr.Error())
+		g.GetLogger().Debug("no gf results found", "error", gfErr.Error())
+		gfFindings = make(GFResults) // Empty results
 	}
 
-	// Convert reports and GF findings to artifacts (always, even with error)
-	artifacts := g.convertToArtifacts(handler.GetReports(), gfFindings, target)
+	// Convert reports and GF findings to artifacts
+	artifacts := g.convertToArtifacts(reports, gfFindings, target)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
@@ -535,34 +655,18 @@ func (g *GoLinkfinderEvoSource) executeWithStdin(
 	}
 	result.Metadata.Environment["golinkfinderevo_urls_processed"] = strconv.Itoa(len(urls))
 	result.Metadata.Environment["golinkfinderevo_profile"] = string(g.profile)
-	result.Metadata.Environment["golinkfinderevo_reports"] = strconv.Itoa(len(handler.GetReports()))
+	result.Metadata.Environment["golinkfinderevo_resources"] = strconv.Itoa(response.Meta.TotalResources)
+	result.Metadata.Environment["golinkfinderevo_endpoints"] = strconv.Itoa(response.Meta.TotalEndpoints)
 	result.Metadata.Environment["golinkfinderevo_gf_patterns"] = strconv.Itoa(len(gfFindings))
 
-	artifactCount := len(result.Artifacts)
-
-	// Handle errors (partial results tolerated and returned)
-	if waitErr != nil {
-		if artifactCount > 0 {
-			g.GetLogger().Warn("golinkfinderevo exited with error but produced partial results",
-				"error", waitErr.Error(),
-				"artifacts", artifactCount,
-			)
-			result.AddWarning(sourceName, fmt.Sprintf("process exited with error: %v", waitErr))
-			// Return partial results + error
-			return result, stderrStr, fmt.Errorf("golinkfinderevo timeout/cancelled but produced %d partial results: %w", artifactCount, waitErr)
-		}
-
-		// No results: return error
-		return nil, stderrStr, fmt.Errorf("golinkfinderevo failed without results: %w", waitErr)
-	}
-
 	g.GetLogger().Info("golinkfinderevo execution successful",
-		"reports", len(handler.GetReports()),
-		"gf_patterns", len(gfFindings),
-		"artifacts", artifactCount,
+		"resources", response.Meta.TotalResources,
+		"endpoints", response.Meta.TotalEndpoints,
+		"gf_findings", len(gfFindings),
+		"artifacts", len(result.Artifacts),
 	)
 
-	return result, stderrStr, nil
+	return result, nil
 }
 
 // Close releases resources.

@@ -270,9 +270,9 @@ func createTestURL(url string, statusCode int, contentType string) *domain.Artif
 
 	artifact.TypedMetadata = domainMeta
 
-	// Add content-type as tag for categorization
+	// Add content-type as tag for categorization (matches httpx format)
 	if contentType != "" {
-		artifact.AddTag("content_type:" + contentType)
+		artifact.Tags = append(artifact.Tags, "content-type:"+contentType)
 	}
 
 	return artifact
