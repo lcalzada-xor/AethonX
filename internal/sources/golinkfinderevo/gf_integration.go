@@ -3,9 +3,7 @@
 package golinkfinderevo
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"aethonx/internal/core/domain"
@@ -25,7 +23,7 @@ type GFFinding struct {
 // Example: {"jwt": [{...}], "api-keys": [{...}]}
 type GFResults map[string][]GFFinding
 
-// GFParser handles parsing and conversion of gf results.
+// GFParser handles conversion of gf results to domain artifacts.
 type GFParser struct {
 	logger logx.Logger
 }
@@ -37,62 +35,9 @@ func NewGFParser(logger logx.Logger) *GFParser {
 	}
 }
 
-// ParseGFJSON parses gf.json output file.
-func (gp *GFParser) ParseGFJSON(gfJSONPath string) (GFResults, error) {
-	// Check if file exists
-	if _, err := os.Stat(gfJSONPath); os.IsNotExist(err) {
-		gp.logger.Debug("gf.json file not found", "path", gfJSONPath)
-		return make(GFResults), nil // Empty results, not an error
-	}
-
-	// Read file
-	data, err := os.ReadFile(gfJSONPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read gf.json: %w", err)
-	}
-
-	// Parse JSON
-	var results GFResults
-	if err := json.Unmarshal(data, &results); err != nil {
-		return nil, fmt.Errorf("failed to parse gf.json: %w", err)
-	}
-
-	gp.logger.Debug("parsed gf results",
-		"patterns", len(results),
-		"total_findings", gp.countFindings(results),
-	)
-
-	return results, nil
-}
-
-// ParseGFText parses gf.txt output file (fallback for non-JSON output).
-func (gp *GFParser) ParseGFText(gfTextPath string) ([]string, error) {
-	// Check if file exists
-	if _, err := os.Stat(gfTextPath); os.IsNotExist(err) {
-		return nil, nil // Empty results
-	}
-
-	// Read file
-	data, err := os.ReadFile(gfTextPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read gf.txt: %w", err)
-	}
-
-	// Split by lines
-	lines := strings.Split(string(data), "\n")
-	findings := make([]string, 0, len(lines))
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			findings = append(findings, line)
-		}
-	}
-
-	return findings, nil
-}
-
 // ConvertToArtifacts converts GF findings into domain artifacts.
+// NOTE: This function is kept for backward compatibility but is no longer used.
+// GF findings are now integrated directly in the JSON output from golinkfinder -o json.
 func (gp *GFParser) ConvertToArtifacts(results GFResults, target domain.Target) []*domain.Artifact {
 	artifacts := make([]*domain.Artifact, 0)
 

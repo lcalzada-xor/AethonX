@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -28,21 +27,39 @@ const (
 	defaultMaxHTMLFiles   = 50
 )
 
-// GoLinkfinderResponse represents the JSON output structure from golinkfinder binary.
-type GoLinkfinderResponse struct {
-	Meta struct {
-		GeneratedAt    string `json:"GeneratedAt"`
-		TotalResources int    `json:"TotalResources"`
-		TotalEndpoints int    `json:"TotalEndpoints"`
-	} `json:"meta"`
-	Resources []struct {
-		Resource  string `json:"Resource"`
-		Endpoints []struct {
-			Link    string `json:"Link"`
-			Context string `json:"Context"`
-			Line    int    `json:"Line"`
-		} `json:"Endpoints"`
-	} `json:"resources"`
+// GoLinkfinderJSONOutput represents the JSON output from golinkfinder -o json
+type GoLinkfinderJSONOutput struct {
+	Resources  []ResourceOutput `json:"resources"`
+	GFFindings GFFindings       `json:"gf_findings"`
+}
+
+// ResourceOutput represents a single resource with its discovered endpoints
+type ResourceOutput struct {
+	Resource  string           `json:"Resource"`
+	Endpoints []EndpointOutput `json:"Endpoints"`
+}
+
+// EndpointOutput represents a discovered endpoint with context
+type EndpointOutput struct {
+	Link    string `json:"Link"`
+	Context string `json:"Context"`
+	Line    int    `json:"Line"`
+}
+
+// GFFindings represents the gf pattern matching results
+type GFFindings struct {
+	Rules    map[string][]GFFindingDetail `json:"rules"`
+	Total    int                          `json:"total"`
+	Findings []GFFindingDetail            `json:"findings"`
+}
+
+// GFFindingDetail represents a single GF pattern match
+type GFFindingDetail struct {
+	Rule     string `json:"rule"`
+	Match    string `json:"match"`
+	Resource string `json:"resource"`
+	Line     int    `json:"line"`
+	Context  string `json:"context"`
 }
 
 // URLCategory categorizes URLs by content type.
@@ -215,8 +232,8 @@ func (g *GoLinkfinderEvoSource) RunWithInput(
 		"max_html_files", g.maxHTMLFiles,
 	)
 
-	// Execute golinkfinderevo with temp files (golinkfinder doesn't support stdin)
-	result, err := g.executeWithTempFiles(ctx, target, processURLs)
+	// Execute golinkfinderevo with stdin/stdout
+	result, err := g.executeWithStdin(ctx, target, processURLs)
 
 	if result == nil {
 		return nil, fmt.Errorf("golinkfinderevo failed to start: %w", err)
@@ -414,17 +431,16 @@ func (g *GoLinkfinderEvoSource) applyURLLimits(candidates []URLCandidate) []stri
 	return urls
 }
 
-// buildCommandArgs builds golinkfinderevo command arguments.
-// Note: golinkfinder uses single-dash flags (e.g., -input, -output, -workers)
-func (g *GoLinkfinderEvoSource) buildCommandArgs(target domain.Target, inputFile, outputFile string) []string {
+// buildCommandArgsStdout builds golinkfinderevo command arguments for stdout-based execution.
+// Uses -o json for stdout output and -gf for integrated pattern matching.
+func (g *GoLinkfinderEvoSource) buildCommandArgsStdout(target domain.Target) []string {
 	profileCfg := GetProfile(g.profile)
 
 	args := []string{
-		"-input", inputFile, // Input URLs file
-		"-output", fmt.Sprintf("json=%s", outputFile), // JSON output file
+		"-o", "json", // JSON output to stdout
 		"-workers", strconv.Itoa(g.workers),
-		"-timeout", profileCfg.Timeout.String(), // e.g., "60s"
-		"-scope", target.Root,                   // Restrict to target domain
+		"-timeout", profileCfg.Timeout.String(),
+		"-scope", target.Root,
 		"-scope-include-subdomains",
 	}
 
@@ -433,19 +449,31 @@ func (g *GoLinkfinderEvoSource) buildCommandArgs(target domain.Target, inputFile
 		args = append(args, "-recursive", strconv.Itoa(profileCfg.MaxRecursion))
 	}
 
-	// GF integration - temporarily disabled due to incompatibility
-	// TODO: Fix GF integration - golinkfinder may not support these flags or template format
-	// if len(g.gfPatterns) > 0 && g.gfPatterns[0] != "" {
-	// 	args = append(args,
-	// 		"-gf", strings.Join(g.gfPatterns, ","),
-	// 		"-gf-path", g.gfTemplatesPath,
-	// 	)
-	// } else if len(profileCfg.GFPatterns) > 0 {
-	// 	args = append(args,
-	// 		"-gf", strings.Join(profileCfg.GFPatterns, ","),
-	// 		"-gf-path", g.gfTemplatesPath,
-	// 	)
-	// }
+	// GF integration - ENABLED with absolute path
+	if len(g.gfPatterns) > 0 && g.gfPatterns[0] != "" {
+		gfPatternsStr := "all"
+		if g.gfPatterns[0] != "all" {
+			gfPatternsStr = strings.Join(g.gfPatterns, ",")
+		}
+
+		// Resolve absolute path for GF templates
+		absGFPath, err := filepath.Abs(g.gfTemplatesPath)
+		if err == nil {
+			args = append(args,
+				"-gf", gfPatternsStr,
+				"-gf-path", absGFPath,
+			)
+			g.GetLogger().Debug("GF integration enabled",
+				"patterns", gfPatternsStr,
+				"path", absGFPath,
+			)
+		} else {
+			g.GetLogger().Warn("failed to resolve GF templates path",
+				"error", err,
+				"path", g.gfTemplatesPath,
+			)
+		}
+	}
 
 	// JavaScript rendering (for ProfileDeep)
 	if profileCfg.EnableJSRendering {
@@ -457,53 +485,96 @@ func (g *GoLinkfinderEvoSource) buildCommandArgs(target domain.Target, inputFile
 		args = append(args, g.customFlags...)
 	}
 
-	g.GetLogger().Debug("built command args", "args", strings.Join(args, " "))
+	g.GetLogger().Debug("built command args for stdout", "args", strings.Join(args, " "))
 
 	return args
 }
 
-// parseGFResults parses gf.json results if they exist.
-func (g *GoLinkfinderEvoSource) parseGFResults() (GFResults, error) {
-	// GF writes results to gf.json in the working directory
-	gfJSONPath := filepath.Join(".", "gf.json")
-
-	findings, err := g.gfParser.ParseGFJSON(gfJSONPath)
-	if err != nil {
-		return nil, err
-	}
-
-	return findings, nil
-}
-
-// convertToArtifacts converts reports and GF findings to domain artifacts.
-func (g *GoLinkfinderEvoSource) convertToArtifacts(
-	reports []*ResourceReport,
-	gfFindings GFResults,
+// convertOutputToArtifacts converts GoLinkfinderJSONOutput to domain artifacts.
+func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
+	output GoLinkfinderJSONOutput,
 	target domain.Target,
 ) []*domain.Artifact {
 	artifacts := make([]*domain.Artifact, 0)
 
-	// Convert endpoint reports
-	reportArtifacts := g.parser.ConvertMultipleReports(reports, target)
-	artifacts = append(artifacts, reportArtifacts...)
+	// Convert resources to endpoint artifacts
+	for _, resource := range output.Resources {
+		for _, ep := range resource.Endpoints {
+			fullURL := g.parser.normalizeEndpoint(resource.Resource, ep.Link)
+			if fullURL == "" {
+				continue
+			}
 
-	// Extract parameters from endpoints
-	for _, artifact := range reportArtifacts {
-		if artifact.Type == domain.ArtifactTypeEndpoint {
-			params := g.parser.ExtractParametersFromEndpoint(artifact.Value, target)
+			artifact := domain.NewArtifact(
+				domain.ArtifactTypeEndpoint,
+				fullURL,
+				g.Name(),
+			)
+
+			artifact.AddTag("discovered_from:" + resource.Resource)
+			artifact.AddTag(fmt.Sprintf("line:%d", ep.Line))
+			if ep.Context != "" {
+				artifact.AddTag("context:" + ep.Context)
+			}
+			artifact.Confidence = g.parser.calculateConfidence(ep.Link)
+
+			artifacts = append(artifacts, artifact)
+
+			// Extract parameters from endpoint
+			params := g.parser.ExtractParametersFromEndpoint(fullURL, target)
 			artifacts = append(artifacts, params...)
 		}
 	}
 
-	// Convert GF findings
-	if len(gfFindings) > 0 {
-		gfArtifacts := g.gfParser.ConvertToArtifacts(gfFindings, target)
+	// Convert GF findings to artifacts
+	if output.GFFindings.Total > 0 {
+		gfArtifacts := g.convertGFFindingsToArtifacts(output.GFFindings, target)
 		artifacts = append(artifacts, gfArtifacts...)
 	}
 
-	g.GetLogger().Debug("converted to artifacts",
-		"reports", len(reports),
-		"gf_patterns", len(gfFindings),
+	g.GetLogger().Info("converted output to artifacts",
+		"resources", len(output.Resources),
+		"gf_findings", output.GFFindings.Total,
+		"total_artifacts", len(artifacts),
+	)
+
+	return artifacts
+}
+
+// convertGFFindingsToArtifacts converts GF findings to domain artifacts.
+func (g *GoLinkfinderEvoSource) convertGFFindingsToArtifacts(
+	gfFindings GFFindings,
+	target domain.Target,
+) []*domain.Artifact {
+	artifacts := make([]*domain.Artifact, 0)
+
+	// Process each rule's findings
+	for ruleName, findings := range gfFindings.Rules {
+		for _, finding := range findings {
+			artifactType := g.gfParser.inferArtifactType(ruleName)
+
+			artifact := domain.NewArtifact(
+				artifactType,
+				finding.Match,
+				"golinkfinderevo-gf",
+			)
+
+			artifact.AddTag("gf_pattern:" + ruleName)
+			artifact.AddTag("discovered_in:" + finding.Resource)
+			artifact.AddTag(fmt.Sprintf("line:%d", finding.Line))
+			if finding.Context != "" {
+				artifact.AddTag("context:" + finding.Context)
+			}
+
+			g.gfParser.addCategoryTags(artifact, ruleName)
+			artifact.Confidence = g.gfParser.calculateConfidence(ruleName, finding.Match)
+
+			artifacts = append(artifacts, artifact)
+		}
+	}
+
+	g.GetLogger().Debug("converted GF findings to artifacts",
+		"total_rules", len(gfFindings.Rules),
 		"total_artifacts", len(artifacts),
 	)
 
@@ -515,9 +586,8 @@ func (g *GoLinkfinderEvoSource) SetCustomFlags(flags []string) {
 	g.customFlags = flags
 }
 
-// executeWithTempFiles executes golinkfinderevo using temporary input/output files.
-// golinkfinder doesn't support stdin, so we write URLs to a temp file and read JSON output from another temp file.
-func (g *GoLinkfinderEvoSource) executeWithTempFiles(
+// executeWithStdin executes golinkfinderevo using stdin for URLs and captures JSON from stdout.
+func (g *GoLinkfinderEvoSource) executeWithStdin(
 	ctx context.Context,
 	target domain.Target,
 	urls []string,
@@ -532,42 +602,26 @@ func (g *GoLinkfinderEvoSource) executeWithTempFiles(
 		defer cancel()
 	}
 
-	// Create temporary input file with URLs
-	inputFile, err := os.CreateTemp("", "golinkfinder-input-*.txt")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp input file: %w", err)
-	}
-	defer os.Remove(inputFile.Name())
-
-	// Write URLs to input file
-	for _, url := range urls {
-		if _, err := fmt.Fprintln(inputFile, url); err != nil {
-			return nil, fmt.Errorf("failed to write URL to input file: %w", err)
-		}
-	}
-
-	// Close input file before executing command
-	if err := inputFile.Close(); err != nil {
-		return nil, fmt.Errorf("failed to close input file: %w", err)
-	}
-
-	// Create temporary output file
-	outputFile, err := os.CreateTemp("", "golinkfinder-output-*.json")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temp output file: %w", err)
-	}
-	outputFileName := outputFile.Name()
-	outputFile.Close()
-	defer os.Remove(outputFileName)
-
-	// Build command arguments
-	args := g.buildCommandArgs(target, inputFile.Name(), outputFileName)
+	// Build command arguments (no input/output files)
+	args := g.buildCommandArgsStdout(target)
 
 	// Build command with timeout-enforced context
 	cmd := exec.CommandContext(execCtx, g.GetExecPath(), args...)
 
-	// Capture stderr for debugging
-	stderrPipe, err := cmd.StderrPipe()
+	// Configure stdin with URLs
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+
+	// Capture stdout (JSON)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	// Capture stderr for logs
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
 	}
@@ -577,17 +631,34 @@ func (g *GoLinkfinderEvoSource) executeWithTempFiles(
 		return nil, fmt.Errorf("failed to start golinkfinderevo: %w", err)
 	}
 
-	g.GetLogger().Debug("golinkfinderevo process started", "pid", cmd.Process.Pid)
+	g.GetLogger().Debug("golinkfinderevo process started",
+		"pid", cmd.Process.Pid,
+		"urls_count", len(urls),
+	)
 
-	// Read stderr in background
+	// Write URLs to stdin in goroutine
+	go func() {
+		defer stdin.Close()
+		for _, url := range urls {
+			if _, err := fmt.Fprintln(stdin, url); err != nil {
+				g.GetLogger().Debug("failed to write URL to stdin", "error", err)
+				return
+			}
+		}
+	}()
+
+	// Read stderr in goroutine
 	stderrChan := make(chan string, 1)
 	go func() {
-		stderrBytes, err := io.ReadAll(stderrPipe)
-		if err != nil {
-			g.GetLogger().Debug("failed to read stderr", "error", err)
-		}
-		stderrChan <- string(stderrBytes)
+		data, _ := io.ReadAll(stderr)
+		stderrChan <- string(data)
 	}()
+
+	// Read stdout (complete JSON)
+	stdoutData, err := io.ReadAll(stdout)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read stdout: %w", err)
+	}
 
 	// Wait for process to complete
 	waitErr := cmd.Wait()
@@ -608,43 +679,22 @@ func (g *GoLinkfinderEvoSource) executeWithTempFiles(
 		return nil, fmt.Errorf("golinkfinderevo failed: %w (stderr: %s)", waitErr, stderrStr)
 	}
 
-	// Read and parse JSON output file
-	jsonData, err := os.ReadFile(outputFileName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read output file: %w", err)
-	}
-
-	// Parse JSON response
-	var response GoLinkfinderResponse
-	if err := json.Unmarshal(jsonData, &response); err != nil {
+	// Parse JSON output from stdout
+	var output GoLinkfinderJSONOutput
+	if err := json.Unmarshal(stdoutData, &output); err != nil {
+		previewLen := len(stdoutData)
+		if previewLen > 500 {
+			previewLen = 500
+		}
+		g.GetLogger().Warn("failed to parse JSON output",
+			"error", err,
+			"output_preview", string(stdoutData[:previewLen]),
+		)
 		return nil, fmt.Errorf("failed to parse JSON output: %w", err)
 	}
 
-	// Convert resources to reports
-	reports := make([]*ResourceReport, 0, len(response.Resources))
-	for _, resource := range response.Resources {
-		// Extract endpoint URLs from the structured endpoints
-		endpoints := make([]string, 0, len(resource.Endpoints))
-		for _, ep := range resource.Endpoints {
-			endpoints = append(endpoints, ep.Link)
-		}
-
-		report := &ResourceReport{
-			URL:       resource.Resource,
-			Endpoints: endpoints,
-		}
-		reports = append(reports, report)
-	}
-
-	// Parse GF results if they exist
-	gfFindings, gfErr := g.parseGFResults()
-	if gfErr != nil {
-		g.GetLogger().Debug("no gf results found", "error", gfErr.Error())
-		gfFindings = make(GFResults) // Empty results
-	}
-
-	// Convert reports and GF findings to artifacts
-	artifacts := g.convertToArtifacts(reports, gfFindings, target)
+	// Convert output to artifacts
+	artifacts := g.convertOutputToArtifacts(output, target)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
@@ -655,14 +705,14 @@ func (g *GoLinkfinderEvoSource) executeWithTempFiles(
 	}
 	result.Metadata.Environment["golinkfinderevo_urls_processed"] = strconv.Itoa(len(urls))
 	result.Metadata.Environment["golinkfinderevo_profile"] = string(g.profile)
-	result.Metadata.Environment["golinkfinderevo_resources"] = strconv.Itoa(response.Meta.TotalResources)
-	result.Metadata.Environment["golinkfinderevo_endpoints"] = strconv.Itoa(response.Meta.TotalEndpoints)
-	result.Metadata.Environment["golinkfinderevo_gf_patterns"] = strconv.Itoa(len(gfFindings))
+	result.Metadata.Environment["golinkfinderevo_resources"] = strconv.Itoa(len(output.Resources))
+	result.Metadata.Environment["golinkfinderevo_gf_total"] = strconv.Itoa(output.GFFindings.Total)
+	result.Metadata.Environment["golinkfinderevo_gf_rules"] = strconv.Itoa(len(output.GFFindings.Rules))
 
 	g.GetLogger().Info("golinkfinderevo execution successful",
-		"resources", response.Meta.TotalResources,
-		"endpoints", response.Meta.TotalEndpoints,
-		"gf_findings", len(gfFindings),
+		"resources", len(output.Resources),
+		"gf_total_findings", output.GFFindings.Total,
+		"gf_rules", len(output.GFFindings.Rules),
 		"artifacts", len(result.Artifacts),
 	)
 

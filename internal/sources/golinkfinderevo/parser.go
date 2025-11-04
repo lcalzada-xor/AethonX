@@ -3,21 +3,12 @@
 package golinkfinderevo
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/url"
 	"strings"
 
 	"aethonx/internal/core/domain"
 	"aethonx/internal/platform/logx"
 )
-
-// ResourceReport represents golinkfinderevo JSON output format.
-// Example: {"url": "https://example.com/app.js", "endpoints": ["/api/users", "/api/products"]}
-type ResourceReport struct {
-	URL       string   `json:"url"`
-	Endpoints []string `json:"endpoints"`
-}
 
 // Parser handles parsing of golinkfinderevo JSON output.
 type Parser struct {
@@ -31,94 +22,6 @@ func NewParser(logger logx.Logger, sourceName string) *Parser {
 		logger:     logger,
 		sourceName: sourceName,
 	}
-}
-
-// ParseReport parses a single ResourceReport from JSON bytes.
-func (p *Parser) ParseReport(data []byte) (*ResourceReport, error) {
-	var report ResourceReport
-	if err := json.Unmarshal(data, &report); err != nil {
-		return nil, fmt.Errorf("failed to parse golinkfinderevo report: %w", err)
-	}
-
-	// Validate required fields
-	if report.URL == "" {
-		return nil, fmt.Errorf("missing required field: url")
-	}
-
-	return &report, nil
-}
-
-// ParseMultipleReports parses multiple ResourceReports from newline-delimited JSON.
-func (p *Parser) ParseMultipleReports(data []byte) ([]*ResourceReport, error) {
-	reports := make([]*ResourceReport, 0)
-	lines := strings.Split(string(data), "\n")
-
-	for i, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		report, err := p.ParseReport([]byte(line))
-		if err != nil {
-			p.logger.Warn("failed to parse report line",
-				"line_number", i+1,
-				"error", err.Error(),
-			)
-			continue
-		}
-
-		reports = append(reports, report)
-	}
-
-	return reports, nil
-}
-
-// ConvertToArtifacts converts a ResourceReport into domain artifacts.
-func (p *Parser) ConvertToArtifacts(report *ResourceReport, target domain.Target) []*domain.Artifact {
-	artifacts := make([]*domain.Artifact, 0, len(report.Endpoints))
-
-	for _, endpoint := range report.Endpoints {
-		// Normalize endpoint to full URL
-		fullURL := p.normalizeEndpoint(report.URL, endpoint)
-		if fullURL == "" {
-			continue
-		}
-
-		artifact := domain.NewArtifact(
-			domain.ArtifactTypeEndpoint,
-			fullURL,
-			p.sourceName,
-		)
-
-		// Add context tags
-		artifact.AddTag("discovered_from:" + report.URL)
-		artifact.AddTag("method:linkfinder")
-
-		// Set confidence based on endpoint quality
-		artifact.Confidence = p.calculateConfidence(endpoint)
-
-		artifacts = append(artifacts, artifact)
-	}
-
-	return artifacts
-}
-
-// ConvertMultipleReports converts multiple ResourceReports into artifacts.
-func (p *Parser) ConvertMultipleReports(reports []*ResourceReport, target domain.Target) []*domain.Artifact {
-	artifacts := make([]*domain.Artifact, 0)
-
-	for _, report := range reports {
-		reportArtifacts := p.ConvertToArtifacts(report, target)
-		artifacts = append(artifacts, reportArtifacts...)
-	}
-
-	p.logger.Debug("converted reports to artifacts",
-		"total_reports", len(reports),
-		"total_artifacts", len(artifacts),
-	)
-
-	return artifacts
 }
 
 // normalizeEndpoint converts a relative endpoint to a full URL.
@@ -138,6 +41,11 @@ func (p *Parser) normalizeEndpoint(baseURL, endpoint string) string {
 
 	// Handle absolute URLs
 	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		// Validate URL has a proper domain with TLD
+		if !p.isValidURL(endpoint) {
+			p.logger.Debug("skipping invalid absolute URL", "url", endpoint)
+			return ""
+		}
 		return endpoint
 	}
 
@@ -259,4 +167,53 @@ func (p *Parser) isSensitiveParameter(paramName string) bool {
 	}
 
 	return false
+}
+
+// isValidURL validates that a URL has a proper domain with TLD and is not a test/placeholder URL.
+func (p *Parser) isValidURL(urlStr string) bool {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return false
+	}
+
+	// Reject special schemes that are not real endpoints
+	if u.Scheme == "about" || u.Scheme == "data" || u.Scheme == "javascript" || u.Scheme == "file" {
+		return false
+	}
+
+	// Get hostname without port
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+
+	// Allow localhost explicitly (important for local testing)
+	if host == "localhost" {
+		return true
+	}
+
+	// Reject single-character domains (e.g., https://a, https://x)
+	if len(host) <= 2 {
+		return false
+	}
+
+	// Reject domains without dots (no TLD) - except localhost which was already checked
+	if !strings.Contains(host, ".") {
+		return false
+	}
+
+	// Reject known test/placeholder domains (but allow localhost - important for local testing)
+	testDomains := []string{
+		"example.com", "example.org", "example.net",
+		"test.com", "test.org", "test.net",
+		"dummy.com", "placeholder.com",
+	}
+	hostLower := strings.ToLower(host)
+	for _, testDomain := range testDomains {
+		if hostLower == testDomain {
+			return false
+		}
+	}
+
+	return true
 }
