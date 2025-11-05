@@ -812,29 +812,54 @@ func (g *GoLinkfinderEvoSource) executeWithStdin(
 		"preview", string(stdoutData[:previewLen]),
 	)
 
-	// Handle process error
+	// Handle process error with graceful degradation
+	// Try to parse any stdout data even if the process failed
+	var output GoLinkfinderJSONOutput
+	hasValidOutput := false
+
+	if len(stdoutData) > 0 {
+		if err := json.Unmarshal(stdoutData, &output); err == nil {
+			hasValidOutput = true
+			g.GetLogger().Debug("JSON output parsed successfully despite process error",
+				"resources_count", len(output.Resources),
+				"gf_findings_total", output.GFFindings.Total,
+			)
+		}
+	}
+
+	// If process failed, decide whether to return error or partial results
 	if waitErr != nil {
 		g.GetLogger().Warn("golinkfinderevo process failed",
 			"error", waitErr.Error(),
 			"stderr", stderrStr,
 			"exit_code", cmd.ProcessState.ExitCode(),
 			"stdout_bytes", len(stdoutData),
+			"has_valid_output", hasValidOutput,
 		)
-		return nil, fmt.Errorf("golinkfinderevo failed: %w (stderr: %s)", waitErr, stderrStr)
-	}
 
-	// Parse JSON output from stdout
-	var output GoLinkfinderJSONOutput
-	if err := json.Unmarshal(stdoutData, &output); err != nil {
-		previewLen := len(stdoutData)
-		if previewLen > 500 {
-			previewLen = 500
+		// If we have valid partial results, continue with warning
+		if hasValidOutput {
+			result.AddWarning(sourceName, fmt.Sprintf("partial results: process exited with error (exit code %d): %s",
+				cmd.ProcessState.ExitCode(),
+				truncateStderr(stderrStr, 200)))
+			g.GetLogger().Info("continuing with partial results despite process error")
+		} else {
+			// No valid output - return error
+			return nil, fmt.Errorf("golinkfinderevo failed: %w (stderr: %s)", waitErr, truncateStderr(stderrStr, 500))
 		}
-		g.GetLogger().Warn("failed to parse JSON output",
-			"error", err,
-			"output_preview", string(stdoutData[:previewLen]),
-		)
-		return nil, fmt.Errorf("failed to parse JSON output: %w", err)
+	} else {
+		// Process succeeded, parse output normally
+		if err := json.Unmarshal(stdoutData, &output); err != nil {
+			previewLen := len(stdoutData)
+			if previewLen > 500 {
+				previewLen = 500
+			}
+			g.GetLogger().Warn("failed to parse JSON output",
+				"error", err,
+				"output_preview", string(stdoutData[:previewLen]),
+			)
+			return nil, fmt.Errorf("failed to parse JSON output: %w", err)
+		}
 	}
 
 	g.GetLogger().Debug("JSON output parsed successfully",
@@ -867,6 +892,14 @@ func (g *GoLinkfinderEvoSource) executeWithStdin(
 	)
 
 	return result, nil
+}
+
+// truncateStderr truncates stderr output to maxLen characters.
+func truncateStderr(stderr string, maxLen int) string {
+	if len(stderr) <= maxLen {
+		return stderr
+	}
+	return stderr[:maxLen] + "..."
 }
 
 // Close releases resources.
