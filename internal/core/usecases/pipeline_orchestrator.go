@@ -260,7 +260,11 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		if p.sigintChannel != nil {
 			go func() {
 				select {
-				case <-p.sigintChannel:
+				case _, ok := <-p.sigintChannel:
+					if !ok {
+						// Canal cerrado (timeout global o shutdown), NO es Ctrl-C del usuario
+						return
+					}
 					// SIGINT recibido, cancelar stage
 					p.logger.Info("stage cancelled by SIGINT",
 						"stage_id", stage.ID,
@@ -836,8 +840,8 @@ func (p *PipelineOrchestrator) summarizeError(sourceName string, err error) stri
 		return "permission denied"
 	default:
 		// Truncar si es muy largo
-		if len(errStr) > 50 {
-			return errStr[:47] + "..."
+		if len(errStr) > 200 {
+			return errStr[:197] + "..."
 		}
 		return errStr
 	}
@@ -917,22 +921,30 @@ func (p *PipelineOrchestrator) summarizeWaybackurls(result *domain.ScanResult) *
 // summarizeHTTPX resume resultados de httpx
 // Formato esperado: "probed: 156 → alive: 89 (57%)"
 func (p *PipelineOrchestrator) summarizeHTTPX(result *domain.ScanResult) *ui.SourceSummary {
-	alive := len(result.Artifacts)
 	probed := 0
+	alive := 0
 
-	// Buscar estadísticas en metadata
+	// Buscar estadísticas en metadata (estos valores son precisos)
 	if result.Metadata.Environment != nil {
 		if probedStr, ok := result.Metadata.Environment["httpx_probed"]; ok {
 			probed, _ = strconv.Atoi(probedStr)
 		}
 		if aliveStr, ok := result.Metadata.Environment["httpx_alive"]; ok {
-			// Usar el valor de metadata si está disponible (más preciso)
 			alive, _ = strconv.Atoi(aliveStr)
 		}
 	}
 
-	// Si hay estadísticas de probed y son diferentes del alive, mostrar porcentaje
-	if probed > 0 && alive > 0 && probed != alive {
+	// Si no hay metadata, contar URL artifacts (cada host alive genera 1 URL)
+	if alive == 0 && len(result.Artifacts) > 0 {
+		for _, artifact := range result.Artifacts {
+			if artifact.Type == domain.ArtifactTypeURL {
+				alive++
+			}
+		}
+	}
+
+	// Si hay estadísticas de probed y alive, mostrar porcentaje
+	if probed > 0 && alive > 0 {
 		percentage := (alive * 100) / probed
 		return &ui.SourceSummary{
 			Summary: fmt.Sprintf("probed: %d → alive: %d (%d%%)", probed, alive, percentage),

@@ -149,6 +149,23 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 		fmt.Fprintln(stdin, target.Root)
 	}()
 
+	// Read stderr in background to prevent blocking (critical for Ctrl-C handling)
+	var stderrBytes []byte
+	var stderrMu sync.Mutex
+	var stderrWg sync.WaitGroup
+	stderrWg.Add(1)
+
+	go func() {
+		defer stderrWg.Done()
+		data, readErr := io.ReadAll(stderr)
+		if readErr != nil {
+			w.GetLogger().Warn("error reading stderr", "error", readErr.Error())
+		}
+		stderrMu.Lock()
+		stderrBytes = data
+		stderrMu.Unlock()
+	}()
+
 	// Process stdout using handler
 	if err := w.ProcessOutput(stdout, handler); err != nil {
 		w.GetLogger().Warn("output processing error", "error", err.Error())
@@ -159,9 +176,14 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 		w.GetLogger().Warn("handler finalization error", "error", err.Error())
 	}
 
+	// Wait for stderr goroutine to finish before checking process exit
+	stderrWg.Wait()
+
 	// Capture stderr for warnings
-	stderrBytes, _ := io.ReadAll(stderr)
+	stderrMu.Lock()
 	stderrOutput := string(stderrBytes)
+	stderrMu.Unlock()
+
 	if len(stderrOutput) > 0 {
 		w.GetLogger().Debug("waybackurls stderr", "output", stderrOutput)
 		result.AddWarning("waybackurls", fmt.Sprintf("stderr output: %s", stderrOutput))

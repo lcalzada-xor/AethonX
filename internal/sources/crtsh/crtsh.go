@@ -14,6 +14,7 @@ import (
 	"aethonx/internal/platform/httpclient"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
+	"aethonx/internal/sources/common"
 )
 
 // Auto-registro de la source al importar el package
@@ -52,28 +53,26 @@ func init() {
 // CRT implementa una fuente que consulta la base de datos crt.sh
 // para descubrir certificados SSL/TLS y subdominios asociados.
 type CRT struct {
-	client     httpclient.Client
-	logger     logx.Logger
-	progressCh chan ports.ProgressUpdate
+	*common.BaseAPISource // Embed base for API sources
+	client                httpclient.Client
 }
 
 // New crea una nueva instancia de la fuente crt.sh con resilience completa.
 func New(logger logx.Logger) ports.Source {
 	// Configuración específica para crt.sh
 	httpConfig := httpclient.Config{
-		Timeout:          30 * time.Second,
-		MaxRetries:       3,
-		RetryBackoff:     2 * time.Second,
-		MaxRetryBackoff:  30 * time.Second,
-		UserAgent:        "AethonX/1.0 (RDAP-like reconnaissance tool; +https://github.com/yourusername/aethonx)",
-		RateLimit:        2.0, // 2 req/s - ser respetuoso con crt.sh
-		RateLimitBurst:   1,
+		Timeout:         30 * time.Second,
+		MaxRetries:      3,
+		RetryBackoff:    2 * time.Second,
+		MaxRetryBackoff: 30 * time.Second,
+		UserAgent:       "AethonX/1.0 (RDAP-like reconnaissance tool; +https://github.com/yourusername/aethonx)",
+		RateLimit:       2.0, // 2 req/s - ser respetuoso con crt.sh
+		RateLimitBurst:  1,
 	}
 
 	return &CRT{
-		client:     *httpclient.New(httpConfig, logger),
-		logger:     logger.With("source", "crtsh"),
-		progressCh: make(chan ports.ProgressUpdate, 10), // Buffered channel
+		BaseAPISource: common.NewBaseAPISource(logger, "crtsh"),
+		client:        *httpclient.New(httpConfig, logger),
 	}
 }
 
@@ -94,7 +93,7 @@ func (c *CRT) Type() domain.SourceType {
 
 // Run ejecuta la fuente contra el target.
 func (c *CRT) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
-	c.logger.Debug("starting crtsh scan", "target", target.Root)
+	c.GetLogger().Debug("starting crtsh scan", "target", target.Root)
 
 	result := domain.NewScanResult(target)
 	result.Metadata.SourcesUsed = []string{c.Name()}
@@ -107,7 +106,7 @@ func (c *CRT) Run(ctx context.Context, target domain.Target) (*domain.ScanResult
 	if err != nil {
 		errMsg := fmt.Sprintf("HTTP request failed: %v", err)
 		result.AddError(c.Name(), errMsg, false) // No fatal - el scan puede continuar
-		c.logger.Warn("crtsh request failed", "target", target.Root, "error", err.Error())
+		c.GetLogger().Warn("crtsh request failed", "target", target.Root, "error", err.Error())
 		return result, err
 	}
 
@@ -119,7 +118,7 @@ func (c *CRT) Run(ctx context.Context, target domain.Target) (*domain.ScanResult
 		return result, nil
 	}
 
-	c.logger.Debug("parsed crtsh records", "count", len(records))
+	c.GetLogger().Debug("parsed crtsh records", "count", len(records))
 
 	// Procesar records y extraer subdominios CON PROGRESO INCREMENTAL
 	artifacts := c.processRecordsWithProgress(ctx, records, target)
@@ -129,7 +128,7 @@ func (c *CRT) Run(ctx context.Context, target domain.Target) (*domain.ScanResult
 		result.AddArtifact(a)
 	}
 
-	c.logger.Info("crtsh scan completed",
+	c.GetLogger().Info("crtsh scan completed",
 		"target", target.Root,
 		"artifacts", len(artifacts),
 	)
@@ -147,7 +146,7 @@ func (c *CRT) processRecordsWithProgress(ctx context.Context, records []certReco
 		// Verificar cancelación de contexto
 		select {
 		case <-ctx.Done():
-			c.logger.Debug("processRecords cancelled by context")
+			c.GetLogger().Debug("processRecords cancelled by context")
 			return artifacts
 		default:
 		}
@@ -214,62 +213,17 @@ func (c *CRT) processRecordsWithProgress(ctx context.Context, records []certReco
 			artifacts = append(artifacts, certArtifact)
 			artifactCount += 2
 
-			// Emitir progreso (non-blocking)
-			select {
-			case c.progressCh <- ports.ProgressUpdate{
-				ArtifactCount: artifactCount,
-				Message:       fmt.Sprintf("Processing %s", host),
-			}:
-			default:
-				// Canal lleno, skip update para no bloquear
-			}
+			// Emitir progreso usando BaseAPISource (thread-safe, non-blocking)
+			c.EmitProgress(artifactCount, fmt.Sprintf("Processing %s", host))
 		}
 	}
 
 	return artifacts
 }
 
-// ProgressChannel implementa ports.StreamingSource
-func (c *CRT) ProgressChannel() <-chan ports.ProgressUpdate {
-	return c.progressCh
-}
-
-// Stream implementa ports.StreamingSource (no usado actualmente pero requerido por interfaz)
+// Stream implementa ports.StreamingSource usando BaseAPISource
 func (c *CRT) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
-	artifactCh := make(chan *domain.Artifact, 100)
-	errorCh := make(chan error, 1)
-
-	go func() {
-		defer close(artifactCh)
-		defer close(errorCh)
-
-		result, err := c.Run(ctx, target)
-		if err != nil {
-			errorCh <- err
-			return
-		}
-
-		for _, artifact := range result.Artifacts {
-			select {
-			case artifactCh <- artifact:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return artifactCh, errorCh
-}
-
-// Close implements ports.Source
-// No hay recursos que liberar actualmente, pero implementamos el método
-// para cumplir con la interfaz ports.Source.
-func (c *CRT) Close() error {
-	c.logger.Debug("closing crtsh source")
-	// Close progress channel to prevent goroutine leaks
-	close(c.progressCh)
-	// http.Client no requiere Close() explícito
-	return nil
+	return c.DefaultStream(ctx, target, c.Run)
 }
 
 // certRecord representa un registro de certificado de crt.sh.

@@ -266,6 +266,40 @@ func (a *Artifact) GetRelationCount() int {
 }
 
 // Merge combina datos de otro artefacto del mismo tipo y valor.
+// mergeTypedMetadata intelligently merges two TypedMetadata instances.
+// Prefers metadata with more "richness" (e.g., HTTPStatus > 0, IsAlive = true).
+// This handles the case where waybackurls creates URLs with empty metadata
+// and httpx later enriches them with probe results.
+func mergeTypedMetadata(current, incoming metadata.ArtifactMetadata) metadata.ArtifactMetadata {
+	// Type assertion to DomainMetadata (most common case for URLs)
+	currentDM, currentIsDM := current.(*metadata.DomainMetadata)
+	incomingDM, incomingIsDM := incoming.(*metadata.DomainMetadata)
+
+	// Both are DomainMetadata: intelligent merge
+	if currentIsDM && incomingIsDM {
+		// Prefer incoming if it has richer HTTP probe data
+		if incomingDM.HTTPStatus > 0 && currentDM.HTTPStatus == 0 {
+			return incoming
+		}
+		// Prefer incoming if it's marked as alive
+		if incomingDM.IsAlive && !currentDM.IsAlive {
+			return incoming
+		}
+		// Prefer incoming if it has probe data
+		if incomingDM.ProbeSource != "" && currentDM.ProbeSource == "" {
+			return incoming
+		}
+		// Otherwise keep current (first discovery wins)
+		return current
+	}
+
+	// Different types or not DomainMetadata: prefer non-nil incoming
+	if incoming != nil {
+		return incoming
+	}
+	return current
+}
+
 func (a *Artifact) Merge(other *Artifact) error {
 	if a.Key() != other.Key() {
 		return fmt.Errorf("cannot merge artifacts with different keys: %s != %s", a.Key(), other.Key())
@@ -292,9 +326,13 @@ func (a *Artifact) Merge(other *Artifact) error {
 	// Si el artifact actual no tiene metadata, tomar el del otro
 	if a.TypedMetadata == nil && other.TypedMetadata != nil {
 		a.TypedMetadata = other.TypedMetadata
+	} else if a.TypedMetadata != nil && other.TypedMetadata != nil {
+		// Ambos tienen metadata: preferir el que tiene información más rica
+		// Esto resuelve el caso donde waybackurls crea URLs con metadata vacía
+		// y luego httpx las procesa con metadata completa
+		a.TypedMetadata = mergeTypedMetadata(a.TypedMetadata, other.TypedMetadata)
 	}
-	// Si ambos tienen metadata, mantener el actual (no sobreescribir)
-	// En el futuro podríamos implementar un Merge() más inteligente en cada tipo de metadata
+	// Si other no tiene metadata, mantener el actual
 
 	// Usar la confianza máxima
 	if other.Confidence > a.Confidence {

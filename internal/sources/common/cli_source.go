@@ -405,3 +405,148 @@ func (b *BaseCLISource) ProcessOutput(stdout io.Reader, handler OutputHandler) e
 
 	return nil
 }
+
+// ExecuteCLIWithStdin executes a CLI command with items piped via stdin and processes output via handler.
+//
+// This is the standard implementation for CLI sources that need to pass data via stdin
+// (e.g., httpx, dnsx, golinkfinderevo receiving URLs/domains).
+//
+// Key features:
+//   - Automatic stdin/stdout/stderr pipe management
+//   - Background stderr reader (prevents blocking)
+//   - Background stdin writer (non-blocking write)
+//   - Context cancellation support
+//   - Graceful error handling (tolerates partial results)
+//   - Resource cleanup via defer
+//   - Thread-safe process tracking
+//
+// Returns:
+//   - result: ScanResult populated by handler
+//   - stderrOutput: Captured stderr for warnings/debugging
+//   - err: Fatal error (nil if partial results tolerated)
+func (b *BaseCLISource) ExecuteCLIWithStdin(
+	ctx context.Context,
+	target domain.Target,
+	args []string,
+	items []string,
+	handler OutputHandler,
+) (result *domain.ScanResult, stderrOutput string, err error) {
+	result = domain.NewScanResult(target)
+	startTime := time.Now()
+
+	b.logger.Info("executing CLI command with stdin",
+		"exec_path", b.execPath,
+		"args", args,
+		"items_count", len(items),
+		"timeout", b.timeout.String(),
+	)
+
+	// Build command with context
+	cmd := exec.CommandContext(ctx, b.execPath, args...)
+
+	// Create stdout pipe for streaming output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create stdout pipe: %w", err)
+	}
+
+	// Create stderr pipe for warnings
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create stderr pipe: %w", err)
+	}
+
+	// Create stdin pipe to send items
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create stdin pipe: %w", err)
+	}
+
+	// Store command reference for Close()
+	b.mu.Lock()
+	b.cmd = cmd
+	b.mu.Unlock()
+
+	// Start subprocess
+	if err := cmd.Start(); err != nil {
+		return nil, "", fmt.Errorf("failed to start process: %w", err)
+	}
+
+	b.logger.Debug("subprocess started with stdin", "pid", cmd.Process.Pid, "items", len(items))
+
+	// Write items to stdin in background goroutine
+	go func() {
+		defer stdin.Close()
+		for _, item := range items {
+			if _, err := fmt.Fprintln(stdin, item); err != nil {
+				b.logger.Debug("failed to write to stdin", "error", err.Error())
+				return
+			}
+		}
+		b.logger.Debug("finished writing items to stdin", "total", len(items))
+	}()
+
+	// Read stderr in background to prevent blocking
+	var stderrBytes []byte
+	var stderrMu sync.Mutex
+	var stderrWg sync.WaitGroup
+	stderrWg.Add(1)
+
+	go func() {
+		defer stderrWg.Done()
+		data, readErr := io.ReadAll(stderr)
+		if readErr != nil {
+			b.logger.Warn("error reading stderr", "error", readErr.Error())
+		}
+		stderrMu.Lock()
+		stderrBytes = data
+		stderrMu.Unlock()
+	}()
+
+	// Process stdout using handler
+	if err := b.ProcessOutput(stdout, handler); err != nil {
+		b.logger.Warn("output processing error", "error", err.Error())
+		// Continue - don't fail on handler errors
+	}
+
+	// Finalize handler (e.g., flush buffers, create artifacts)
+	if err := handler.Finalize(); err != nil {
+		b.logger.Warn("handler finalization error", "error", err.Error())
+	}
+
+	// Wait for process to complete
+	waitErr := cmd.Wait()
+
+	// Wait for stderr goroutine to finish reading all output
+	stderrWg.Wait()
+
+	// Get stderr from background goroutine
+	stderrMu.Lock()
+	stderrOutput = string(stderrBytes)
+	stderrMu.Unlock()
+
+	if len(stderrOutput) > 0 {
+		b.logger.Debug("subprocess stderr", "output", stderrOutput)
+	}
+
+	// Handle process exit errors
+	if waitErr != nil {
+		// Log execution time even on failure
+		duration := time.Since(startTime)
+		b.logger.Warn("subprocess exited with error",
+			"error", waitErr.Error(),
+			"duration", duration.String(),
+		)
+
+		// Return error as non-fatal (caller decides based on partial results)
+		return result, stderrOutput, fmt.Errorf("process exited with error: %w", waitErr)
+	}
+
+	duration := time.Since(startTime)
+	b.logger.Info("CLI command with stdin completed successfully",
+		"duration", duration.String(),
+		"items_processed", len(items),
+	)
+
+	return result, stderrOutput, nil
+}

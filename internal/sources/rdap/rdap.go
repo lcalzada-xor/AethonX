@@ -20,6 +20,7 @@ import (
 	"aethonx/internal/platform/httpclient"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
+	"aethonx/internal/sources/common"
 )
 
 // Auto-registro de la source al importar el package
@@ -70,11 +71,10 @@ const (
 
 // RDAP implements the ports.Source interface for RDAP queries
 type RDAP struct {
-	client      httpclient.Client
-	cache       cache.Cache
-	logger      logx.Logger
-	stopCleanup func() // Función para detener el cache cleanup worker
-	progressCh  chan ports.ProgressUpdate
+	*common.BaseAPISource // Embed base for API sources
+	client                httpclient.Client
+	cache                 cache.Cache
+	stopCleanup           func() // Función para detener el cache cleanup worker
 }
 
 // rdapResponse representa la respuesta de RDAP (simplificada)
@@ -159,15 +159,14 @@ func New(logger logx.Logger) ports.Source {
 
 	// Create RDAP instance
 	r := &RDAP{
-		client:     *httpclient.New(httpConfig, logger),
-		cache:      rdapCache,
-		logger:     logger.With("source", sourceName),
-		progressCh: make(chan ports.ProgressUpdate, 10), // Buffered channel
+		BaseAPISource: common.NewBaseAPISource(logger, sourceName),
+		client:        *httpclient.New(httpConfig, logger),
+		cache:         rdapCache,
 	}
 
 	// Iniciar cleanup worker (limpieza cada 1 hora)
 	r.stopCleanup = rdapCache.StartCleanupWorker(1 * time.Hour)
-	r.logger.Debug("cache cleanup worker started", "interval", "1h")
+	r.GetLogger().Debug("cache cleanup worker started", "interval", "1h")
 
 	return r
 }
@@ -191,7 +190,7 @@ func (r *RDAP) Type() domain.SourceType {
 func (r *RDAP) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
 	result := domain.NewScanResult(target)
 
-	r.logger.Info("Starting RDAP query",
+	r.GetLogger().Info("Starting RDAP query",
 		"target", target.Root,
 		"mode", target.Mode,
 	)
@@ -205,7 +204,7 @@ func (r *RDAP) Run(ctx context.Context, target domain.Target) (*domain.ScanResul
 	// Check cache first
 	cacheKey := fmt.Sprintf("rdap:%s", domainName)
 	if cached, found := r.cache.Get(cacheKey); found {
-		r.logger.Debug("RDAP response found in cache", "domain", domainName)
+		r.GetLogger().Debug("RDAP response found in cache", "domain", domainName)
 		cachedResult, ok := cached.(*domain.ScanResult)
 		if ok {
 			return cachedResult, nil
@@ -215,7 +214,7 @@ func (r *RDAP) Run(ctx context.Context, target domain.Target) (*domain.ScanResul
 	// Query RDAP server
 	rdapData, err := r.queryRDAP(ctx, domainName)
 	if err != nil {
-		r.logger.Warn("RDAP query failed",
+		r.GetLogger().Warn("RDAP query failed",
 			"domain", domainName,
 			"error", err.Error(),
 		)
@@ -228,7 +227,7 @@ func (r *RDAP) Run(ctx context.Context, target domain.Target) (*domain.ScanResul
 	// Cache result
 	r.cache.Set(cacheKey, result, cacheTTL)
 
-	r.logger.Info("RDAP query completed",
+	r.GetLogger().Info("RDAP query completed",
 		"domain", domainName,
 		"artifacts", len(result.Artifacts),
 	)
@@ -241,7 +240,7 @@ func (r *RDAP) queryRDAP(ctx context.Context, domain string) (*rdapResponse, err
 	// Use rdap.org bootstrap service for automatic server discovery
 	url := fmt.Sprintf(rdapBootstrapURL, domain)
 
-	r.logger.Debug("Querying RDAP server",
+	r.GetLogger().Debug("Querying RDAP server",
 		"domain", domain,
 		"url", url,
 	)
@@ -288,14 +287,8 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 		result.AddArtifact(domainArtifact)
 		artifactCount++
 
-		// Emit progress
-		select {
-		case r.progressCh <- ports.ProgressUpdate{
-			ArtifactCount: artifactCount,
-			Message:       fmt.Sprintf("Found domain: %s", domainName),
-		}:
-		default:
-		}
+		// Emit progress using BaseAPISource
+		r.EmitProgress(artifactCount, fmt.Sprintf("Found domain: %s", domainName))
 	}
 
 	// Extract nameservers and create relations
@@ -310,14 +303,8 @@ func (r *RDAP) extractArtifacts(result *domain.ScanResult, rdapData *rdapRespons
 			result.AddArtifact(nsArtifact)
 			artifactCount++
 
-			// Emit progress
-			select {
-			case r.progressCh <- ports.ProgressUpdate{
-				ArtifactCount: artifactCount,
-				Message:       fmt.Sprintf("Found nameserver: %s", ns.LDHName),
-			}:
-			default:
-			}
+			// Emit progress using BaseAPISource
+			r.EmitProgress(artifactCount, fmt.Sprintf("Found nameserver: %s", ns.LDHName))
 
 			// Establecer relación: domain has_nameserver nameserver
 			if domainArtifact != nil {
@@ -407,14 +394,8 @@ func (r *RDAP) extractContactsWithProgress(result *domain.ScanResult, entities [
 			result.AddArtifact(emailArtifact)
 			*artifactCount++
 
-			// Emit progress
-			select {
-			case r.progressCh <- ports.ProgressUpdate{
-				ArtifactCount: *artifactCount,
-				Message:       fmt.Sprintf("Found email: %s", email),
-			}:
-			default:
-			}
+			// Emit progress using BaseAPISource
+			r.EmitProgress(*artifactCount, fmt.Sprintf("Found email: %s", email))
 
 			// Establecer relación: domain has_contact email
 			if domainArtifact != nil {
@@ -577,49 +558,24 @@ func (r *RDAP) hasRole(roles []string, role string) bool {
 	return false
 }
 
-// ProgressChannel implementa ports.StreamingSource
-func (r *RDAP) ProgressChannel() <-chan ports.ProgressUpdate {
-	return r.progressCh
-}
-
-// Stream implementa ports.StreamingSource (no usado actualmente pero requerido por interfaz)
+// Stream implementa ports.StreamingSource usando BaseAPISource
 func (r *RDAP) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
-	artifactCh := make(chan *domain.Artifact, 100)
-	errorCh := make(chan error, 1)
-
-	go func() {
-		defer close(artifactCh)
-		defer close(errorCh)
-
-		result, err := r.Run(ctx, target)
-		if err != nil {
-			errorCh <- err
-			return
-		}
-
-		for _, artifact := range result.Artifacts {
-			select {
-			case artifactCh <- artifact:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	return artifactCh, errorCh
+	return r.DefaultStream(ctx, target, r.Run)
 }
 
 // Close implements ports.Source
 // Detiene el cache cleanup worker y libera recursos.
 func (r *RDAP) Close() error {
-	r.logger.Debug("closing RDAP source")
+	r.GetLogger().Debug("closing RDAP source")
 
-	// Close progress channel to prevent goroutine leaks
-	close(r.progressCh)
+	// Call BaseAPISource Close first
+	if err := r.BaseAPISource.Close(); err != nil {
+		r.GetLogger().Warn("failed to close BaseAPISource", "error", err.Error())
+	}
 
 	if r.stopCleanup != nil {
 		r.stopCleanup()
-		r.logger.Debug("cache cleanup worker stopped")
+		r.GetLogger().Debug("cache cleanup worker stopped")
 	}
 
 	return nil
@@ -660,7 +616,7 @@ func (r *RDAP) extractBaseDomain(target string) string {
 	if err != nil {
 		// Fallback: if publicsuffix fails (e.g., invalid domain, localhost),
 		// log warning and return cleaned target
-		r.logger.Warn("failed to extract eTLD+1, using fallback",
+		r.GetLogger().Warn("failed to extract eTLD+1, using fallback",
 			"target", target,
 			"error", err.Error(),
 		)

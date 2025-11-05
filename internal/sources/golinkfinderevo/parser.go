@@ -65,14 +65,29 @@ func (p *Parser) normalizeEndpoint(baseURL, endpoint string) string {
 	// Handle relative paths (api/users)
 	// Extract directory from base path
 	basePath := base.Path
-	if strings.Contains(basePath, "/") {
-		// Remove filename from base path
+	if basePath == "" || basePath == "/" {
+		// Base path is root, add slash
+		basePath = "/"
+	} else {
+		// Remove filename from base path if present
 		lastSlash := strings.LastIndex(basePath, "/")
-		basePath = basePath[:lastSlash+1]
+		if lastSlash != -1 {
+			basePath = basePath[:lastSlash+1]
+		} else {
+			// No slash found, assume root
+			basePath = "/"
+		}
 	}
 
 	// Combine base path + relative endpoint
-	base.Path = basePath + endpoint
+	// Avoid double slashes
+	if strings.HasSuffix(basePath, "/") && strings.HasPrefix(endpoint, "/") {
+		base.Path = basePath + endpoint[1:]
+	} else if !strings.HasSuffix(basePath, "/") && !strings.HasPrefix(endpoint, "/") {
+		base.Path = basePath + "/" + endpoint
+	} else {
+		base.Path = basePath + endpoint
+	}
 	base.RawQuery = ""
 	base.Fragment = ""
 

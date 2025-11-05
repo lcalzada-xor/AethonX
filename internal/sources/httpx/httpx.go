@@ -4,12 +4,8 @@ package httpx
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os/exec"
 	"strconv"
-	"sync"
 	"time"
 
 	"aethonx/internal/core/domain"
@@ -104,13 +100,8 @@ func (h *HTTPXSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 	// Build command arguments
 	args := h.buildCommandArgs(target)
 
-	// Create handler for processing output
-	handler := &httpxHandler{
-		parser:    h.parser,
-		target:    target,
-		logger:    h.GetLogger(),
-		responses: make([]*HTTPXResponse, 0, 100),
-	}
+	// Create handler using JSONLineHandler
+	handler := common.NewJSONLineHandler[HTTPXResponse](h.GetLogger(), target)
 
 	// Execute CLI with handler (BaseCLISource handles all subprocess logic)
 	result, stderrOutput, err := h.ExecuteCLI(ctx, target, args, handler)
@@ -126,14 +117,23 @@ func (h *HTTPXSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 		result.AddWarning("httpx", fmt.Sprintf("stderr output: %s", stderrOutput))
 	}
 
+	// Get parsed responses from handler
+	responses := handler.GetResponses()
+
+	// Convert []HTTPXResponse to []*HTTPXResponse for parser
+	responsePtrs := make([]*HTTPXResponse, len(responses))
+	for i := range responses {
+		responsePtrs[i] = &responses[i]
+	}
+
 	// Parse responses into artifacts (siempre, incluso con error)
-	artifacts := h.parser.ParseMultipleResponses(handler.responses, target)
+	artifacts := h.parser.ParseMultipleResponses(responsePtrs, target)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
 
 	duration := time.Since(startTime)
-	responseCount := len(handler.responses)
+	responseCount := len(responses)
 	artifactCount := len(result.Artifacts)
 
 	// Handle errors (partial results tolerados y retornados)
@@ -165,53 +165,6 @@ func (h *HTTPXSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 	)
 
 	return result, nil
-}
-
-// httpxHandler implements common.OutputHandler for httpx JSON output processing.
-type httpxHandler struct {
-	parser    *Parser
-	target    domain.Target
-	logger    logx.Logger
-	responses []*HTTPXResponse
-
-	// State
-	mu sync.Mutex
-}
-
-// ProcessLine handles each line of httpx stdout (JSON lines).
-func (h *httpxHandler) ProcessLine(line []byte) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	var resp HTTPXResponse
-	if err := json.Unmarshal(line, &resp); err != nil {
-		h.logger.Warn("failed to parse httpx output", "line", string(line), "error", err.Error())
-		return nil // Non-fatal, continue processing
-	}
-
-	h.responses = append(h.responses, &resp)
-
-	h.logger.Debug("parsed httpx response",
-		"url", resp.URL,
-		"status_code", resp.StatusCode,
-		"title", resp.Title,
-	)
-
-	return nil
-}
-
-// Finalize is called after all lines are processed.
-func (h *httpxHandler) Finalize() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	h.logger.Info("parsing responses to artifacts", "count", len(h.responses))
-
-	// This is handled in Run() after ExecuteCLI returns
-	// We don't populate result here because ExecuteCLI creates a new result
-	// Instead, we store responses and let Run() handle artifact creation
-
-	return nil
 }
 
 // Stream implements ports.StreamingSource.
@@ -359,7 +312,14 @@ func (h *HTTPXSource) RunWithInput(ctx context.Context, target domain.Target, in
 
 	duration := time.Since(startTime)
 	totalProbed := len(waybackurlsTargets) + len(otherTargets)
-	totalAlive := len(result.Artifacts)
+
+	// Count alive hosts: each alive host generates exactly 1 URL artifact
+	totalAlive := 0
+	for _, artifact := range result.Artifacts {
+		if artifact.Type == domain.ArtifactTypeURL {
+			totalAlive++
+		}
+	}
 
 	h.GetLogger().Info("httpx scan completed with smart profiles",
 		"target", target.Root,
@@ -368,6 +328,7 @@ func (h *HTTPXSource) RunWithInput(ctx context.Context, target domain.Target, in
 		"others_scanned", len(otherTargets),
 		"total_probed", totalProbed,
 		"total_alive", totalAlive,
+		"total_artifacts", len(result.Artifacts),
 	)
 
 	// Store statistics in metadata for UI summary
@@ -438,7 +399,6 @@ func (h *HTTPXSource) separateTargetsBySource(input *domain.ScanResult) (wayback
 
 // runWithProfile executes httpx with a specific profile for the given targets.
 func (h *HTTPXSource) runWithProfile(ctx context.Context, target domain.Target, targets []string, profile ScanProfile, inputArtifacts []*domain.Artifact) (*domain.ScanResult, error) {
-	result := domain.NewScanResult(target)
 	startTime := time.Now()
 
 	// Temporarily switch profile
@@ -478,101 +438,57 @@ func (h *HTTPXSource) runWithProfile(ctx context.Context, target domain.Target, 
 	// Build command arguments for stdin mode
 	args := h.buildCommandArgsWithStdin()
 
-	// Create handler for processing output
-	handler := &httpxHandler{
-		parser:    h.parser,
-		target:    target,
-		logger:    h.GetLogger(),
-		responses: make([]*HTTPXResponse, 0, len(targets)),
+	// Create handler using JSONLineHandler (type-safe, thread-safe)
+	handler := common.NewJSONLineHandler[HTTPXResponse](h.GetLogger(), target)
+
+	// Execute CLI with stdin using BaseCLISource abstraction
+	result, stderrOutput, err := h.ExecuteCLIWithStdin(ctx, target, args, targets, handler)
+
+	// Handle stderr warnings
+	if len(stderrOutput) > 0 {
+		h.GetLogger().Debug("httpx stderr", "output", stderrOutput)
+		result.AddWarning("httpx", fmt.Sprintf("stderr output: %s", stderrOutput))
 	}
 
-	// Build command with context
-	cmd := exec.CommandContext(ctx, h.GetExecPath(), args...)
+	// Get parsed responses from handler
+	responses := handler.GetResponses()
 
-	// Create stdout pipe for streaming JSON
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
+	// Convert []HTTPXResponse to []*HTTPXResponse for parser
+	responsePtrs := make([]*HTTPXResponse, len(responses))
+	for i := range responses {
+		responsePtrs[i] = &responses[i]
 	}
 
-	// Create stderr pipe for warnings
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	// Create stdin pipe to send targets
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdin pipe: %w", err)
-	}
-
-	// Start httpx process
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start httpx: %w", err)
-	}
-
-	h.GetLogger().Debug("httpx process started", "pid", cmd.Process.Pid)
-
-	// Write targets to stdin in goroutine
-	go func() {
-		defer stdin.Close()
-		for _, t := range targets {
-			fmt.Fprintln(stdin, t)
-		}
-	}()
-
-	// Process stdout using handler
-	if err := h.ProcessOutput(stdout, handler); err != nil {
-		h.GetLogger().Warn("output processing error", "error", err.Error())
-	}
-
-	// Capture stderr for warnings
-	stderrBytes, _ := io.ReadAll(stderr)
-	if len(stderrBytes) > 0 {
-		stderrStr := string(stderrBytes)
-		h.GetLogger().Debug("httpx stderr", "output", stderrStr)
-		result.AddWarning("httpx", fmt.Sprintf("stderr output: %s", stderrStr))
-	}
-
-	// Wait for process to complete
-	waitErr := cmd.Wait()
-
-	// Finalize handler (siempre, incluso con error)
-	if err := handler.Finalize(); err != nil {
-		h.GetLogger().Warn("handler finalization error", "error", err.Error())
-	}
-
-	// Parse responses into artifacts with confidence upgrade (siempre, incluso con error)
-	artifacts := h.parser.ParseMultipleResponsesWithInput(handler.responses, target, inputArtifacts)
+	// Parse responses into artifacts with confidence upgrade
+	artifacts := h.parser.ParseMultipleResponsesWithInput(responsePtrs, target, inputArtifacts)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
 
 	duration := time.Since(startTime)
-	responseCount := len(handler.responses)
+	responseCount := len(responses)
 	artifactCount := len(result.Artifacts)
 
 	// Handle errors (partial results tolerados y retornados)
-	if waitErr != nil {
+	if err != nil {
 		if artifactCount > 0 {
 			h.GetLogger().Warn("httpx exited with error but produced partial results",
-				"error", waitErr.Error(),
+				"error", err.Error(),
 				"responses", responseCount,
 				"artifacts", artifactCount,
 			)
-			result.AddWarning("httpx", fmt.Sprintf("process exited with error: %v", waitErr))
+			result.AddWarning("httpx", fmt.Sprintf("process exited with error: %v", err))
 
 			h.GetLogger().Info("returning partial results from httpx profile",
 				"profile", profile,
 				"artifacts", artifactCount,
 			)
 			// Retornar resultado parcial + error para que orchestrator decida
-			return result, fmt.Errorf("httpx timeout/cancelled but produced %d partial results: %w", artifactCount, waitErr)
+			return result, fmt.Errorf("httpx timeout/cancelled but produced %d partial results: %w", artifactCount, err)
 		}
 
 		// Sin resultados: retornar error total
-		return nil, fmt.Errorf("httpx profile failed without results: %w", waitErr)
+		return nil, fmt.Errorf("httpx profile failed without results: %w", err)
 	}
 
 	h.GetLogger().Info("httpx profile execution completed",

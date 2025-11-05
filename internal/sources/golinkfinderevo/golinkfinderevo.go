@@ -48,18 +48,18 @@ type EndpointOutput struct {
 
 // GFFindings represents the gf pattern matching results
 type GFFindings struct {
-	Rules    map[string][]GFFindingDetail `json:"rules"`
-	Total    int                          `json:"total"`
-	Findings []GFFindingDetail            `json:"findings"`
+	Rules    []string          `json:"rules"`    // List of rules that were executed
+	Total    int               `json:"total"`    // Total number of findings
+	Findings []GFFindingDetail `json:"findings"` // All findings with their rules
 }
 
 // GFFindingDetail represents a single GF pattern match
 type GFFindingDetail struct {
-	Rule     string `json:"rule"`
-	Match    string `json:"match"`
-	Resource string `json:"resource"`
-	Line     int    `json:"line"`
-	Context  string `json:"context"`
+	Resource string   `json:"resource"` // URL where the finding was discovered
+	Line     int      `json:"line"`     // Line number in the resource
+	Evidence string   `json:"evidence"` // The matched text/evidence
+	Context  string   `json:"context"`  // Surrounding context
+	Rules    []string `json:"rules"`    // Rules that matched this finding
 }
 
 // URLCategory categorizes URLs by content type.
@@ -201,14 +201,19 @@ func (g *GoLinkfinderEvoSource) RunWithInput(
 
 	// Debug: log artifact types received
 	artifactTypes := make(map[domain.ArtifactType]int)
+	urlArtifactCount := 0
 	for _, a := range input.Artifacts {
 		artifactTypes[a.Type]++
+		if a.Type == domain.ArtifactTypeURL {
+			urlArtifactCount++
+		}
 	}
 
 	g.GetLogger().Info("starting golinkfinderevo scan",
 		"target", target.Root,
 		"profile", g.profile,
 		"input_artifacts", len(input.Artifacts),
+		"url_artifacts", urlArtifactCount,
 		"artifact_types", artifactTypes,
 	)
 
@@ -232,6 +237,14 @@ func (g *GoLinkfinderEvoSource) RunWithInput(
 		"max_html_files", g.maxHTMLFiles,
 	)
 
+	// Check if we have any URLs to process after applying limits
+	if len(processURLs) == 0 {
+		g.GetLogger().Info("no URLs to process after applying limits")
+		result := domain.NewScanResult(target)
+		result.AddWarning(sourceName, "no URLs with JavaScript or HTML content available after filtering and limits")
+		return result, nil
+	}
+
 	// Execute golinkfinderevo with stdin/stdout
 	result, err := g.executeWithStdin(ctx, target, processURLs)
 
@@ -252,28 +265,80 @@ func (g *GoLinkfinderEvoSource) RunWithInput(
 func (g *GoLinkfinderEvoSource) filterURLsForCrawling(artifacts []*domain.Artifact) []URLCandidate {
 	candidates := make([]URLCandidate, 0)
 
+	// Debug counters
+	urlCount := 0
+	noMetadataCount := 0
+	wrongMetadataTypeCount := 0
+	badStatusCount := 0
+	categoryOtherCount := 0
+
 	for _, a := range artifacts {
-		// Only process URL artifacts
-		if a.Type != domain.ArtifactTypeURL {
+		// Process URL and JavaScript artifacts
+		if a.Type != domain.ArtifactTypeURL && a.Type != domain.ArtifactTypeJavaScript {
 			continue
 		}
+		urlCount++
 
 		// Categorize by URL extension and metadata
 		category := g.categorizeURL(a)
 
+		// Debug: Log first few URLs being processed WITH their category
+		if urlCount <= 5 {
+			contentType := g.extractContentType(a.Tags)
+			g.GetLogger().Debug("processing URL artifact",
+				"url", a.Value,
+				"type", a.Type,
+				"category", category,
+				"content_type", contentType,
+				"has_metadata", a.TypedMetadata != nil,
+				"metadata_type", fmt.Sprintf("%T", a.TypedMetadata),
+			)
+		}
+
 		// Only process JS and HTML
 		if category == URLCategoryOther {
+			categoryOtherCount++
 			continue
 		}
 
+		// For JavaScript artifacts from waybackurls, accept them without metadata check
+		// They are already categorized as JavaScript by their extension/URL
+		if a.Type == domain.ArtifactTypeJavaScript {
+			// Validate URL before accepting
+			if a.Value == "" {
+				continue
+			}
+
+			// Accept JavaScript artifacts directly
+			contentType := g.extractContentType(a.Tags)
+
+			// Set a reasonable default status code for historical URLs (200 assumed for waybackurls)
+			statusCode := 200 // Assume alive if from waybackurls
+			if domainMeta, ok := a.TypedMetadata.(*metadata.DomainMetadata); ok {
+				// Override with actual status if metadata exists
+				statusCode = domainMeta.HTTPStatus
+			}
+
+			candidates = append(candidates, URLCandidate{
+				URL:         a.Value,
+				Category:    URLCategoryJavaScript,
+				StatusCode:  statusCode,
+				ContentType: contentType,
+			})
+			continue
+		}
+
+		// For URL artifacts, check metadata and status code
 		// Extract status code from metadata - REQUIRED
 		// Skip URLs without proper metadata from httpx
 		if a.TypedMetadata == nil {
+			noMetadataCount++
 			continue
 		}
 
 		domainMeta, ok := a.TypedMetadata.(*metadata.DomainMetadata)
 		if !ok {
+			wrongMetadataTypeCount++
 			continue
 		}
 
@@ -281,6 +346,7 @@ func (g *GoLinkfinderEvoSource) filterURLsForCrawling(artifacts []*domain.Artifa
 
 		// Filter: only successful HTTP responses (200-399)
 		if statusCode < 200 || statusCode >= 400 {
+			badStatusCount++
 			continue
 		}
 
@@ -293,6 +359,38 @@ func (g *GoLinkfinderEvoSource) filterURLsForCrawling(artifacts []*domain.Artifa
 			StatusCode:  statusCode,
 			ContentType: contentType,
 		})
+	}
+
+	// ALWAYS log filtering results for debugging
+	g.GetLogger().Info("filtered URLs for golinkfinderevo",
+		"total_urls", urlCount,
+		"candidates", len(candidates),
+		"rejected_category", categoryOtherCount,
+		"rejected_no_metadata", noMetadataCount,
+		"rejected_wrong_metadata_type", wrongMetadataTypeCount,
+		"rejected_bad_status", badStatusCount,
+	)
+
+	// Log sample of rejected URLs if filtering rejected everything
+	if len(candidates) == 0 && urlCount > 0 {
+		g.GetLogger().Warn("all URLs were filtered out - no candidates found",
+			"total_input_urls", urlCount,
+			"primary_rejection_reason", map[string]int{
+				"category_mismatch":    categoryOtherCount,
+				"no_metadata":          noMetadataCount,
+				"wrong_metadata_type":  wrongMetadataTypeCount,
+				"bad_status_code":      badStatusCount,
+			},
+		)
+	}
+
+	// Log first few rejected URLs for debugging
+	if noMetadataCount > 0 || wrongMetadataTypeCount > 0 || badStatusCount > 0 {
+		g.GetLogger().Debug("URL filtering details",
+			"no_metadata_count", noMetadataCount,
+			"wrong_metadata_type_count", wrongMetadataTypeCount,
+			"bad_status_count", badStatusCount,
+		)
 	}
 
 	g.GetLogger().Debug("filtered URL candidates",
@@ -437,12 +535,15 @@ func (g *GoLinkfinderEvoSource) buildCommandArgsStdout(target domain.Target) []s
 	profileCfg := GetProfile(g.profile)
 
 	args := []string{
-		"-o", "json", // JSON output to stdout
+		"-input", "-", // Read from stdin (use full flag name)
+		"-output", "json", // JSON output to stdout
 		"-workers", strconv.Itoa(g.workers),
 		"-timeout", profileCfg.Timeout.String(),
 		"-scope", target.Root,
-		"-scope-include-subdomains",
 	}
+
+	// Add scope-include-subdomains as separate flag (it's boolean)
+	args = append(args, "-scope-include-subdomains")
 
 	// Recursion depth
 	if profileCfg.MaxRecursion > 0 {
@@ -497,8 +598,16 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 ) []*domain.Artifact {
 	artifacts := make([]*domain.Artifact, 0)
 
+	endpointCount := 0
+	paramCount := 0
+
 	// Convert resources to endpoint artifacts
 	for _, resource := range output.Resources {
+		g.GetLogger().Debug("processing resource",
+			"resource_url", resource.Resource,
+			"endpoints_count", len(resource.Endpoints),
+		)
+
 		for _, ep := range resource.Endpoints {
 			fullURL := g.parser.normalizeEndpoint(resource.Resource, ep.Link)
 			if fullURL == "" {
@@ -519,22 +628,29 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 			artifact.Confidence = g.parser.calculateConfidence(ep.Link)
 
 			artifacts = append(artifacts, artifact)
+			endpointCount++
 
 			// Extract parameters from endpoint
 			params := g.parser.ExtractParametersFromEndpoint(fullURL, target)
 			artifacts = append(artifacts, params...)
+			paramCount += len(params)
 		}
 	}
 
 	// Convert GF findings to artifacts
+	gfArtifactCount := 0
 	if output.GFFindings.Total > 0 {
 		gfArtifacts := g.convertGFFindingsToArtifacts(output.GFFindings, target)
 		artifacts = append(artifacts, gfArtifacts...)
+		gfArtifactCount = len(gfArtifacts)
 	}
 
 	g.GetLogger().Info("converted output to artifacts",
 		"resources", len(output.Resources),
+		"endpoints", endpointCount,
+		"parameters", paramCount,
 		"gf_findings", output.GFFindings.Total,
+		"gf_artifacts", gfArtifactCount,
 		"total_artifacts", len(artifacts),
 	)
 
@@ -548,14 +664,15 @@ func (g *GoLinkfinderEvoSource) convertGFFindingsToArtifacts(
 ) []*domain.Artifact {
 	artifacts := make([]*domain.Artifact, 0)
 
-	// Process each rule's findings
-	for ruleName, findings := range gfFindings.Rules {
-		for _, finding := range findings {
+	// Process each finding
+	for _, finding := range gfFindings.Findings {
+		// Each finding can match multiple rules
+		for _, ruleName := range finding.Rules {
 			artifactType := g.gfParser.inferArtifactType(ruleName)
 
 			artifact := domain.NewArtifact(
 				artifactType,
-				finding.Match,
+				finding.Evidence, // Use Evidence field instead of Match
 				"golinkfinderevo-gf",
 			)
 
@@ -567,14 +684,15 @@ func (g *GoLinkfinderEvoSource) convertGFFindingsToArtifacts(
 			}
 
 			g.gfParser.addCategoryTags(artifact, ruleName)
-			artifact.Confidence = g.gfParser.calculateConfidence(ruleName, finding.Match)
+			artifact.Confidence = g.gfParser.calculateConfidence(ruleName, finding.Evidence)
 
 			artifacts = append(artifacts, artifact)
 		}
 	}
 
 	g.GetLogger().Debug("converted GF findings to artifacts",
-		"total_rules", len(gfFindings.Rules),
+		"total_findings", len(gfFindings.Findings),
+		"total_rules_executed", len(gfFindings.Rules),
 		"total_artifacts", len(artifacts),
 	)
 
@@ -594,13 +712,19 @@ func (g *GoLinkfinderEvoSource) executeWithStdin(
 ) (*domain.ScanResult, error) {
 	result := domain.NewScanResult(target)
 
-	// Apply timeout to context if not already set
+	// Apply timeout to context if not already set or if existing timeout is too long
 	execCtx := ctx
-	if deadline, ok := ctx.Deadline(); !ok || time.Until(deadline) > defaultTimeout {
-		var cancel context.CancelFunc
+	var cancel context.CancelFunc
+	if deadline, ok := ctx.Deadline(); !ok {
+		// No deadline set, apply default timeout
+		execCtx, cancel = context.WithTimeout(ctx, defaultTimeout)
+		defer cancel()
+	} else if timeRemaining := time.Until(deadline); timeRemaining > defaultTimeout {
+		// Existing deadline is too long, apply shorter timeout
 		execCtx, cancel = context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
 	}
+	// If existing deadline is shorter than defaultTimeout, use it as-is
 
 	// Build command arguments (no input/output files)
 	args := g.buildCommandArgsStdout(target)
@@ -631,20 +755,29 @@ func (g *GoLinkfinderEvoSource) executeWithStdin(
 		return nil, fmt.Errorf("failed to start golinkfinderevo: %w", err)
 	}
 
+	// Log first few URLs being processed
+	urlPreview := urls
+	if len(urlPreview) > 5 {
+		urlPreview = urls[:5]
+	}
 	g.GetLogger().Debug("golinkfinderevo process started",
 		"pid", cmd.Process.Pid,
 		"urls_count", len(urls),
+		"url_preview", urlPreview,
 	)
 
 	// Write URLs to stdin in goroutine
 	go func() {
 		defer stdin.Close()
+		urlsWritten := 0
 		for _, url := range urls {
 			if _, err := fmt.Fprintln(stdin, url); err != nil {
-				g.GetLogger().Debug("failed to write URL to stdin", "error", err)
+				g.GetLogger().Debug("failed to write URL to stdin", "error", err, "urls_written", urlsWritten)
 				return
 			}
+			urlsWritten++
 		}
+		g.GetLogger().Debug("finished writing URLs to stdin", "total_written", urlsWritten)
 	}()
 
 	// Read stderr in goroutine
@@ -669,12 +802,23 @@ func (g *GoLinkfinderEvoSource) executeWithStdin(
 		g.GetLogger().Debug("golinkfinderevo stderr", "output", stderrStr)
 	}
 
+	// Log stdout data received
+	previewLen := len(stdoutData)
+	if previewLen > 300 {
+		previewLen = 300
+	}
+	g.GetLogger().Debug("golinkfinderevo stdout received",
+		"total_bytes", len(stdoutData),
+		"preview", string(stdoutData[:previewLen]),
+	)
+
 	// Handle process error
 	if waitErr != nil {
 		g.GetLogger().Warn("golinkfinderevo process failed",
 			"error", waitErr.Error(),
 			"stderr", stderrStr,
 			"exit_code", cmd.ProcessState.ExitCode(),
+			"stdout_bytes", len(stdoutData),
 		)
 		return nil, fmt.Errorf("golinkfinderevo failed: %w (stderr: %s)", waitErr, stderrStr)
 	}
@@ -692,6 +836,12 @@ func (g *GoLinkfinderEvoSource) executeWithStdin(
 		)
 		return nil, fmt.Errorf("failed to parse JSON output: %w", err)
 	}
+
+	g.GetLogger().Debug("JSON output parsed successfully",
+		"resources_count", len(output.Resources),
+		"gf_findings_total", output.GFFindings.Total,
+		"gf_rules_count", len(output.GFFindings.Rules),
+	)
 
 	// Convert output to artifacts
 	artifacts := g.convertOutputToArtifacts(output, target)

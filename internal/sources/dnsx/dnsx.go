@@ -4,12 +4,8 @@ package dnsx
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os/exec"
 	"strconv"
-	"sync"
 	"time"
 
 	"aethonx/internal/core/domain"
@@ -108,25 +104,35 @@ func (d *DNSXSource) RunWithInput(ctx context.Context, target domain.Target, inp
 	// Build command arguments
 	args := d.buildCommandArgs()
 
-	// Create handler for processing output
-	handler := &dnsxHandler{
-		parser:    d.parser,
-		target:    target,
-		logger:    d.GetLogger(),
-		responses: make([]*DNSXResponse, 0, len(subdomains)),
+	// Create handler using JSONLineHandler
+	handler := common.NewJSONLineHandler[DNSXResponse](d.GetLogger(), target)
+
+	// Execute dnsx with stdin using BaseCLISource abstraction
+	_, stderrOutput, execErr := d.ExecuteCLIWithStdin(ctx, target, args, subdomains, handler)
+
+	// Handle stderr warnings
+	if len(stderrOutput) > 0 {
+		d.GetLogger().Debug("dnsx stderr", "output", stderrOutput)
+		result.AddWarning("dnsx", fmt.Sprintf("stderr output: %s", stderrOutput))
 	}
 
-	// Execute dnsx with stdin (pipe subdomains)
-	execErr := d.runWithStdin(ctx, target, subdomains, args, handler, result)
+	// Get parsed responses from handler
+	responses := handler.GetResponses()
+
+	// Convert []DNSXResponse to []*DNSXResponse for parser
+	responsePtrs := make([]*DNSXResponse, len(responses))
+	for i := range responses {
+		responsePtrs[i] = &responses[i]
+	}
 
 	// Parse responses into artifacts (always, even with errors)
-	artifacts := d.parser.ParseMultipleResponses(handler.responses, target, input.Artifacts)
+	artifacts := d.parser.ParseMultipleResponses(responsePtrs, target, input.Artifacts)
 	for _, artifact := range artifacts {
 		result.AddArtifact(artifact)
 	}
 
 	duration := time.Since(startTime)
-	resolvedCount := len(handler.responses)
+	resolvedCount := len(responses)
 	artifactCount := len(result.Artifacts)
 
 	d.GetLogger().Info("dnsx DNS resolution completed",
@@ -237,68 +243,6 @@ func (d *DNSXSource) buildCommandArgs() []string {
 	return args
 }
 
-// runWithStdin executes dnsx with subdomains piped via stdin.
-func (d *DNSXSource) runWithStdin(ctx context.Context, target domain.Target, subdomains []string, args []string, handler *dnsxHandler, result *domain.ScanResult) error {
-	// Build command with context
-	cmd := exec.CommandContext(ctx, d.GetExecPath(), args...)
-
-	// Create stdout pipe for streaming JSON
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	// Create stderr pipe for warnings
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	// Create stdin pipe to send subdomains
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stdin pipe: %w", err)
-	}
-
-	// Start dnsx process
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start dnsx: %w", err)
-	}
-
-	d.GetLogger().Debug("dnsx process started", "pid", cmd.Process.Pid)
-
-	// Write subdomains to stdin in goroutine
-	go func() {
-		defer stdin.Close()
-		for _, subdomain := range subdomains {
-			fmt.Fprintln(stdin, subdomain)
-		}
-	}()
-
-	// Process stdout using handler
-	if err := d.ProcessOutput(stdout, handler); err != nil {
-		d.GetLogger().Warn("output processing error", "error", err.Error())
-	}
-
-	// Capture stderr for warnings
-	stderrBytes, _ := io.ReadAll(stderr)
-	if len(stderrBytes) > 0 {
-		stderrStr := string(stderrBytes)
-		d.GetLogger().Debug("dnsx stderr", "output", stderrStr)
-		result.AddWarning("dnsx", fmt.Sprintf("stderr output: %s", stderrStr))
-	}
-
-	// Wait for process to complete
-	waitErr := cmd.Wait()
-
-	// Finalize handler (always)
-	if err := handler.Finalize(); err != nil {
-		d.GetLogger().Warn("handler finalization error", "error", err.Error())
-	}
-
-	return waitErr
-}
-
 // Stream implements ports.StreamingSource.
 func (d *DNSXSource) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
 	return d.DefaultStream(ctx, target, d.Run)
@@ -340,47 +284,3 @@ func (d *DNSXSource) HealthCheck(ctx context.Context) error {
 	return d.DefaultHealthCheck(ctx)
 }
 
-// dnsxHandler implements common.OutputHandler for dnsx JSON output processing.
-type dnsxHandler struct {
-	parser    *Parser
-	target    domain.Target
-	logger    logx.Logger
-	responses []*DNSXResponse
-
-	// State
-	mu sync.Mutex
-}
-
-// ProcessLine handles each line of dnsx stdout (JSON lines).
-func (h *dnsxHandler) ProcessLine(line []byte) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	var resp DNSXResponse
-	if err := json.Unmarshal(line, &resp); err != nil {
-		h.logger.Warn("failed to parse dnsx output", "line", string(line), "error", err.Error())
-		return nil // Non-fatal, continue processing
-	}
-
-	h.responses = append(h.responses, &resp)
-
-	h.logger.Debug("parsed dnsx response",
-		"host", resp.Host,
-		"status", resp.StatusCode,
-		"a_records", len(resp.A),
-		"aaaa_records", len(resp.AAAA),
-		"cdn", resp.CDN,
-	)
-
-	return nil
-}
-
-// Finalize is called after all lines are processed.
-func (h *dnsxHandler) Finalize() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	h.logger.Info("finalized dnsx output processing", "responses", len(h.responses))
-
-	return nil
-}
