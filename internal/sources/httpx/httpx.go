@@ -444,6 +444,12 @@ func (h *HTTPXSource) runWithProfile(ctx context.Context, target domain.Target, 
 	// Execute CLI with stdin using BaseCLISource abstraction
 	result, stderrOutput, err := h.ExecuteCLIWithStdin(ctx, target, args, targets, handler)
 
+	// Check if result is nil (can happen on early errors like pipe creation failure)
+	if result == nil {
+		h.GetLogger().Warn("httpx execution failed, result is nil", "error", err)
+		return nil, fmt.Errorf("httpx execution failed: %w", err)
+	}
+
 	// Handle stderr warnings
 	if len(stderrOutput) > 0 {
 		h.GetLogger().Debug("httpx stderr", "output", stderrOutput)

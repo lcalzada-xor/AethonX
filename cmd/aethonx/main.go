@@ -30,6 +30,7 @@ import (
 	_ "aethonx/internal/sources/shodan"
 	_ "aethonx/internal/sources/subfinder"
 	_ "aethonx/internal/sources/waybackurls"
+	_ "aethonx/internal/sources/whatweb"
 )
 
 var (
@@ -210,12 +211,12 @@ func main() {
 
 	// 10. Create pipeline orchestrator (stage-based execution)
 	orch := usecases.NewPipelineOrchestrator(usecases.PipelineOrchestratorOptions{
-		Sources:                        sources,
-		SourceMetadata:                 sourceMetadata,
-		Logger:                         logger,
-		Observers:                      []ports.Notifier{}, // Future: webhooks, metrics, etc.
-		MaxWorkers:                     max(1, cfg.Core.Workers),
-		StreamingWriter:                streamingWriter,
+		Sources:         sources,
+		SourceMetadata:  sourceMetadata,
+		Logger:          logger,
+		Observers:       []ports.Notifier{}, // Future: webhooks, metrics, etc.
+		MaxWorkers:      max(1, cfg.Core.Workers),
+		StreamingWriter: streamingWriter,
 		StreamingConfig: usecases.StreamingConfig{
 			ArtifactThreshold: cfg.Streaming.ArtifactThreshold,
 			OutputDir:         cfg.Output.Dir,

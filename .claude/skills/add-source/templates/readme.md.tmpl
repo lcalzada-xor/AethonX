@@ -1,0 +1,335 @@
+# {{.Name}} Source
+
+{{.Description}}
+
+## Overview
+
+- **Type**: {{.Type}}
+- **Mode**: {{.Mode}}
+- **Stage**: {{.StageHint}} ({{.StageComment}})
+- **Priority**: {{.Priority}}
+- **Requires Auth**: {{.RequiresAuth}}
+
+## Installation
+
+{{- if eq .Type "CLI"}}
+
+### Binary Installation
+
+```bash
+{{.InstallInstructions}}
+```
+
+Verify installation:
+
+```bash
+{{.BinaryName}} -version
+```
+
+{{- else if eq .Type "API"}}
+
+### API Access
+
+This source connects to the {{.ServiceName}} API at: `{{.BaseURL}}`
+
+{{- if .RequiresAuth}}
+**Authentication Required**: You need an API key to use this source.
+
+Get your API key: {{.APIKeyURL}}
+{{- else}}
+**No authentication required** - This API is publicly accessible.
+{{- end}}
+
+{{- end}}
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# Enable/disable the source
+export AETHONX_SOURCES_{{.EnvPrefix}}_ENABLED=true
+
+# Priority (higher = runs earlier)
+export AETHONX_SOURCES_{{.EnvPrefix}}_PRIORITY={{.Priority}}
+
+# Timeout in seconds
+export AETHONX_SOURCES_{{.EnvPrefix}}_TIMEOUT={{.DefaultTimeout}}
+
+{{- if eq .Type "CLI"}}
+# Binary path (optional, defaults to PATH lookup)
+export AETHONX_SOURCES_{{.EnvPrefix}}_EXEC_PATH={{.BinaryName}}
+{{- end}}
+
+{{- range .CustomConfigFields}}
+# {{.Description}}
+export AETHONX_SOURCES_{{$.EnvPrefix}}_{{.EnvKey}}={{.DefaultValue}}
+{{- end}}
+```
+
+### CLI Flags
+
+```bash
+# Enable the source
+./aethonx -t example.com --src.{{.Name}}
+
+# Disable the source
+./aethonx -t example.com --src.{{.Name}}=false
+
+# Set priority
+./aethonx -t example.com --src.{{.Name}}.priority={{.Priority}}
+
+{{- range .CustomConfigFields}}
+# {{.Description}}
+./aethonx -t example.com --src.{{.Name}}.{{.Key}}={{.DefaultValue}}
+{{- end}}
+```
+
+### .env File
+
+```bash
+# Add to .env file
+AETHONX_SOURCES_{{.EnvPrefix}}_ENABLED=true
+{{- range .CustomConfigFields}}
+AETHONX_SOURCES_{{$.EnvPrefix}}_{{.EnvKey}}={{.DefaultValue}}
+{{- end}}
+```
+
+## Usage
+
+### Basic Scan
+
+```bash
+./aethonx -t example.com --src.{{.Name}}
+```
+
+### With Custom Configuration
+
+```bash
+./aethonx -t example.com \
+  --src.{{.Name}} \
+{{- range .CustomConfigFields}}
+  --src.{{$.Name}}.{{.Key}}={{.ExampleValue}} \
+{{- end}}
+  -o output_dir
+```
+
+### Active Mode
+
+{{- if or (eq .Mode "Active") (eq .Mode "Both")}}
+```bash
+# Enable active reconnaissance
+./aethonx -t example.com --active --src.{{.Name}}
+```
+{{- else}}
+This source operates in **passive mode only** and does not require the `--active` flag.
+{{- end}}
+
+{{- if .ImplementsInputConsumer}}
+
+### Stage-Based Execution
+
+This source implements `InputConsumer` and runs in Stage {{.StageHint}}.
+
+It consumes the following artifact types from previous stages:
+{{- range .InputArtifacts}}
+- {{.}}
+{{- end}}
+
+The orchestrator will automatically provide these artifacts as input.
+{{- end}}
+
+## Output Artifacts
+
+This source produces the following artifact types:
+
+{{- range .OutputArtifacts}}
+- **{{.}}**: {{.Description}}
+{{- end}}
+
+## Examples
+
+### Example 1: Basic Discovery
+
+```bash
+./aethonx -t hackerone.com --src.{{.Name}} -o results/
+```
+
+### Example 2: Integration with Other Sources
+
+```bash
+# {{.Name}} will run in stage {{.StageHint}}
+./aethonx -t example.com \
+  --src.crtsh \
+  --src.subfinder \
+  --src.{{.Name}} \
+  -o full_scan/
+```
+
+### Example 3: Custom Configuration
+
+```bash
+./aethonx -t example.com \
+  --src.{{.Name}} \
+{{- range .CustomConfigFields}}
+  --src.{{$.Name}}.{{.Key}}={{.ExampleValue}} \
+{{- end}}
+  -o custom_scan/
+```
+
+## Output Format
+
+Results are saved in JSON format:
+
+```json
+{
+  "target": {
+    "root": "example.com",
+    "type": "domain"
+  },
+  "artifacts": [
+    {
+      "type": "...",
+      "value": "...",
+      "sources": ["{{.Name}}"],
+      "confidence": 0.8,
+      "metadata": {
+        ...
+      }
+    }
+  ]
+}
+```
+
+## Performance
+
+- **Default Timeout**: {{.DefaultTimeout}}s
+- **Rate Limit**: {{.RateLimit}} req/s ({{.RateLimitComment}})
+- **Concurrency**: Managed by AethonX worker pool
+- **Memory**: Streaming enabled for large result sets (threshold: 1000 artifacts)
+
+## Troubleshooting
+
+{{- if eq .Type "CLI"}}
+
+### Binary Not Found
+
+```
+Error: {{.Name}} not found in PATH
+```
+
+**Solution**: Install {{.BinaryName}} and ensure it's in your PATH:
+
+```bash
+which {{.BinaryName}}
+# or specify path explicitly
+export AETHONX_SOURCES_{{.EnvPrefix}}_EXEC_PATH=/custom/path/{{.BinaryName}}
+```
+
+### Permission Denied
+
+```
+Error: permission denied: {{.BinaryName}}
+```
+
+**Solution**: Make the binary executable:
+
+```bash
+chmod +x $(which {{.BinaryName}})
+```
+
+{{- end}}
+
+### Timeout Errors
+
+```
+Warning: {{.Name}} timed out after {{.DefaultTimeout}}s
+```
+
+**Solution**: Increase timeout:
+
+```bash
+./aethonx -t example.com --src.{{.Name}}.timeout=300
+```
+
+### No Results Found
+
+```
+Warning: {{.Name}} completed but found 0 results
+```
+
+**Possible causes**:
+- Target has no relevant data
+{{- if eq .Type "API"}}
+- API rate limiting
+- Invalid API key (if auth required)
+{{- end}}
+{{- if eq .Type "CLI"}}
+- Binary is outdated
+- Network connectivity issues
+{{- end}}
+
+## Development
+
+### Running Tests
+
+```bash
+# Unit tests
+go test -v ./internal/sources/{{.Name}}/
+
+# With race detection
+go test -race ./internal/sources/{{.Name}}/
+
+# Coverage
+go test -cover ./internal/sources/{{.Name}}/
+```
+
+### Debugging
+
+Enable debug logging:
+
+```bash
+AETHONX_LOG_LEVEL=debug ./aethonx -t example.com --src.{{.Name}}
+```
+
+## Architecture
+
+### Interfaces Implemented
+
+- `ports.Source` (required)
+{{- if .ImplementsAdvanced}}
+- `ports.AdvancedSource` (Initialize, Validate, HealthCheck)
+{{- end}}
+{{- if .ImplementsStreaming}}
+- `ports.StreamingSource` (Stream)
+{{- end}}
+{{- if .ImplementsInputConsumer}}
+- `ports.InputConsumer` (RunWithInput)
+{{- end}}
+
+### Files
+
+- `{{.Name}}.go` - Main implementation
+- `parser.go` - Output parsing logic
+- `registry.go` - Auto-registration
+- `{{.Name}}_test.go` - Unit tests
+- `fixtures_test.go` - Test fixtures
+
+## Contributing
+
+To modify this source:
+
+1. Update implementation in `{{.Name}}.go`
+2. Update parser in `parser.go`
+3. Add tests in `{{.Name}}_test.go`
+4. Run tests: `make test`
+5. Update this README if needed
+
+## References
+
+{{- if eq .Type "CLI"}}
+- Binary: {{.InstallInstructions}}
+{{- else if eq .Type "API"}}
+- API Documentation: {{.APIDocsURL}}
+{{- end}}
+- AethonX Documentation: https://github.com/yourusername/aethonx

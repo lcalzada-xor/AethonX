@@ -1,0 +1,347 @@
+// Package {{.Name}} implements integration with {{.BinaryName}} CLI tool.
+// {{.Description}}
+package {{.Name}}
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+
+	"aethonx/internal/core/domain"
+	"aethonx/internal/core/domain/metadata"
+	"aethonx/internal/core/ports"
+	"aethonx/internal/platform/logx"
+	"aethonx/internal/sources/common"
+)
+
+const (
+	sourceName     = "{{.Name}}"
+	defaultTimeout = {{.DefaultTimeout}} * time.Second
+{{- range .CustomConfigConstants}}
+	{{.Key}} = {{.Value}}
+{{- end}}
+)
+
+// {{.StructName}} implements ports.Source{{if .ImplementsInputConsumer}} and ports.InputConsumer{{end}}.
+// It wraps {{.BinaryName}} CLI tool for {{.Purpose}}.
+type {{.StructName}} struct {
+	*common.BaseCLISource // Embedded base for subprocess management
+{{range .Fields}}
+	{{.Name}} {{.Type}} {{if .Comment}}// {{.Comment}}{{end}}
+{{- end}}
+	parser *Parser
+}
+
+{{- if .ImplementsInputConsumer}}
+// Compile-time interface assertions
+var (
+	_ ports.Source        = (*{{.StructName}})(nil)
+	_ ports.InputConsumer = (*{{.StructName}})(nil)
+)
+{{- end}}
+
+// New creates a new {{.StructName}} with default configuration.
+func New(logger logx.Logger) *{{.StructName}} {
+	return &{{.StructName}}{
+		BaseCLISource: common.NewBaseCLISource(logger, common.BaseCLIConfig{
+			SourceName:     sourceName,
+			ExecPath:       "{{.BinaryName}}",
+			Timeout:        defaultTimeout,
+			ProgressBuffer: 10,
+		}),
+{{- range .DefaultFieldValues}}
+		{{.Name}}: {{.Value}},
+{{- end}}
+		parser: NewParser(logger, sourceName),
+	}
+}
+
+// NewWithConfig creates {{.StructName}} with custom configuration.
+func NewWithConfig(
+	logger logx.Logger,
+	execPath string,
+	timeout time.Duration,
+{{- range .ConfigParams}}
+	{{.Name}} {{.Type}},
+{{- end}}
+) *{{.StructName}} {
+	return &{{.StructName}}{
+		BaseCLISource: common.NewBaseCLISource(logger, common.BaseCLIConfig{
+			SourceName:     sourceName,
+			ExecPath:       execPath,
+			Timeout:        timeout,
+			ProgressBuffer: 10,
+		}),
+{{- range .ConfigParams}}
+		{{.Name}}: {{.Name}},
+{{- end}}
+		parser: NewParser(logger, sourceName),
+	}
+}
+
+// Name returns the source name.
+func (s *{{.StructName}}) Name() string {
+	return sourceName
+}
+
+// Mode returns the source operation mode.
+func (s *{{.StructName}}) Mode() domain.SourceMode {
+	return domain.SourceMode{{.Mode}}
+}
+
+// Type returns the source type.
+func (s *{{.StructName}}) Type() domain.SourceType {
+	return domain.SourceTypeCLI
+}
+
+// Run executes {{.BinaryName}} against the target.
+func (s *{{.StructName}}) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
+	startTime := time.Now()
+
+	s.GetLogger().Info("starting {{.Name}} scan",
+		"target", target.Root,
+{{- range .LogFields}}
+		"{{.Key}}", s.{{.Field}},
+{{- end}}
+	)
+
+	// Build command arguments
+	args := s.buildCommandArgs(target)
+
+	// Create handler for processing output
+	handler := &{{.Name}}Handler{
+		parser:    s.parser,
+		target:    target,
+		logger:    s.GetLogger(),
+		responses: make([]{{.ResponseType}}, 0, 100),
+	}
+
+	// Execute CLI with handler (BaseCLISource handles all subprocess logic)
+{{- if .UsesStdin}}
+	result, stderrOutput, err := s.ExecuteCLIWithStdin(ctx, target, args, inputItems, handler)
+{{- else}}
+	result, stderrOutput, err := s.ExecuteCLI(ctx, target, args, handler)
+{{- end}}
+
+	// Handle fatal errors (e.g., failed to start process)
+	if result == nil {
+		return nil, fmt.Errorf("{{.Name}} failed to start: %w", err)
+	}
+
+	// Handle stderr warnings
+	if len(stderrOutput) > 0 {
+		s.GetLogger().Debug("{{.Name}} stderr", "output", stderrOutput)
+		result.AddWarning("{{.Name}}", fmt.Sprintf("stderr output: %s", stderrOutput))
+	}
+
+	// Handle errors (partial results tolerated)
+	if err != nil {
+		responseCount := len(handler.responses)
+		if responseCount > 0 {
+			s.GetLogger().Warn("{{.Name}} exited with error but produced results",
+				"error", err.Error(),
+				"responses", responseCount,
+			)
+			result.AddWarning("{{.Name}}", fmt.Sprintf("process exited with error: %v", err))
+		} else {
+			return nil, fmt.Errorf("{{.Name}} failed: %w", err)
+		}
+	}
+
+	// Parse responses into artifacts
+	artifacts := s.parser.ParseMultipleResponses(handler.responses, target)
+	for _, artifact := range artifacts {
+		result.AddArtifact(artifact)
+	}
+
+	duration := time.Since(startTime)
+	s.GetLogger().Info("{{.Name}} scan completed",
+		"target", target.Root,
+		"duration", duration.String(),
+		"responses", len(handler.responses),
+		"artifacts", len(result.Artifacts),
+	)
+
+	return result, nil
+}
+
+{{- if .ImplementsInputConsumer}}
+
+// RunWithInput executes {{.BinaryName}} with artifacts from previous stages.
+func (s *{{.StructName}}) RunWithInput(ctx context.Context, target domain.Target, input *domain.ScanResult) (*domain.ScanResult, error) {
+	// Filter input artifacts for processing
+	items := s.extractInputItems(input)
+
+	if len(items) == 0 {
+		s.GetLogger().Info("no input items to process", "target", target.Root)
+		return domain.NewScanResult(target), nil
+	}
+
+	s.GetLogger().Info("starting {{.Name}} scan with input",
+		"target", target.Root,
+		"input_items", len(items),
+	)
+
+	// Build command arguments
+	args := s.buildCommandArgs(target)
+
+	// Create handler
+	handler := &{{.Name}}Handler{
+		parser:    s.parser,
+		target:    target,
+		logger:    s.GetLogger(),
+		responses: make([]{{.ResponseType}}, 0, 100),
+	}
+
+	// Execute with stdin
+	result, stderrOutput, err := s.ExecuteCLIWithStdin(ctx, target, args, items, handler)
+
+	// Handle errors (same as Run)
+	if result == nil {
+		return nil, fmt.Errorf("{{.Name}} failed to start: %w", err)
+	}
+
+	if len(stderrOutput) > 0 {
+		result.AddWarning("{{.Name}}", fmt.Sprintf("stderr: %s", stderrOutput))
+	}
+
+	if err != nil && len(handler.responses) == 0 {
+		return nil, fmt.Errorf("{{.Name}} failed: %w", err)
+	}
+
+	// Parse artifacts
+	artifacts := s.parser.ParseMultipleResponses(handler.responses, target)
+	for _, artifact := range artifacts {
+		result.AddArtifact(artifact)
+	}
+
+	s.GetLogger().Info("{{.Name}} scan with input completed",
+		"artifacts", len(result.Artifacts),
+	)
+
+	return result, nil
+}
+
+// extractInputItems extracts relevant items from input artifacts.
+func (s *{{.StructName}}) extractInputItems(input *domain.ScanResult) []string {
+	items := make([]string, 0)
+	seen := make(map[string]bool)
+
+	for _, artifact := range input.Artifacts {
+		// Filter by input artifact types
+{{- range .InputArtifacts}}
+		if artifact.Type == domain.ArtifactType{{.}} {
+			if !seen[artifact.Value] {
+				items = append(items, artifact.Value)
+				seen[artifact.Value] = true
+			}
+		}
+{{- end}}
+	}
+
+	return items
+}
+{{- end}}
+
+// {{.Name}}Handler implements common.OutputHandler for {{.BinaryName}} output processing.
+type {{.Name}}Handler struct {
+	parser    *Parser
+	target    domain.Target
+	logger    logx.Logger
+	responses []{{.ResponseType}}
+	mu        sync.Mutex
+}
+
+// ProcessLine handles each line of {{.BinaryName}} stdout.
+func (h *{{.Name}}Handler) ProcessLine(line []byte) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// TODO: Implement parsing logic for {{.BinaryName}} output
+	// This is a placeholder - adjust based on actual output format
+
+	var resp {{.ResponseType}}
+	if err := json.Unmarshal(line, &resp); err != nil {
+		h.logger.Warn("failed to parse {{.Name}} output", "line", string(line), "error", err.Error())
+		return nil // Non-fatal, continue processing
+	}
+
+	h.responses = append(h.responses, resp)
+
+	h.logger.Debug("parsed {{.Name}} response",
+		"response", fmt.Sprintf("%+v", resp),
+	)
+
+	return nil
+}
+
+// Finalize is called after all lines are processed.
+func (h *{{.Name}}Handler) Finalize() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.logger.Info("parsing responses to artifacts", "count", len(h.responses))
+	return nil
+}
+
+// Stream implements ports.StreamingSource.
+func (s *{{.StructName}}) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
+	return s.DefaultStream(ctx, target, s.Run)
+}
+
+// Initialize verifies that {{.BinaryName}} is installed and accessible.
+// Implements ports.AdvancedSource.
+func (s *{{.StructName}}) Initialize() error {
+	return s.DefaultInitialize(
+		"{{.Name}}",
+		"{{.InstallInstructions}}",
+	)
+}
+
+// Validate checks if the source configuration is valid.
+// Implements ports.AdvancedSource.
+func (s *{{.StructName}}) Validate() error {
+	// Base validation
+	if err := s.DefaultValidate(); err != nil {
+		return err
+	}
+
+	// TODO: Add {{.Name}}-specific validation
+{{range .ValidationRules}}
+	{{.Check}}
+{{- end}}
+
+	return nil
+}
+
+// HealthCheck verifies that {{.BinaryName}} is responsive.
+// Implements ports.AdvancedSource.
+func (s *{{.StructName}}) HealthCheck(ctx context.Context) error {
+	return s.DefaultHealthCheck(ctx)
+}
+
+// buildCommandArgs constructs the {{.BinaryName}} command arguments.
+func (s *{{.StructName}}) buildCommandArgs(target domain.Target) []string {
+	args := []string{
+		// TODO: Customize arguments for {{.BinaryName}}
+		// Example flags:
+{{- range .DefaultArgs}}
+		"{{.}}",
+{{- end}}
+	}
+
+{{range .ConditionalArgs}}
+	{{.Condition}} {
+		args = append(args, {{.Args}})
+	}
+{{- end}}
+
+	s.GetLogger().Debug("built {{.Name}} command",
+		"args", args,
+		"timeout", s.GetTimeout().String(),
+	)
+
+	return args
+}

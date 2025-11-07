@@ -117,7 +117,7 @@ func DefaultConfig() Config {
 					Enabled:   true,
 					Timeout:   200 * time.Second, // subfinder with all sources
 					Retries:   2,
-					RateLimit: 0, // Managed internally by subfinder
+					RateLimit: 0,  // Managed internally by subfinder
 					Priority:  10, // High priority - passive discovery
 					Custom: map[string]interface{}{
 						"all_sources": true,
@@ -184,7 +184,7 @@ func DefaultConfig() Config {
 					Enabled:   true,
 					Timeout:   60 * time.Second, // Standard profile timeout
 					Retries:   2,
-					RateLimit: 0, // Managed by worker pool
+					RateLimit: 0,  // Managed by worker pool
 					Priority:  20, // Stage 3 (Crawl) - after httpx
 					Custom: map[string]interface{}{
 						"profile":           "standard",                         // quick, standard, deep
@@ -194,6 +194,19 @@ func DefaultConfig() Config {
 						"exec_path":         "golinkfinder",                     // Binary path
 						"gf_templates_path": "./internal/platform/gf_templates", // GF templates directory
 						"gf_patterns":       []string{"all"},                    // GF patterns to apply
+					},
+				},
+				"whatweb": {
+					Enabled:   true,
+					Timeout:   120 * time.Second, // Web fingerprinting can be slow
+					Retries:   2,
+					RateLimit: 0,  // Managed by threads
+					Priority:  16, // Stage 2 - after discovery, before crawl
+					Custom: map[string]interface{}{
+						"exec_path":  "whatweb",
+						"aggression": 1,  // 1-4, stealthy by default
+						"threads":    25, // Concurrent scans
+						"user_agent": "AethonX/1.0 (Web reconnaissance tool)",
 					},
 				},
 			},
@@ -399,6 +412,22 @@ func loadFromEnv(cfg *Config) {
 			}
 		}
 
+		// WhatWeb-specific custom config
+		if name == "whatweb" {
+			if v := getenv(prefix+"EXEC_PATH", ""); v != "" {
+				sourceCfg.Custom["exec_path"] = v
+			}
+			if v := getenv(prefix+"AGGRESSION", ""); v != "" {
+				sourceCfg.Custom["aggression"] = parseInt(v, 1)
+			}
+			if v := getenv(prefix+"THREADS", ""); v != "" {
+				sourceCfg.Custom["threads"] = parseInt(v, 25)
+			}
+			if v := getenv(prefix+"USER_AGENT", ""); v != "" {
+				sourceCfg.Custom["user_agent"] = v
+			}
+		}
+
 		cfg.Source.Sources[name] = sourceCfg
 	}
 
@@ -549,6 +578,44 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 			"GF patterns to apply (comma-separated, default: all)")
 	}
 
+	// WhatWeb flags
+	var whatwebExecPath string
+	var whatwebAggression int
+	var whatwebThreads int
+	var whatwebUserAgent string
+
+	if whatwebCfg, ok := cfg.Source.Sources["whatweb"]; ok {
+		if v, ok := whatwebCfg.Custom["exec_path"].(string); ok {
+			whatwebExecPath = v
+		} else {
+			whatwebExecPath = "whatweb"
+		}
+		if v, ok := whatwebCfg.Custom["aggression"].(int); ok {
+			whatwebAggression = v
+		} else {
+			whatwebAggression = 1
+		}
+		if v, ok := whatwebCfg.Custom["threads"].(int); ok {
+			whatwebThreads = v
+		} else {
+			whatwebThreads = 25
+		}
+		if v, ok := whatwebCfg.Custom["user_agent"].(string); ok {
+			whatwebUserAgent = v
+		} else {
+			whatwebUserAgent = "AethonX/1.0 (Web reconnaissance tool)"
+		}
+
+		pflag.StringVar(&whatwebExecPath, "src.whatweb.exec-path", whatwebExecPath,
+			"Path to whatweb binary (default: whatweb)")
+		pflag.IntVar(&whatwebAggression, "src.whatweb.aggression", whatwebAggression,
+			"Aggression level 1-4 (1=stealthy, 4=heavy, default: 1)")
+		pflag.IntVar(&whatwebThreads, "src.whatweb.threads", whatwebThreads,
+			"Number of concurrent threads (default: 25)")
+		pflag.StringVar(&whatwebUserAgent, "src.whatweb.user-agent", whatwebUserAgent,
+			"Custom user agent string")
+	}
+
 	// === OUTPUT FLAGS ===
 	pflag.StringVarP(&cfg.Output.Dir, "out", "o", cfg.Output.Dir, "Output directory")
 	pflag.StringVar(&cfg.Output.UIMode, "ui-mode", cfg.Output.UIMode,
@@ -626,6 +693,15 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 		cfg.Source.Sources["golinkfinderevo"] = glCfg
 	}
 
+	// Apply WhatWeb-specific flags back to config
+	if whatwebCfg, ok := cfg.Source.Sources["whatweb"]; ok {
+		whatwebCfg.Custom["exec_path"] = whatwebExecPath
+		whatwebCfg.Custom["aggression"] = whatwebAggression
+		whatwebCfg.Custom["threads"] = whatwebThreads
+		whatwebCfg.Custom["user_agent"] = whatwebUserAgent
+		cfg.Source.Sources["whatweb"] = whatwebCfg
+	}
+
 	// Handle help and version flags
 	if *showHelp {
 		PrintHelp()
@@ -660,8 +736,8 @@ func detectCommonFlagMistakes(cfg *Config) {
 	// (e.g., "arget", "ctive", "orkers") - these are clear mistakes
 	suspiciousPrefix := target != "" && !strings.Contains(target, ".") &&
 		(strings.HasPrefix(target, "arget") ||
-		 strings.HasPrefix(target, "ctive") ||
-		 strings.HasPrefix(target, "orkers"))
+			strings.HasPrefix(target, "ctive") ||
+			strings.HasPrefix(target, "orkers"))
 
 	if suspiciousTruncated || suspiciousPrefix {
 		fmt.Fprintf(os.Stderr, "\n⚠ WARNING: Suspicious target detected: %q\n", cfg.Core.Target)

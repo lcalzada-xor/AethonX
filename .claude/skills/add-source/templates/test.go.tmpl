@@ -1,0 +1,251 @@
+package {{.Name}}
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"aethonx/internal/core/domain"
+	"aethonx/internal/platform/logx"
+	"aethonx/internal/platform/registry"
+)
+
+func TestMain(m *testing.M) {
+	// Clean registry before tests
+	registry.Global().Clear()
+	m.Run()
+}
+
+// TestRegistry_{{.StructName}} validates that {{.Name}} registers correctly.
+func TestRegistry_{{.StructName}}(t *testing.T) {
+	registry.Global().Clear()
+
+	// Trigger init() by importing the package
+	// The init() function should have already run
+
+	// Verify registration
+	if !registry.Global().IsRegistered("{{.Name}}") {
+		t.Fatal("{{.Name}} source not registered")
+	}
+
+	// Verify metadata
+	meta, ok := registry.Global().GetMetadata("{{.Name}}")
+	if !ok {
+		t.Fatal("{{.Name}} metadata not found")
+	}
+
+	// Validate metadata fields
+	if meta.Name != "{{.Name}}" {
+		t.Errorf("expected name '{{.Name}}', got '%s'", meta.Name)
+	}
+
+	if meta.Mode != domain.SourceMode{{.Mode}} {
+		t.Errorf("expected mode '{{.Mode}}', got '%s'", meta.Mode)
+	}
+
+	if meta.Type != domain.SourceType{{.Type}} {
+		t.Errorf("expected type '{{.Type}}', got '%s'", meta.Type)
+	}
+
+	if meta.Priority != {{.Priority}} {
+		t.Errorf("expected priority {{.Priority}}, got %d", meta.Priority)
+	}
+
+	if meta.StageHint != {{.StageHint}} {
+		t.Errorf("expected stage hint {{.StageHint}}, got %d", meta.StageHint)
+	}
+
+	// Validate input/output artifacts
+	expectedInputs := []domain.ArtifactType{
+{{- range .InputArtifacts}}
+		domain.ArtifactType{{.}},
+{{- end}}
+	}
+
+	if len(meta.InputArtifacts) != len(expectedInputs) {
+		t.Errorf("expected %d input artifacts, got %d", len(expectedInputs), len(meta.InputArtifacts))
+	}
+
+	expectedOutputs := []domain.ArtifactType{
+{{- range .OutputArtifacts}}
+		domain.ArtifactType{{.}},
+{{- end}}
+	}
+
+	if len(meta.OutputArtifacts) != len(expectedOutputs) {
+		t.Errorf("expected %d output artifacts, got %d", len(expectedOutputs), len(meta.OutputArtifacts))
+	}
+}
+
+// TestFactory_{{.StructName}} validates that the factory creates a valid source.
+func TestFactory_{{.StructName}}(t *testing.T) {
+	logger := logx.New()
+	cfg := getTestConfig()
+
+	source, err := factory(cfg, logger)
+	if err != nil {
+		t.Fatalf("factory failed: %v", err)
+	}
+
+	if source == nil {
+		t.Fatal("factory returned nil source")
+	}
+
+	// Verify interface implementation
+	if source.Name() != "{{.Name}}" {
+		t.Errorf("expected name '{{.Name}}', got '%s'", source.Name())
+	}
+
+	if source.Mode() != domain.SourceMode{{.Mode}} {
+		t.Errorf("expected mode '{{.Mode}}', got '%s'", source.Mode())
+	}
+
+	if source.Type() != domain.SourceType{{.Type}} {
+		t.Errorf("expected type '{{.Type}}', got '%s'", source.Type())
+	}
+
+	// Cleanup
+	if err := source.Close(); err != nil {
+		t.Errorf("Close() failed: %v", err)
+	}
+}
+
+// Test{{.StructName}}_Run validates the Run method with mocked/test data.
+func Test{{.StructName}}_Run(t *testing.T) {
+	t.Skip("TODO: Implement Run() test with mocked {{.BinaryName}} output")
+
+	// Example test structure:
+	// logger := logx.New()
+	// source := New(logger)
+	// defer source.Close()
+	//
+	// target := domain.Target{
+	//     Root:   "example.com",
+	//     Type:   domain.TargetTypeDomain,
+	//     Scopes: []string{"example.com"},
+	// }
+	//
+	// ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// defer cancel()
+	//
+	// result, err := source.Run(ctx, target)
+	// if err != nil {
+	//     t.Fatalf("Run() failed: %v", err)
+	// }
+	//
+	// if result == nil {
+	//     t.Fatal("Run() returned nil result")
+	// }
+	//
+	// // Validate artifacts
+	// if len(result.Artifacts) == 0 {
+	//     t.Error("expected artifacts, got 0")
+	// }
+}
+
+// Test{{.StructName}}_Close validates proper cleanup.
+func Test{{.StructName}}_Close(t *testing.T) {
+	logger := logx.New()
+	source := New(logger)
+
+	// Close once
+	if err := source.Close(); err != nil {
+		t.Errorf("Close() failed: %v", err)
+	}
+
+	// Close again (should be idempotent)
+	if err := source.Close(); err != nil {
+		t.Errorf("Close() failed on second call: %v", err)
+	}
+}
+
+// Test{{.StructName}}_ConcurrentAccess validates thread-safety.
+func Test{{.StructName}}_ConcurrentAccess(t *testing.T) {
+	t.Skip("TODO: Implement concurrent access test")
+
+	// Example test for race conditions:
+	// logger := logx.New()
+	// source := New(logger)
+	// defer source.Close()
+	//
+	// target := domain.Target{Root: "example.com", Type: domain.TargetTypeDomain}
+	//
+	// var wg sync.WaitGroup
+	// for i := 0; i < 10; i++ {
+	//     wg.Add(1)
+	//     go func() {
+	//         defer wg.Done()
+	//         ctx := context.Background()
+	//         _, _ = source.Run(ctx, target)
+	//     }()
+	// }
+	// wg.Wait()
+}
+
+// Test{{.StructName}}_ContextCancellation validates context cancellation handling.
+func Test{{.StructName}}_ContextCancellation(t *testing.T) {
+	t.Skip("TODO: Implement context cancellation test")
+
+	// Example test:
+	// logger := logx.New()
+	// source := New(logger)
+	// defer source.Close()
+	//
+	// target := domain.Target{Root: "example.com", Type: domain.TargetTypeDomain}
+	//
+	// ctx, cancel := context.WithCancel(context.Background())
+	// cancel() // Cancel immediately
+	//
+	// _, err := source.Run(ctx, target)
+	// if err == nil {
+	//     t.Error("expected error on cancelled context")
+	// }
+}
+
+{{- if .ImplementsInputConsumer}}
+
+// Test{{.StructName}}_RunWithInput validates the InputConsumer interface.
+func Test{{.StructName}}_RunWithInput(t *testing.T) {
+	t.Skip("TODO: Implement RunWithInput() test")
+
+	// Example test:
+	// logger := logx.New()
+	// source := New(logger)
+	// defer source.Close()
+	//
+	// target := domain.Target{Root: "example.com", Type: domain.TargetTypeDomain}
+	//
+	// // Create mock input
+	// input := domain.NewScanResult(target)
+	// // Add test artifacts to input
+	//
+	// ctx := context.Background()
+	// result, err := source.(ports.InputConsumer).RunWithInput(ctx, target, input)
+	// if err != nil {
+	//     t.Fatalf("RunWithInput() failed: %v", err)
+	// }
+	//
+	// if result == nil {
+	//     t.Fatal("RunWithInput() returned nil result")
+	// }
+}
+{{- end}}
+
+// getTestConfig returns a test configuration for {{.Name}}.
+func getTestConfig() ports.SourceConfig {
+	return ports.SourceConfig{
+		Enabled:   true,
+		Timeout:   {{.DefaultTimeout}} * time.Second,
+		Retries:   2,
+		RateLimit: 0,
+		Priority:  {{.Priority}},
+		Custom: map[string]interface{}{
+{{- if eq .Type "CLI"}}
+			"exec_path": "{{.BinaryName}}",
+{{- end}}
+{{- range .CustomConfigFields}}
+			"{{.Key}}": {{.TestValue}},
+{{- end}}
+		},
+	}
+}

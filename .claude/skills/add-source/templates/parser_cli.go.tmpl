@@ -1,0 +1,149 @@
+package {{.Name}}
+
+import (
+	"fmt"
+
+	"aethonx/internal/core/domain"
+	"aethonx/internal/core/domain/metadata"
+	"aethonx/internal/platform/logx"
+)
+
+// Parser handles parsing of {{.BinaryName}} output into domain artifacts.
+type Parser struct {
+	logger     logx.Logger
+	sourceName string
+}
+
+// NewParser creates a new parser for {{.BinaryName}} output.
+func NewParser(logger logx.Logger, sourceName string) *Parser {
+	return &Parser{
+		logger:     logger.With("component", "parser"),
+		sourceName: sourceName,
+	}
+}
+
+// {{.ResponseType}} represents a single response from {{.BinaryName}}.
+// TODO: Define the actual structure based on {{.BinaryName}} output format.
+type {{.ResponseType}} struct {
+	// Add fields based on tool output
+	// Example for JSON output:
+	// Host       string   `json:"host"`
+	// Port       int      `json:"port"`
+	// Status     string   `json:"status"`
+	// Tags       []string `json:"tags"`
+}
+
+// ParseMultipleResponses converts multiple {{.BinaryName}} responses into artifacts.
+func (p *Parser) ParseMultipleResponses(responses []{{.ResponseType}}, target domain.Target) []*domain.Artifact {
+	artifacts := make([]*domain.Artifact, 0, len(responses))
+	seen := make(map[string]bool) // Deduplication
+
+	for _, resp := range responses {
+		// TODO: Implement parsing logic for {{.BinaryName}} output
+		// This is a placeholder - customize based on actual tool output
+
+		// Example parsing:
+		// value := extractValue(resp)
+		//
+		// // Skip if already processed
+		// if seen[value] {
+		//     continue
+		// }
+		// seen[value] = true
+		//
+		// // Validate scope
+		// if !target.IsInScope(value) {
+		//     p.logger.Debug("skipping out-of-scope value",
+		//         "value", value,
+		//         "target", target.Root,
+		//     )
+		//     continue
+		// }
+		//
+		// // Create metadata
+		// meta := p.createMetadata(resp)
+		//
+		// // Create artifact
+		// artifact := domain.NewArtifactWithMetadata(
+		//     domain.ArtifactType..., // Choose appropriate type
+		//     value,
+		//     p.sourceName,
+		//     meta,
+		// )
+		//
+		// // Set confidence based on source mode
+		// artifact.Confidence = domain.Confidence{{.ConfidenceLevel}}
+		//
+		// // Add tags if applicable
+		// for _, tag := range resp.Tags {
+		//     artifact.AddTag(tag)
+		// }
+		//
+		// artifacts = append(artifacts, artifact)
+
+		// Placeholder to avoid unused variable error
+		_ = resp
+	}
+
+	p.logger.Info("parsed responses",
+		"total_responses", len(responses),
+		"artifacts_created", len(artifacts),
+	)
+
+	return artifacts
+}
+
+// createMetadata creates typed metadata from {{.BinaryName}} response.
+func (p *Parser) createMetadata(resp {{.ResponseType}}) metadata.ArtifactMetadata {
+	// TODO: Implement metadata creation based on output type
+	// Examples:
+	//
+	// For subdomain/domain artifacts:
+	// meta := metadata.NewDomainMetadata()
+	// meta.HasSSL = resp.HasSSL
+	// meta.StatusCode = resp.StatusCode
+	// return meta
+	//
+	// For vulnerability artifacts:
+	// meta := metadata.NewVulnerabilityMetadata()
+	// meta.CVEID = resp.CVE
+	// meta.Severity = resp.Severity
+	// return meta
+	//
+	// For service artifacts:
+	// meta := metadata.NewServiceMetadata()
+	// meta.Port = resp.Port
+	// meta.Protocol = resp.Protocol
+	// meta.Version = resp.Version
+	// return meta
+
+	// Placeholder: return basic domain metadata
+	return metadata.NewDomainMetadata()
+}
+
+// ParseSingle converts a single {{.BinaryName}} response into an artifact.
+func (p *Parser) ParseSingle(resp {{.ResponseType}}, target domain.Target) (*domain.Artifact, error) {
+	// TODO: Implement single response parsing
+	// This is useful for streaming/real-time processing
+
+	// value := extractValue(resp)
+	//
+	// if !target.IsInScope(value) {
+	//     return nil, fmt.Errorf("value out of scope: %s", value)
+	// }
+	//
+	// meta := p.createMetadata(resp)
+	//
+	// artifact := domain.NewArtifactWithMetadata(
+	//     domain.ArtifactType...,
+	//     value,
+	//     p.sourceName,
+	//     meta,
+	// )
+	// artifact.Confidence = domain.ConfidenceMedium
+	//
+	// return artifact, nil
+
+	// Placeholder
+	return nil, fmt.Errorf("not implemented")
+}

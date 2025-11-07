@@ -1,0 +1,225 @@
+// Package {{.Name}} implements integration with {{.ServiceName}} API.
+// {{.Description}}
+package {{.Name}}
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"aethonx/internal/core/domain"
+	"aethonx/internal/core/domain/metadata"
+	"aethonx/internal/core/ports"
+	"aethonx/internal/platform/httpclient"
+	"aethonx/internal/platform/logx"
+	"aethonx/internal/sources/common"
+)
+
+const (
+	sourceName = "{{.Name}}"
+	baseURL    = "{{.BaseURL}}"
+{{- range .CustomConfigConstants}}
+	{{.Key}} = {{.Value}}
+{{- end}}
+)
+
+// {{.StructName}} implements ports.Source for {{.ServiceName}} API integration.
+type {{.StructName}} struct {
+	*common.BaseAPISource // Embed base for API sources
+	client                httpclient.Client
+{{- range .Fields}}
+	{{.Name}} {{.Type}} {{if .Comment}}// {{.Comment}}{{end}}
+{{- end}}
+}
+
+// New creates a new {{.StructName}} with default configuration.
+func New(logger logx.Logger) ports.Source {
+	// HTTP client configuration for {{.ServiceName}}
+	httpConfig := httpclient.Config{
+		Timeout:         {{.DefaultTimeout}} * time.Second,
+		MaxRetries:      3,
+		RetryBackoff:    2 * time.Second,
+		MaxRetryBackoff: 30 * time.Second,
+		UserAgent:       "AethonX/1.0 (Security reconnaissance tool)",
+		RateLimit:       {{.RateLimit}}, // {{.RateLimitComment}}
+		RateLimitBurst:  1,
+	}
+
+	return &{{.StructName}}{
+		BaseAPISource: common.NewBaseAPISource(logger, sourceName),
+		client:        *httpclient.New(httpConfig, logger),
+{{- range .DefaultFieldValues}}
+		{{.Name}}: {{.Value}},
+{{- end}}
+	}
+}
+
+// NewWithConfig creates {{.StructName}} with custom configuration.
+func NewWithConfig(
+	logger logx.Logger,
+{{- range .ConfigParams}}
+	{{.Name}} {{.Type}},
+{{- end}}
+) ports.Source {
+	httpConfig := httpclient.Config{
+		Timeout:         {{.DefaultTimeout}} * time.Second,
+		MaxRetries:      3,
+		RetryBackoff:    2 * time.Second,
+		MaxRetryBackoff: 30 * time.Second,
+		UserAgent:       "AethonX/1.0",
+		RateLimit:       {{.RateLimit}},
+		RateLimitBurst:  1,
+	}
+
+	return &{{.StructName}}{
+		BaseAPISource: common.NewBaseAPISource(logger, sourceName),
+		client:        *httpclient.New(httpConfig, logger),
+{{- range .ConfigParams}}
+		{{.Name}}: {{.Name}},
+{{- end}}
+	}
+}
+
+// Name returns the source name.
+func (s *{{.StructName}}) Name() string {
+	return sourceName
+}
+
+// Mode returns the source operation mode.
+func (s *{{.StructName}}) Mode() domain.SourceMode {
+	return domain.SourceMode{{.Mode}}
+}
+
+// Type returns the source type.
+func (s *{{.StructName}}) Type() domain.SourceType {
+	return domain.SourceTypeAPI
+}
+
+// Run executes the source against the target.
+func (s *{{.StructName}}) Run(ctx context.Context, target domain.Target) (*domain.ScanResult, error) {
+	s.GetLogger().Debug("starting {{.Name}} scan", "target", target.Root)
+
+	result := domain.NewScanResult(target)
+	result.Metadata.SourcesUsed = []string{s.Name()}
+
+	// Build API URL
+	url := s.buildAPIURL(target)
+
+	// Fetch data from API
+	body, err := s.client.FetchJSON(ctx, url)
+	if err != nil {
+		errMsg := fmt.Sprintf("HTTP request failed: %v", err)
+		result.AddError(s.Name(), errMsg, false) // Non-fatal - scan can continue
+		s.GetLogger().Warn("{{.Name}} request failed", "target", target.Root, "error", err.Error())
+		return result, err
+	}
+
+	// Parse API response
+	var records []{{.ResponseType}}
+	if err := json.Unmarshal(body, &records); err != nil {
+		// If parsing fails, the API might have returned HTML/error
+		result.AddWarning(s.Name(), fmt.Sprintf("failed to parse JSON: %v", err))
+		return result, nil
+	}
+
+	s.GetLogger().Debug("parsed {{.Name}} records", "count", len(records))
+
+	// Process records and extract artifacts with progress tracking
+	artifacts := s.processRecordsWithProgress(ctx, records, target)
+
+	// Add artifacts to result
+	for _, a := range artifacts {
+		result.AddArtifact(a)
+	}
+
+	s.GetLogger().Info("{{.Name}} scan completed",
+		"target", target.Root,
+		"artifacts", len(artifacts),
+	)
+
+	return result, nil
+}
+
+// processRecordsWithProgress processes records and creates artifacts with progress updates.
+func (s *{{.StructName}}) processRecordsWithProgress(ctx context.Context, records []{{.ResponseType}}, target domain.Target) []*domain.Artifact {
+	artifacts := make([]*domain.Artifact, 0)
+	artifactCount := 0
+
+	for _, record := range records {
+		// Check context cancellation
+		select {
+		case <-ctx.Done():
+			s.GetLogger().Debug("processRecords cancelled by context")
+			return artifacts
+		default:
+		}
+
+		// TODO: Implement artifact extraction from {{.ServiceName}} response
+		// Example:
+		// value := extractValue(record)
+		// if !target.IsInScope(value) {
+		//     continue
+		// }
+		//
+		// Create metadata
+		// meta := metadata.New...Metadata()
+		// meta.Field = record.Field
+		//
+		// Create artifact
+		// artifact := domain.NewArtifactWithMetadata(
+		//     domain.ArtifactType...,
+		//     value,
+		//     s.Name(),
+		//     meta,
+		// )
+		// artifact.Confidence = domain.ConfidenceMedium
+		//
+		// artifacts = append(artifacts, artifact)
+		// artifactCount++
+		//
+		// Emit progress
+		// s.EmitProgress(artifactCount, fmt.Sprintf("Processing %s", value))
+
+		// Placeholder artifact creation
+		_ = record // TODO: Use record data
+	}
+
+	return artifacts
+}
+
+// buildAPIURL constructs the API request URL.
+func (s *{{.StructName}}) buildAPIURL(target domain.Target) string {
+	// TODO: Customize URL construction for {{.ServiceName}} API
+{{- if .RequiresAuth}}
+	// Include authentication if required
+	// url := fmt.Sprintf("%s/endpoint?key=%s&target=%s", baseURL, s.apiKey, target.Root)
+{{- else}}
+	// url := fmt.Sprintf("%s/endpoint?target=%s", baseURL, target.Root)
+{{- end}}
+
+	url := fmt.Sprintf("%s?target=%s", baseURL, target.Root)
+	return url
+}
+
+// Stream implements ports.StreamingSource.
+func (s *{{.StructName}}) Stream(ctx context.Context, target domain.Target) (<-chan *domain.Artifact, <-chan error) {
+	return s.DefaultStream(ctx, target, s.Run)
+}
+
+// Close cleans up resources (implements ports.Source).
+func (s *{{.StructName}}) Close() error {
+	s.GetLogger().Debug("closing {{.Name}} source")
+	// BaseAPISource handles progress channel cleanup
+	return s.BaseAPISource.Close()
+}
+
+// {{.ResponseType}} represents the API response structure.
+// TODO: Define the actual response structure based on {{.ServiceName}} API documentation.
+type {{.ResponseType}} struct {
+	// Add fields based on API response format
+	// Example:
+	// ID    string `json:"id"`
+	// Name  string `json:"name"`
+	// Value string `json:"value"`
+}
