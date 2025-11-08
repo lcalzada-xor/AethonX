@@ -5,7 +5,7 @@
 <h1 align="center">🧠 AethonX</h1>
 
 <p align="center">
-  <b>Engine modular de reconocimiento pasivo y activo</b><br>
+  <b>Extended BugBounty web recon pipeline</b><br>
   <i>Inspirado en Aethon, uno de los caballos de Helios</i>
 </p>
 
