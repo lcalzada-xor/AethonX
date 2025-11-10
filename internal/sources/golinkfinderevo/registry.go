@@ -22,8 +22,7 @@ func init() {
 		Priority:    20,     // High priority in Stage 3
 		StageHint:   3,      // Force Stage 3 (Crawl)
 		InputArtifacts: []domain.ArtifactType{
-			domain.ArtifactTypeURL,        // Consume URLs from httpx
-			domain.ArtifactTypeJavaScript, // Consume JS files if detected
+			domain.ArtifactTypeURL, // Consume URLs from httpx
 		},
 		OutputArtifacts: []domain.ArtifactType{
 			domain.ArtifactTypeEndpoint,       // Discovered endpoints
@@ -32,6 +31,7 @@ func init() {
 			domain.ArtifactTypeSensitiveFile,  // Sensitive file paths
 			domain.ArtifactTypeAPI,            // API definitions
 			domain.ArtifactTypeStorageBucket,  // Cloud storage buckets
+			domain.ArtifactTypeJavaScript,     // JavaScript files for Stage 4 (retire.js)
 		},
 	})
 

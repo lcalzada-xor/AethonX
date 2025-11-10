@@ -668,6 +668,7 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 	urlCount := 0
 	paramCount := 0
 	subdomainCount := 0
+	jsFileCount := 0
 
 	// Convert resources to artifacts with intelligent classification
 	for _, resource := range output.Resources {
@@ -675,6 +676,15 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 			"resource_url", resource.Resource,
 			"endpoints_count", len(resource.Endpoints),
 		)
+
+		// Emit JavaScript artifact if resource is a JS file
+		if g.isJavaScriptFile(resource.Resource) {
+			jsArtifact := g.createJavaScriptArtifact(resource.Resource)
+			if jsArtifact != nil {
+				artifacts = append(artifacts, jsArtifact)
+				jsFileCount++
+			}
+		}
 
 		for _, ep := range resource.Endpoints {
 			fullURL := g.parser.normalizeEndpoint(resource.Resource, ep.Link)
@@ -1169,6 +1179,44 @@ func truncateStderr(stderr string, maxLen int) string {
 		return stderr
 	}
 	return stderr[:maxLen] + "..."
+}
+
+// isJavaScriptFile checks if a URL/resource is a JavaScript file
+func (g *GoLinkfinderEvoSource) isJavaScriptFile(urlStr string) bool {
+	ext := strings.ToLower(filepath.Ext(urlStr))
+	return ext == ".js" || ext == ".jsx" || strings.Contains(strings.ToLower(urlStr), "javascript")
+}
+
+// createJavaScriptArtifact creates a JavaScript artifact for retire.js consumption
+func (g *GoLinkfinderEvoSource) createJavaScriptArtifact(jsURL string) *domain.Artifact {
+	jsMeta := &metadata.JavaScriptMetadata{
+		SourceURL:       jsURL,
+		FilePath:        "", // No local path yet - retire.js will download
+		DetectionMethod: "golinkfinder",
+		IsMinified:      strings.Contains(jsURL, ".min.") || strings.HasSuffix(jsURL, ".min.js"),
+	}
+
+	artifact := domain.NewArtifactWithMetadata(
+		domain.ArtifactTypeJavaScript,
+		filepath.Base(jsURL),
+		g.Name(),
+		jsMeta,
+	)
+
+	// Discovery context
+	artifact.SetDiscoveryContext(&domain.DiscoveryContext{
+		SourceURL:      jsURL,
+		SourceResource: "golinkfinder crawl",
+	})
+
+	// Classification
+	artifact.SetClassification(&domain.Classification{
+		ResourceType: domain.ResourceTypeStatic,
+	})
+
+	artifact.Confidence = 0.9
+
+	return artifact
 }
 
 // Close releases resources.

@@ -29,10 +29,11 @@ type Config struct {
 
 // CoreConfig contains fundamental scan parameters.
 type CoreConfig struct {
-	Target   string // Target domain (required)
-	Active   bool   // Enable active reconnaissance mode
-	Workers  int    // Number of concurrent workers
-	TimeoutS int    // Global timeout in seconds (0 = no timeout)
+	Target        string // Target domain (required)
+	Active        bool   // Enable active reconnaissance mode
+	Workers       int    // Number of concurrent workers
+	TimeoutS      int    // Global timeout in seconds (0 = no timeout)
+	StageTimeoutS int    // Per-stage timeout in seconds (0 = no per-stage limit, only global timeout applies)
 }
 
 // SourceConfig contains source-specific configurations.
@@ -98,10 +99,11 @@ type VulnEnrichmentConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Core: CoreConfig{
-			Target:   "",
-			Active:   false,
-			Workers:  16,
-			TimeoutS: 30,
+			Target:        "",
+			Active:        false,
+			Workers:       16,
+			TimeoutS:      30,
+			StageTimeoutS: 0, // 0 = no per-stage limit, only global timeout applies
 		},
 
 		Source: SourceConfig{
@@ -225,6 +227,27 @@ func DefaultConfig() Config {
 					RateLimit: 0, // Rate limiting handled internally by client (45 req/min free tier)
 					Priority:  18,  // Stage 2 - enrichment after httpx/dnsx (15), before golinkfinder (20)
 					Custom:    make(map[string]interface{}),
+				},
+				"retirejs": {
+					Enabled:   true,
+					Timeout:   180 * time.Second, // retire.js can take time scanning large JS files
+					Retries:   2,
+					RateLimit: 0,  // No rate limiting needed for local analysis
+					Priority:  25, // Stage 4 (CVE Assessment) - after golinkfinderevo (20)
+					Custom: map[string]interface{}{
+						"exec_path":         "retire",
+						"severity":          "medium",   // none, low, medium, high, critical
+						"exit_code":         0,          // Exit code to use (0 = don't fail on vulns)
+						"deep":              false,      // Deep scan mode
+						"include_osv":       false,      // Include OSV advisories
+						"max_files":         100,        // Max JS files to analyze
+						"extensions":        []string{"js"}, // File extensions to scan
+						"cache_dir":         "",         // Cache directory (empty = default)
+						"no_cache":          false,      // Disable cache
+						"download_timeout":  10 * time.Second, // Timeout for downloading JS files (fallback mode)
+						"prefer_local":      true,       // Prefer local files from golinkfinderevo
+						"fallback_download": true,       // Fallback to download if no local files
+					},
 				},
 			},
 		},
@@ -502,6 +525,7 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 	pflag.BoolVarP(&cfg.Core.Active, "active", "a", cfg.Core.Active, "Enable active reconnaissance")
 	pflag.IntVarP(&cfg.Core.Workers, "workers", "w", cfg.Core.Workers, "Concurrent workers")
 	pflag.IntVarP(&cfg.Core.TimeoutS, "timeout", "T", cfg.Core.TimeoutS, "Global timeout in seconds (0=none)")
+	pflag.IntVar(&cfg.Core.StageTimeoutS, "stage-timeout", cfg.Core.StageTimeoutS, "Per-stage timeout in seconds (0=no limit, only global timeout)")
 
 	// === SOURCE FLAGS ===
 	// NOTE: We need to store pointers to enabled/priority flags for each source
@@ -616,6 +640,68 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 			"Path to gf templates directory (default: ./internal/platform/gf_templates)")
 		pflag.StringVar(&golinkfinderevoGFPatterns, "src.golinkfinderevo.gf-patterns", golinkfinderevoGFPatterns,
 			"GF patterns to apply (comma-separated, default: all)")
+	}
+
+	// RetireJS flags
+	var retirejsExecPath string
+	var retirejsSeverity string
+	var retirejsDeep bool
+	var retirejsIncludeOSV bool
+	var retirejsMaxFiles int
+	var retirejsPreferLocal bool
+	var retirejsFallbackDownload bool
+
+	if retirejsCfg, ok := cfg.Source.Sources["retirejs"]; ok {
+		if v, ok := retirejsCfg.Custom["exec_path"].(string); ok {
+			retirejsExecPath = v
+		} else {
+			retirejsExecPath = "retire"
+		}
+		if v, ok := retirejsCfg.Custom["severity"].(string); ok {
+			retirejsSeverity = v
+		} else {
+			retirejsSeverity = "medium"
+		}
+		if v, ok := retirejsCfg.Custom["deep"].(bool); ok {
+			retirejsDeep = v
+		} else {
+			retirejsDeep = false
+		}
+		if v, ok := retirejsCfg.Custom["include_osv"].(bool); ok {
+			retirejsIncludeOSV = v
+		} else {
+			retirejsIncludeOSV = false
+		}
+		if v, ok := retirejsCfg.Custom["max_files"].(int); ok {
+			retirejsMaxFiles = v
+		} else {
+			retirejsMaxFiles = 100
+		}
+		if v, ok := retirejsCfg.Custom["prefer_local"].(bool); ok {
+			retirejsPreferLocal = v
+		} else {
+			retirejsPreferLocal = true
+		}
+		if v, ok := retirejsCfg.Custom["fallback_download"].(bool); ok {
+			retirejsFallbackDownload = v
+		} else {
+			retirejsFallbackDownload = true
+		}
+
+		pflag.StringVar(&retirejsExecPath, "src.retirejs.exec-path", retirejsExecPath,
+			"Path to retire binary (default: retire)")
+		pflag.StringVar(&retirejsSeverity, "src.retirejs.severity", retirejsSeverity,
+			"Minimum severity to report: none, low, medium (default), high, critical")
+		pflag.BoolVar(&retirejsDeep, "src.retirejs.deep", retirejsDeep,
+			"Enable deep scan mode (default: false)")
+		pflag.BoolVar(&retirejsIncludeOSV, "src.retirejs.include-osv", retirejsIncludeOSV,
+			"Include OSV advisories (default: false)")
+		pflag.IntVar(&retirejsMaxFiles, "src.retirejs.max-files", retirejsMaxFiles,
+			"Maximum JavaScript files to analyze (default: 100)")
+		pflag.BoolVar(&retirejsPreferLocal, "src.retirejs.prefer-local", retirejsPreferLocal,
+			"Prefer local files from golinkfinderevo (default: true)")
+		pflag.BoolVar(&retirejsFallbackDownload, "src.retirejs.fallback-download", retirejsFallbackDownload,
+			"Fallback to download if no local files (default: true)")
 	}
 
 	// WhatWeb flags
@@ -737,6 +823,18 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 			glCfg.Custom["gf_patterns"] = strings.Split(golinkfinderevoGFPatterns, ",")
 		}
 		cfg.Source.Sources["golinkfinderevo"] = glCfg
+	}
+
+	// Apply RetireJS-specific flags back to config
+	if retirejsCfg, ok := cfg.Source.Sources["retirejs"]; ok {
+		retirejsCfg.Custom["exec_path"] = retirejsExecPath
+		retirejsCfg.Custom["severity"] = retirejsSeverity
+		retirejsCfg.Custom["deep"] = retirejsDeep
+		retirejsCfg.Custom["include_osv"] = retirejsIncludeOSV
+		retirejsCfg.Custom["max_files"] = retirejsMaxFiles
+		retirejsCfg.Custom["prefer_local"] = retirejsPreferLocal
+		retirejsCfg.Custom["fallback_download"] = retirejsFallbackDownload
+		cfg.Source.Sources["retirejs"] = retirejsCfg
 	}
 
 	// Apply WhatWeb-specific flags back to config

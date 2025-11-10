@@ -34,7 +34,7 @@ Build: `make build` | Test: `make test` (with `-race`) | Run: `./aethonx -t exam
 **Flags**: pflag library. MUST use `--` for long (`--target`), `-` for short (`-t`). Priority: CLI>ENV>.env>defaults
 
 **Core Flags**: `-t/--target`, `-a/--active`, `-w/--workers(16)`, `-T/--timeout(30)`, `-o/--out(aethonx_out)`, `-q/--quiet`, `-s/--streaming(1000)`, `-r/--retries(3)`, `--circuit-breaker(true)`, `-p/--proxy`
-**Source Flags**: `--src.{crtsh|rdap|waybackurls|subfinder|httpx|shodan|golinkfinderevo}`, `--src.shodan.api_key`, `--src.shodan.use_cli`, `--src.shodan.rate_limit(1.0)`, `--src.golinkfinderevo.profile(standard)`, `--src.golinkfinderevo.workers(20)`, `--src.golinkfinderevo.max-script-files(50)`, `--src.golinkfinderevo.max-html-files(50)`, `--src.golinkfinderevo.gf-patterns(all)`
+**Source Flags**: `--src.{crtsh|rdap|waybackurls|subfinder|httpx|shodan|golinkfinderevo|retirejs}`, `--src.shodan.api_key`, `--src.shodan.use_cli`, `--src.shodan.rate_limit(1.0)`, `--src.golinkfinderevo.profile(standard)`, `--src.golinkfinderevo.workers(20)`, `--src.golinkfinderevo.max-script-files(50)`, `--src.golinkfinderevo.max-html-files(50)`, `--src.golinkfinderevo.gf-patterns(all)`, `--src.retirejs.severity(medium)`, `--src.retirejs.max-files(100)`, `--src.retirejs.prefer-local(true)`, `--src.retirejs.deep`, `--src.retirejs.include-osv`
 **Enrichment Flags**: `--enrich(true)`, `--enrich-nvd-api-key`, `--enrich-provider(nvd)`, `--enrich-cache-ttl(168h)`
 
 **.env file**: Auto-loads from CWD. `cp .env.example .env`. Supports: `AETHONX_SOURCES_SHODAN_API_KEY`, `AETHONX_SRC_SHODAN_API_KEY` (both formats work), `AETHONX_ENRICHMENT_NVD_API_KEY`, etc.
@@ -46,7 +46,8 @@ Build: `make build` | Test: `make test` (with `-race`) | Run: `./aethonx -t exam
 **httpx** (`internal/sources/httpx/`): CLI subprocess, HTTP probing/fingerprinting, active, profiles: Fast|Standard|Full
 **shodan** (`internal/sources/shodan/`): Hybrid: InternetDB(FREE,no key)+DNS fallback(Cloudflare→Google→System)+REST API(free+paid endpoints)+CLI. Passive. Max endpoint execution philosophy, graceful degradation. InternetDB: `https://internetdb.shodan.io/{ip}`, 1req/s, returns IP+Port+Subdomain+Vulnerability+Technology. DNS: Cloudflare DoH primary, Google fallback, system final. API: FREE endpoints (/shodan/host/count, /api-info, /tools/myip), PAID endpoints tolerate failures (/dns/domain, /shodan/host/search, /shodan/host/{ip}). Priority:12. Modes: No key(InternetDB+DNS), Free key(+free API), Paid(+paid API)
 **waybackurls** (`internal/sources/waybackurls/`): Internet Archive, historical URLs, passive, returns URL+Subdomain, priority:5
-**golinkfinderevo** (`internal/sources/golinkfinderevo/`): CLI subprocess, endpoint/secret discovery in JS/HTML, active, Stage 3 (Crawl). Consumes alive HTTP URLs from httpx (max 50 JS + 50 HTML files). GF integration with 10 modern templates (api-keys, jwt, credentials, sqli, xss, sensitive-files, endpoints, cloud-resources, crypto, custom-params). Profiles: Quick(10 workers,30s,no recursion,25 files)|Standard(20 workers,60s,1 level,50 files)|Deep(30 workers,120s,2 levels,100 files). Priority:20, StageHint:3. Requires `golinkfinder` binary: https://github.com/lcalzada-xor/GoLinkfinderEVO. Returns: Endpoint+Parameter+Credential+SensitiveFile+API+StorageBucket. Smart filtering by file extension (.js,.html) and HTTP status (200-399), requires DomainMetadata from httpx
+**golinkfinderevo** (`internal/sources/golinkfinderevo/`): CLI subprocess, endpoint/secret discovery in JS/HTML, active, Stage 3 (Crawl). Consumes alive HTTP URLs from httpx (max 50 JS + 50 HTML files). GF integration with 10 modern templates (api-keys, jwt, credentials, sqli, xss, sensitive-files, endpoints, cloud-resources, crypto, custom-params). Profiles: Quick(10 workers,30s,no recursion,25 files)|Standard(20 workers,60s,1 level,50 files)|Deep(30 workers,120s,2 levels,100 files). Priority:20, StageHint:3. Requires `golinkfinder` binary: https://github.com/lcalzada-xor/GoLinkfinderEVO. InputArtifacts: ArtifactTypeURL. OutputArtifacts: Endpoint+Parameter+Credential+SensitiveFile+API+StorageBucket+JavaScript(for Stage 4). Smart filtering by file extension (.js,.html) and HTTP status (200-399), requires DomainMetadata from httpx. Emits ArtifactTypeJavaScript with SourceURL for Stage 4 consumption
+**retirejs** (`internal/sources/retirejs/`): CLI subprocess, JavaScript library vulnerability detection, active, Stage 4 (CVE Assessment). Consumes ArtifactTypeJavaScript from golinkfinderevo, reutilizes downloaded JS files (NO re-download). Detects 200+ libraries (jQuery, Angular, React, lodash, moment, etc.) with known CVEs. Returns: Vulnerability(CVE IDs,CWE,severity,GHSA), Technology(lib detected), JavaScript(files analyzed). Metadata: JavaScriptMetadata(component,version,detection_method,vuln_count,highest_severity). Priority:25, StageHint:4. Severity filtering: none|low|medium|high|critical. Modes: prefer_local(true, reuse golinkfinder files)|fallback_download(true, download if no locals). Output: jsonsimple format. Options: --deep(deep scan), --include-osv(OSV advisories), --no-cache(disable cache). Requires `retire` binary: npm install -g retire (https://github.com/RetireJS/retire.js). ENV: AETHONX_SOURCES_RETIREJS_*. CLI: --src.retirejs, --src.retirejs.severity, --src.retirejs.max-files(100), --src.retirejs.prefer-local, --src.retirejs.fallback-download. Auto-enriched with NVD data via CVE Enrichment service
 
 ## Adding Source
 1. Create `internal/sources/mytool/mytool.go` (implement Source interface with Close()), `mytool_test.go`, `registry.go`
@@ -97,6 +98,49 @@ Auto-enriches vulnerability artifacts with NVD/circl.lu data. Flow: Scan→Vulns
 9. **crypto.json**: Private keys, certificates, SSH keys (BEGIN RSA/EC/OPENSSH PRIVATE KEY)
 10. **custom-params.json**: admin, debug, dev, test, command injection (cmd, exec, command, etc.)
 **Usage**: Set `AETHONX_SOURCES_GOLINKFINDEREVO_GF_PATTERNS=all` or comma-separated list. Templates in `./internal/platform/gf_templates/` directory. See `internal/platform/gf_templates/README.md` for pattern documentation.
+
+## Stage 4 (CVE Assessment) & retire.js Integration
+**Stage 4** executes after Stage 3 (Crawl) completes. Sources with `StageHint:4` perform vulnerability analysis on JavaScript libraries and components identified in previous stages.
+**Pipeline Flow**:
+```
+Stage 0 (Discovery) → Stage 1 (Probing - httpx) → Stage 3 (Crawl - golinkfinderevo) → Stage 4 (CVE Assessment - retirejs) → Output
+                                                               ↓ (JS files + metadata)
+                                                               ↓ (ArtifactTypeJavaScript with SourceURL)
+                                                               ↓ (File reuse - NO re-download)
+```
+**retirejs** (`internal/sources/retirejs/`): Active mode, Priority:25, StageHint:4. Implements InputConsumer interface to receive ArtifactTypeJavaScript from golinkfinderevo. Two execution modes:
+1. **Prefer Local Mode** (default): Extracts FilePath from JavaScriptMetadata → scans local files → NO bandwidth usage
+2. **Fallback Download Mode**: If no local files, extracts SourceURL → downloads JS files → scans downloaded files
+
+**Key Components**:
+- **FileManager** (`file_manager.go`): Extracts local JS file paths from artifacts, deduplicates, groups by directory to minimize retire CLI calls
+- **Parser** (`parser.go`): Parses retire.js JSON output (jsonsimple format), creates 3 artifact types: Vulnerability (CVE data), Technology (library info), JavaScript (analyzed files)
+- **Downloader** (`downloader.go`): Fallback mode, downloads JS files concurrently (max 5 parallel), respects maxFiles limit, generates valid filenames
+
+**JavaScriptMetadata** (`internal/core/domain/metadata/javascript.go`): Metadata for JavaScript artifacts. Fields: FilePath (local path for reuse), Component (library name), Version, DetectionMethod (filecontent|filename|hash), License, VulnCount (number of CVEs), HighestSeverity (critical|high|medium|low), IsMinified, SourceURL (original URL for fallback), NPMName
+
+**Configuration**:
+ENV: `AETHONX_SOURCES_RETIREJS_ENABLED(true)`, `AETHONX_SOURCES_RETIREJS_SEVERITY(medium)`, `AETHONX_SOURCES_RETIREJS_DEEP(false)`, `AETHONX_SOURCES_RETIREJS_MAX_FILES(100)`, `AETHONX_SOURCES_RETIREJS_PREFER_LOCAL(true)`, `AETHONX_SOURCES_RETIREJS_FALLBACK_DOWNLOAD(true)`
+CLI: `--src.retirejs`, `--src.retirejs.severity=(none|low|medium|high|critical)`, `--src.retirejs.deep`, `--src.retirejs.include-osv`, `--src.retirejs.max-files`, `--src.retirejs.prefer-local`, `--src.retirejs.fallback-download`
+
+**Integration with CVE Enrichment**: Vulnerability artifacts emitted by retirejs are automatically enriched with full NVD data (CVSS v2/v3, CWE mappings, CPE, references) via the CVE Enrichment service (orchestrator line 331-337). Cache TTL: 7 days.
+
+**Example Usage**:
+```bash
+# Stage 3 + Stage 4 pipeline (golinkfinderevo + retirejs)
+./aethonx -t example.com --active --src.httpx --src.golinkfinderevo --src.retirejs
+
+# Only high/critical vulnerabilities
+./aethonx -t example.com --active --src.retirejs --src.retirejs.severity=high
+
+# Force download mode (disable local file reuse)
+./aethonx -t example.com --active --src.retirejs --src.retirejs.prefer-local=false
+
+# Deep scan with OSV advisories
+./aethonx -t example.com --active --src.retirejs --src.retirejs.deep --src.retirejs.include-osv
+```
+
+**Performance Benefits**: Reusing local JS files from golinkfinderevo saves 80-90% bandwidth and 2-3x faster execution vs. re-downloading. Example: 87 JS files analyzed with 0 downloads needed.
 
 ## Artifact Types (42 total)
 Critical: Subdomain, IP, Email, URL, Certificate. Metadata types (13 total, `internal/core/domain/metadata/`): DomainMetadata (SSL,DNS,techs), CertificateMetadata (issuer,serial,dates), IPMetadata (geo,ASN,cloud), ServiceMetadata (port,protocol,version,banner), VulnerabilityMetadata (40+ CVE fields), etc.
