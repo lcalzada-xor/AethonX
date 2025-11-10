@@ -691,15 +691,18 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 				g.Name(),
 			)
 
-			artifact.AddTag("discovered_from:" + resource.Resource)
-			artifact.AddTag(fmt.Sprintf("line:%d", ep.Line))
-			if ep.Context != "" {
-				artifact.AddTag("context:" + ep.Context)
-			}
+			// Set discovery context
+			artifact.SetDiscoveryContext(&domain.DiscoveryContext{
+				SourceURL:  resource.Resource,
+				LineNumber: ep.Line,
+				Context:    ep.Context,
+			})
 
-			// Add resource type tags for static resources
+			// Set classification for static resources
 			if g.isStaticResource(fullURL) {
-				artifact.AddTag("resource_type:static")
+				artifact.SetClassification(&domain.Classification{
+					ResourceType: domain.ResourceTypeStatic,
+				})
 				artifact.Confidence = 0.5 // Lower confidence for static resources
 			} else {
 				artifact.Confidence = g.parser.calculateConfidence(ep.Link)
@@ -896,8 +899,12 @@ func (g *GoLinkfinderEvoSource) extractSubdomainsFromURL(fullURL string, target 
 		g.Name(),
 	)
 
-	artifact.AddTag("discovered_in_url:" + fullURL)
-	artifact.AddTag("external_domain")
+	artifact.SetDiscoveryContext(&domain.DiscoveryContext{
+		SourceURL: fullURL,
+	})
+	artifact.SetClassification(&domain.Classification{
+		IsExternal: true,
+	})
 	artifact.Confidence = 0.8
 
 	artifacts = append(artifacts, artifact)
@@ -936,14 +943,16 @@ func (g *GoLinkfinderEvoSource) convertGFFindingsToArtifacts(
 				"golinkfinderevo-gf",
 			)
 
-			artifact.AddTag("gf_pattern:" + ruleName)
-			artifact.AddTag("discovered_in:" + finding.Resource)
-			artifact.AddTag(fmt.Sprintf("line:%d", finding.Line))
-			if finding.Context != "" {
-				artifact.AddTag("context:" + finding.Context)
-			}
+			// Set discovery context
+			artifact.SetDiscoveryContext(&domain.DiscoveryContext{
+				SourceResource: finding.Resource,
+				LineNumber:     finding.Line,
+				Context:        finding.Context,
+				MatchPattern:   ruleName,
+			})
 
-			g.gfParser.addCategoryTags(artifact, ruleName)
+			// Add category-specific security context and classification
+			g.gfParser.addCategoryContexts(artifact, ruleName)
 			artifact.Confidence = g.gfParser.calculateConfidence(ruleName, finding.Evidence)
 
 			artifacts = append(artifacts, artifact)

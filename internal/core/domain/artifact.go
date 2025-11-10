@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -40,7 +42,16 @@ type Artifact struct {
 	// DiscoveredAt timestamp del descubrimiento
 	DiscoveredAt time.Time
 
-	// Tags permite categorización adicional
+	// DiscoveryContext contains metadata about how/where the artifact was discovered
+	DiscoveryContext *DiscoveryContext `json:"discovery_context,omitempty"`
+
+	// SecurityContext contains security-related classification and severity
+	SecurityContext *SecurityContext `json:"security_context,omitempty"`
+
+	// Classification contains categorization metadata
+	Classification *Classification `json:"classification,omitempty"`
+
+	// Tags permite categorización adicional (solo para tags simples, no datos estructurados)
 	Tags []string `json:"tags,omitempty"`
 }
 
@@ -145,6 +156,11 @@ func (a *Artifact) Normalize() {
 		a.Value = normalizeIP(a.Value)
 	case ArtifactTypeURL:
 		a.Value = normalizeURL(a.Value)
+		// Also remove session IDs from URLs
+		a.Value = normalizeEndpoint(a.Value)
+	case ArtifactTypeEndpoint:
+		// Remove session IDs from endpoints
+		a.Value = normalizeEndpoint(a.Value)
 	}
 }
 
@@ -184,6 +200,35 @@ func (a *Artifact) AddTag(tag string) {
 		}
 	}
 	a.Tags = append(a.Tags, tag)
+}
+
+// SetDiscoveryContext sets the discovery context for the artifact.
+func (a *Artifact) SetDiscoveryContext(ctx *DiscoveryContext) {
+	if ctx != nil && !ctx.IsEmpty() {
+		a.DiscoveryContext = ctx
+	}
+}
+
+// SetSecurityContext sets the security context for the artifact.
+func (a *Artifact) SetSecurityContext(ctx *SecurityContext) {
+	if ctx != nil && !ctx.IsEmpty() {
+		a.SecurityContext = ctx
+	}
+}
+
+// SetClassification sets the classification for the artifact.
+func (a *Artifact) SetClassification(cls *Classification) {
+	if cls != nil && !cls.IsEmpty() {
+		a.Classification = cls
+	}
+}
+
+// AddVulnerabilityType adds a vulnerability type to the security context.
+func (a *Artifact) AddVulnerabilityType(vulnType VulnerabilityType) {
+	if a.SecurityContext == nil {
+		a.SecurityContext = NewSecurityContext()
+	}
+	a.SecurityContext.AddVulnerabilityType(vulnType)
 }
 
 // AddRelation añade una relación con otro artifact.
@@ -334,6 +379,76 @@ func (a *Artifact) Merge(other *Artifact) error {
 	}
 	// Si other no tiene metadata, mantener el actual
 
+	// Merge DiscoveryContext (prefer most detailed)
+	if a.DiscoveryContext == nil && other.DiscoveryContext != nil {
+		a.DiscoveryContext = other.DiscoveryContext
+	} else if a.DiscoveryContext != nil && other.DiscoveryContext != nil {
+		// Merge fields preferring non-empty values
+		if a.DiscoveryContext.SourceURL == "" {
+			a.DiscoveryContext.SourceURL = other.DiscoveryContext.SourceURL
+		}
+		if a.DiscoveryContext.SourceResource == "" {
+			a.DiscoveryContext.SourceResource = other.DiscoveryContext.SourceResource
+		}
+		if a.DiscoveryContext.LineNumber == 0 {
+			a.DiscoveryContext.LineNumber = other.DiscoveryContext.LineNumber
+		}
+		if a.DiscoveryContext.Context == "" {
+			a.DiscoveryContext.Context = other.DiscoveryContext.Context
+		}
+		if a.DiscoveryContext.MatchPattern == "" {
+			a.DiscoveryContext.MatchPattern = other.DiscoveryContext.MatchPattern
+		}
+	}
+
+	// Merge SecurityContext (prefer higher severity)
+	if a.SecurityContext == nil && other.SecurityContext != nil {
+		a.SecurityContext = other.SecurityContext
+	} else if a.SecurityContext != nil && other.SecurityContext != nil {
+		// Prefer higher severity
+		if other.SecurityContext.Severity.Weight() > a.SecurityContext.Severity.Weight() {
+			a.SecurityContext.Severity = other.SecurityContext.Severity
+		}
+		// Merge vulnerability types
+		for _, vt := range other.SecurityContext.VulnerabilityTypes {
+			a.AddVulnerabilityType(vt)
+		}
+		// Merge other fields (prefer non-empty)
+		if a.SecurityContext.TokenType == "" {
+			a.SecurityContext.TokenType = other.SecurityContext.TokenType
+		}
+		if a.SecurityContext.CloudProvider == "" {
+			a.SecurityContext.CloudProvider = other.SecurityContext.CloudProvider
+		}
+		if a.SecurityContext.ExposureType == "" {
+			a.SecurityContext.ExposureType = other.SecurityContext.ExposureType
+		}
+		if !a.SecurityContext.IsSensitive && other.SecurityContext.IsSensitive {
+			a.SecurityContext.IsSensitive = true
+		}
+	}
+
+	// Merge Classification (prefer non-empty)
+	if a.Classification == nil && other.Classification != nil {
+		a.Classification = other.Classification
+	} else if a.Classification != nil && other.Classification != nil {
+		if a.Classification.ResourceType == "" {
+			a.Classification.ResourceType = other.Classification.ResourceType
+		}
+		if a.Classification.ParameterType == "" {
+			a.Classification.ParameterType = other.Classification.ParameterType
+		}
+		if a.Classification.DataType == "" {
+			a.Classification.DataType = other.Classification.DataType
+		}
+		if !a.Classification.IsExternal && other.Classification.IsExternal {
+			a.Classification.IsExternal = true
+		}
+		if a.Classification.Category == "" {
+			a.Classification.Category = other.Classification.Category
+		}
+	}
+
 	// Usar la confianza máxima
 	if other.Confidence > a.Confidence {
 		a.Confidence = other.Confidence
@@ -428,6 +543,84 @@ func normalizeURL(v string) string {
 	return validator.NormalizeURL(v)
 }
 
+// normalizeEndpoint removes session IDs and other transient parameters from endpoints/URLs.
+// This prevents duplicate artifacts for the same logical endpoint with different session tokens.
+func normalizeEndpoint(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return v
+	}
+
+	// Session ID patterns to remove (Java, PHP, ASP.NET, generic)
+	// Pattern format: ;sessiontype=HEXADECIMAL or ALPHANUMERIC
+	sessionPatterns := []string{
+		`;jsessionid=[A-F0-9]+`,              // Java (case-insensitive hex)
+		`;JSESSIONID=[A-F0-9]+`,
+		`;jsessionid=[a-f0-9]+`,
+		`;PHPSESSID=[A-Za-z0-9]+`,            // PHP
+		`;phpsessid=[A-Za-z0-9]+`,
+		`;ASPSESSIONID[A-Z]+=[A-Z0-9]+`,      // ASP.NET
+		`;aspsessionid[a-z]+=[a-z0-9]+`,
+		`;sessionid=[A-Za-z0-9_-]+`,          // Generic sessionid
+		`;SESSIONID=[A-Za-z0-9_-]+`,
+		`;sid=[A-Za-z0-9_-]+`,                // Short session ID
+		`;SID=[A-Za-z0-9_-]+`,
+	}
+
+	// First, remove path-based session IDs (;jsessionid=...)
+	// This must be done before URL parsing as url.Parse doesn't handle ; properly
+	for _, pattern := range sessionPatterns {
+		re := regexp.MustCompile(pattern)
+		v = re.ReplaceAllString(v, "")
+	}
+
+	// Then, normalize query parameter session IDs
+	if strings.Contains(v, "?") || strings.Contains(v, "&") {
+		v = normalizeSessionQueryParams(v)
+	}
+
+	return v
+}
+
+// normalizeSessionQueryParams removes session IDs from query parameters.
+// Common session parameters: jsessionid, PHPSESSID, sessionid, sid, etc.
+func normalizeSessionQueryParams(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		// If parsing fails, return original (better than losing data)
+		return urlStr
+	}
+
+	query := parsed.Query()
+
+	// List of common session parameter names to remove
+	sessionKeys := []string{
+		"jsessionid", "JSESSIONID",
+		"PHPSESSID", "phpsessid",
+		"sessionid", "SESSIONID",
+		"sid", "SID",
+		"session", "SESSION",
+		"sess", "SESS",
+		"s", "S",
+		"ASPSESSIONID", "aspsessionid",
+	}
+
+	// Remove all session parameters
+	for _, key := range sessionKeys {
+		query.Del(key)
+	}
+
+	// Also remove any parameter that looks like ASP.NET session (ASPSESSIONID*)
+	for key := range query {
+		if strings.HasPrefix(strings.ToUpper(key), "ASPSESSIONID") {
+			query.Del(key)
+		}
+	}
+
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
 // Validation functions - delegate to centralized validator
 
 func isValidEmail(email string) bool {
@@ -448,15 +641,18 @@ func isValidCertSerial(serial string) bool {
 
 // artifactJSON es una estructura auxiliar para serialización custom.
 type artifactJSON struct {
-	ID            string                      `json:"id"`
-	Type          ArtifactType                `json:"type"`
-	Value         string                      `json:"value"`
-	Sources       []string                    `json:"sources"`
-	Metadata      *metadata.MetadataEnvelope  `json:"metadata,omitempty"`
-	Relations     []ArtifactRelation          `json:"relations,omitempty"`
-	Confidence    float64                     `json:"confidence"`
-	DiscoveredAt  time.Time                   `json:"discovered_at"`
-	Tags          []string                    `json:"tags,omitempty"`
+	ID               string                      `json:"id"`
+	Type             ArtifactType                `json:"type"`
+	Value            string                      `json:"value"`
+	Sources          []string                    `json:"sources"`
+	Metadata         *metadata.MetadataEnvelope  `json:"metadata,omitempty"`
+	Relations        []ArtifactRelation          `json:"relations,omitempty"`
+	Confidence       float64                     `json:"confidence"`
+	DiscoveredAt     time.Time                   `json:"discovered_at"`
+	DiscoveryContext *DiscoveryContext           `json:"discovery_context,omitempty"`
+	SecurityContext  *SecurityContext            `json:"security_context,omitempty"`
+	Classification   *Classification             `json:"classification,omitempty"`
+	Tags             []string                    `json:"tags,omitempty"`
 }
 
 // MarshalJSON implementa custom JSON marshaling para Artifact.
@@ -474,15 +670,18 @@ func (a *Artifact) MarshalJSON() ([]byte, error) {
 
 	// Crear estructura auxiliar
 	aux := artifactJSON{
-		ID:           a.ID,
-		Type:         a.Type,
-		Value:        a.Value,
-		Sources:      a.Sources,
-		Metadata:     metaEnvelope,
-		Relations:    a.Relations,
-		Confidence:   a.Confidence,
-		DiscoveredAt: a.DiscoveredAt,
-		Tags:         a.Tags,
+		ID:               a.ID,
+		Type:             a.Type,
+		Value:            a.Value,
+		Sources:          a.Sources,
+		Metadata:         metaEnvelope,
+		Relations:        a.Relations,
+		Confidence:       a.Confidence,
+		DiscoveredAt:     a.DiscoveredAt,
+		DiscoveryContext: a.DiscoveryContext,
+		SecurityContext:  a.SecurityContext,
+		Classification:   a.Classification,
+		Tags:             a.Tags,
 	}
 
 	return json.Marshal(aux)
@@ -505,6 +704,9 @@ func (a *Artifact) UnmarshalJSON(data []byte) error {
 	a.Relations = aux.Relations
 	a.Confidence = aux.Confidence
 	a.DiscoveredAt = aux.DiscoveredAt
+	a.DiscoveryContext = aux.DiscoveryContext
+	a.SecurityContext = aux.SecurityContext
+	a.Classification = aux.Classification
 	a.Tags = aux.Tags
 
 	// Deserializar metadata tipado

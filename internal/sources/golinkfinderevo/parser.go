@@ -146,12 +146,19 @@ func (p *Parser) ExtractParametersFromEndpoint(endpoint string, target domain.Ta
 			p.sourceName,
 		)
 
-		artifact.AddTag("endpoint:" + endpoint)
-		artifact.AddTag("type:query_param")
+		// Set discovery context and classification
+		artifact.SetDiscoveryContext(&domain.DiscoveryContext{
+			SourceURL: endpoint,
+		})
+		artifact.SetClassification(&domain.Classification{
+			ParameterType: domain.ParamTypeQuery,
+		})
 
 		// Assess parameter sensitivity
 		if p.isSensitiveParameter(paramName) {
-			artifact.AddTag("sensitive")
+			artifact.SetSecurityContext(&domain.SecurityContext{
+				IsSensitive: true,
+			})
 			artifact.Confidence = 0.9
 		} else {
 			artifact.Confidence = 0.7

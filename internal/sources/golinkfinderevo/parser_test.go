@@ -151,3 +151,73 @@ func TestParser_NormalizeEndpoint_WithValidation(t *testing.T) {
 	}
 }
 
+func TestGFParser_LooksLikeEmail(t *testing.T) {
+	logger := logx.New()
+	gfParser := &GFParser{logger: logger}
+
+	tests := []struct {
+		input    string
+		expected bool
+		reason   string
+	}{
+		// Valid emails
+		{"user@example.com", true, "valid basic email"},
+		{"test.user@domain.co.uk", true, "valid email with subdomain TLD"},
+		{"abuse@nominalia.com", true, "real email from RDAP"},
+		{"abuse@interdominios.com", true, "real email from RDAP"},
+		{"contact@site.org", true, "valid email with .org"},
+		{"admin@localhost.local", true, "valid local domain email"},
+		{"name+tag@example.com", true, "email with plus addressing"},
+		{"user_name@example.com", true, "email with underscore"},
+		{"first.last@example.com", true, "email with dot in local part"},
+
+		// Invalid: retina display images (@2x, @3x, @4x)
+		{"logo@2x.png", false, "retina display @2x image"},
+		{"icon@3x.jpg", false, "retina display @3x image"},
+		{"banner@4x.webp", false, "retina display @4x image"},
+		{"ayuntamiento_valladolid_1_2_0@2x.png", false, "complex filename @2x.png"},
+		{"embajada-india_1_1@2x.png", false, "real false positive from scan"},
+		{"icc_small_0@2x.png", false, "real false positive from scan"},
+		{"universidad-de-valladolid_1_0@2x.png", false, "real false positive from scan"},
+		{"header@2x.jpeg", false, "retina @2x JPEG"},
+		{"footer@3x.svg", false, "retina @3x SVG"},
+
+		// Invalid: other static file patterns
+		{"file@name.svg", false, "SVG file"},
+		{"image@path.gif", false, "GIF file"},
+		{"photo@album.bmp", false, "BMP file"},
+		{"graphic@design.tiff", false, "TIFF file"},
+		{"avatar@user.webp", false, "WebP file"},
+		{"icon@app.ico", false, "ICO file"},
+
+		// Invalid: malformed email addresses
+		{"notanemail", false, "no @ symbol"},
+		{"@nodomain.com", false, "no local part"},
+		{"noat.com", false, "missing @ symbol"},
+		{"double@@at.com", false, "double @ symbol"},
+		{"user@", false, "no domain part"},
+		{"@domain.com", false, "empty local part"},
+		{"user@d", false, "domain too short"},
+		{"user@domain", false, "domain without TLD"},
+		{"a@bc", false, "domain part too short"},
+		{"user@.com", false, "domain starts with dot"},
+		{"user@domain.", false, "domain ends with dot"},
+
+		// Edge cases
+		{"", false, "empty string"},
+		{"@", false, "only @ symbol"},
+		{"a@b.c", true, "minimal valid email"},
+		{"user@sub.domain.com", true, "subdomain email"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result := gfParser.looksLikeEmail(tt.input)
+			if result != tt.expected {
+				t.Errorf("looksLikeEmail(%q) = %v, want %v (%s)",
+					tt.input, result, tt.expected, tt.reason)
+			}
+		})
+	}
+}
+

@@ -17,13 +17,14 @@ import (
 
 // Config is the main configuration structure organized by functional categories.
 type Config struct {
-	Core       CoreConfig
-	Source     SourceConfig
-	Output     OutputConfig
-	Streaming  StreamingConfig
-	Resilience ResilienceConfig
-	Network    NetworkConfig
-	Enrichment EnrichmentConfig
+	Core           CoreConfig
+	Source         SourceConfig
+	Output         OutputConfig
+	Streaming      StreamingConfig
+	Resilience     ResilienceConfig
+	Network        NetworkConfig
+	Enrichment     EnrichmentConfig
+	VulnEnrichment VulnEnrichmentConfig
 }
 
 // CoreConfig contains fundamental scan parameters.
@@ -82,6 +83,14 @@ type EnrichmentConfig struct {
 	NVDAPIKey     string        // NVD API key (optional, increases rate limit)
 	CacheTTL      time.Duration // Cache TTL for enriched CVEs
 	Timeout       time.Duration // Timeout per CVE enrichment request
+	MaxConcurrent int           // Max concurrent enrichment requests
+}
+
+// VulnEnrichmentConfig contains Vulners.com service vulnerability enrichment settings.
+type VulnEnrichmentConfig struct {
+	Enabled       bool          // Enable Vulners vulnerability enrichment for services
+	APIKey        string        // Vulners API key (optional, increases rate limit)
+	Timeout       time.Duration // Timeout per service enrichment request
 	MaxConcurrent int           // Max concurrent enrichment requests
 }
 
@@ -209,6 +218,14 @@ func DefaultConfig() Config {
 						"user_agent": "AethonX/1.0 (Web reconnaissance tool)",
 					},
 				},
+				"ipapi": {
+					Enabled:   true,
+					Timeout:   30 * time.Second, // IP geolocation lookups
+					Retries:   2,
+					RateLimit: 0, // Rate limiting handled internally by client (45 req/min free tier)
+					Priority:  18,  // Stage 2 - enrichment after httpx/dnsx (15), before golinkfinder (20)
+					Custom:    make(map[string]interface{}),
+				},
 			},
 		},
 
@@ -243,6 +260,13 @@ func DefaultConfig() Config {
 			Provider:      "nvd",
 			NVDAPIKey:     "",
 			CacheTTL:      168 * time.Hour, // 7 days
+			Timeout:       10 * time.Second,
+			MaxConcurrent: 5,
+		},
+
+		VulnEnrichment: VulnEnrichmentConfig{
+			Enabled:       false, // Disabled by default (API has 1000 req/day limit)
+			APIKey:        "",    // Optional, increases rate limit
 			Timeout:       10 * time.Second,
 			MaxConcurrent: 5,
 		},
@@ -330,6 +354,22 @@ func loadFromEnv(cfg *Config) {
 	}
 	if v := getenv("AETHONX_ENRICHMENT_MAX_CONCURRENT", ""); v != "" {
 		cfg.Enrichment.MaxConcurrent = parseInt(v, cfg.Enrichment.MaxConcurrent)
+	}
+
+	// === VULN ENRICHMENT CONFIG ===
+	if v := getenv("AETHONX_VULN_ENRICHMENT_ENABLED", ""); v != "" {
+		cfg.VulnEnrichment.Enabled = parseBool(v)
+	}
+	if v := getenv("AETHONX_VULN_ENRICHMENT_API_KEY", ""); v != "" {
+		cfg.VulnEnrichment.APIKey = v
+	}
+	if v := getenv("AETHONX_VULN_ENRICHMENT_TIMEOUT", ""); v != "" {
+		if duration, err := time.ParseDuration(v); err == nil {
+			cfg.VulnEnrichment.Timeout = duration
+		}
+	}
+	if v := getenv("AETHONX_VULN_ENRICHMENT_MAX_CONCURRENT", ""); v != "" {
+		cfg.VulnEnrichment.MaxConcurrent = parseInt(v, cfg.VulnEnrichment.MaxConcurrent)
 	}
 
 	// === SOURCE CONFIG ===
@@ -649,6 +689,12 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 		"CVE enrichment provider: nvd, circl (default: nvd)")
 	pflag.StringVar(&cfg.Enrichment.NVDAPIKey, "enrich-nvd-api-key", cfg.Enrichment.NVDAPIKey,
 		"NVD API key (optional, increases rate limit from 0.6/s to 50/s)")
+
+	// === VULN ENRICHMENT FLAGS ===
+	pflag.BoolVar(&cfg.VulnEnrichment.Enabled, "vuln-enrich", cfg.VulnEnrichment.Enabled,
+		"Enable Vulners.com service vulnerability enrichment (default: false)")
+	pflag.StringVar(&cfg.VulnEnrichment.APIKey, "vuln-enrich-api-key", cfg.VulnEnrichment.APIKey,
+		"Vulners.com API key (optional, increases rate limit from 1000/day)")
 
 	// Parse flags
 	pflag.Parse()

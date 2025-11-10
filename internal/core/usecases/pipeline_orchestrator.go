@@ -33,6 +33,10 @@ type PipelineOrchestrator struct {
 	mergeService               *MergeService
 	graphService               *GraphService
 	vulnEnrichmentService      *VulnerabilityEnrichmentService
+	serviceVulnEnrichmentService interface {
+		EnrichServices(artifacts []*domain.Artifact)
+		Close() error
+	}
 	logger                     logx.Logger
 
 	// Configuración de ejecución
@@ -70,6 +74,10 @@ type PipelineOrchestratorOptions struct {
 	UIConfig                       UIConfig
 	VulnerabilityEnrichmentService *VulnerabilityEnrichmentService
 	VulnerabilityEnrichmentEnabled bool
+	ServiceVulnEnrichmentService   interface {
+		EnrichServices(artifacts []*domain.Artifact)
+		Close() error
+	}
 	SigintChannel                  chan struct{}
 }
 
@@ -110,6 +118,7 @@ func NewPipelineOrchestrator(opts PipelineOrchestratorOptions) *PipelineOrchestr
 		uiConfig:                       opts.UIConfig,
 		vulnEnrichmentService:          opts.VulnerabilityEnrichmentService,
 		vulnerabilityEnrichmentEnabled: opts.VulnerabilityEnrichmentEnabled,
+		serviceVulnEnrichmentService:   opts.ServiceVulnEnrichmentService,
 		sigintChannel:                  opts.SigintChannel,
 	}
 }
@@ -371,6 +380,12 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		if err := p.vulnEnrichmentService.EnrichVulnerabilities(ctx, result); err != nil {
 			p.logger.Warn("vulnerability enrichment failed", "error", err)
 		}
+	}
+
+	// Enrich services with Vulners if enabled
+	if p.serviceVulnEnrichmentService != nil {
+		p.logger.Info("enriching services with vulnerability data")
+		p.serviceVulnEnrichmentService.EnrichServices(result.Artifacts)
 	}
 
 	// Construir grafo de relaciones

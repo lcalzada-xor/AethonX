@@ -20,12 +20,14 @@ import (
 	"aethonx/internal/platform/registry"
 	"aethonx/internal/platform/resilience"
 	"aethonx/internal/platform/ui"
+	"aethonx/internal/platform/vulners"
 
 	// Import sources for auto-registration via init()
 	_ "aethonx/internal/sources/crtsh"
 	_ "aethonx/internal/sources/dnsx"
 	_ "aethonx/internal/sources/golinkfinderevo"
 	_ "aethonx/internal/sources/httpx"
+	_ "aethonx/internal/sources/ipapi"
 	_ "aethonx/internal/sources/rdap"
 	_ "aethonx/internal/sources/shodan"
 	_ "aethonx/internal/sources/subfinder"
@@ -188,6 +190,28 @@ func main() {
 		}
 	}
 
+	// 7b. Create Vulners service vulnerability enrichment if enabled
+	var serviceVulnEnrichmentSvc interface {
+		EnrichServices(artifacts []*domain.Artifact)
+		Close() error
+	}
+	if cfg.VulnEnrichment.Enabled {
+		serviceVulnEnrichmentSvc = vulners.NewServiceVulnEnrichmentService(
+			logger,
+			cfg.VulnEnrichment.APIKey,
+			cfg.VulnEnrichment.MaxConcurrent,
+			cfg.VulnEnrichment.Timeout,
+			true,
+		)
+
+		if !usingVisualUI {
+			logger.Info("Vulners service enrichment enabled",
+				"timeout", cfg.VulnEnrichment.Timeout,
+				"max_concurrent", cfg.VulnEnrichment.MaxConcurrent,
+			)
+		}
+	}
+
 	// 8. Get source metadata from registry
 	sourceMetadata := registry.Global().GetAllMetadata()
 
@@ -230,6 +254,7 @@ func main() {
 		},
 		VulnerabilityEnrichmentService: vulnEnrichmentSvc,
 		VulnerabilityEnrichmentEnabled: cfg.Enrichment.Enabled,
+		ServiceVulnEnrichmentService:   serviceVulnEnrichmentSvc,
 		SigintChannel:                  sigintChannel,
 	})
 

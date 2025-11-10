@@ -102,6 +102,40 @@ Auto-enriches vulnerability artifacts with NVD/circl.lu data. Flow: Scan→Vulns
 Critical: Subdomain, IP, Email, URL, Certificate. Metadata types (13 total, `internal/core/domain/metadata/`): DomainMetadata (SSL,DNS,techs), CertificateMetadata (issuer,serial,dates), IPMetadata (geo,ASN,cloud), ServiceMetadata (port,protocol,version,banner), VulnerabilityMetadata (40+ CVE fields), etc.
 Creating: `artifact := domain.NewArtifactWithMetadata(domain.ArtifactTypeSubdomain, "test.example.com", "crtsh", domainMeta)`
 
+## Artifact Structure (Enhanced Context Fields)
+**Structured Context Fields** (3 new domain types at `internal/core/domain/`):
+
+1. **DiscoveryContext** - Traceability metadata (where/how artifact was found):
+   - `SourceURL`: URL/file where discovered
+   - `SourceResource`: Specific resource containing the finding
+   - `LineNumber`: Line number in source file
+   - `Context`: Surrounding text/code context
+   - `MatchPattern`: Pattern/rule that matched (e.g., GF pattern name)
+   - Usage: `artifact.SetDiscoveryContext(&domain.DiscoveryContext{SourceURL: url, LineNumber: 42})`
+
+2. **SecurityContext** - Security classification and risk assessment:
+   - `Severity`: Risk level (Critical|High|Medium|Low|Info)
+   - `VulnerabilityTypes`: []VulnerabilityType (SQLi, XSS, Credential, APIKey, Token, DBConnection, InternalIP)
+   - `TokenType`: Authentication token classification (JWT, GitHub, Slack, OAuth2, AWS, GCP, Azure, Stripe, Twilio)
+   - `CloudProvider`: Cloud service provider (AWS, GCP, Azure)
+   - `ExposureType`: How artifact is exposed (e.g., "internal_network", "connection_string")
+   - `IsSensitive`: Boolean flag for sensitive data
+   - Usage: `artifact.SetSecurityContext(domain.NewSecurityContext().WithSeverity(domain.SeverityHigh).WithVulnerabilityType(domain.VulnTypeSQLi))`
+
+3. **Classification** - Categorization metadata:
+   - `ResourceType`: Web resource type (Static|Dynamic|API|Endpoint)
+   - `ParameterType`: Parameter classification (Query|Path|Body|Header)
+   - `DataType`: Data classification (Credential, Email, InternalIP, DBConnection, OAuthToken, DeveloperNote, APIKey, JWT, Password, Secret)
+   - `IsExternal`: Boolean for external domain flag
+   - `Category`: Free-form additional category
+   - Usage: `artifact.SetClassification(domain.NewClassification().WithDataType(domain.DataTypeAPIKey).WithExternal(true))`
+
+**Tags Usage Rules**:
+- ✅ **Good (Simple categories)**: `alive`, `dead`, `http-success`, `http-redirect` - single-word status/category tags
+- ❌ **Bad (Structured data)**: `severity:high`, `line:123`, `discovered_from:URL`, `provider:aws` - use structured fields instead
+- **Migration**: All golinkfinderevo structured tags moved to proper context fields
+- **Benefits**: Type-safe enums, structured queries (`severity == Critical`), intelligent merge logic, clean JSON schema
+
 ## Deduplication (`internal/core/usecases/dedupe_service.go`)
 Key: `fmt.Sprintf("%s:%s", artifact.Type, normalizedValue)`. Normalization: domains (lowercase, remove trailing dot, remove www.), emails (lowercase), URLs (lowercase), IPs (trim). Source merging: duplicates merge sources arrays.
 
@@ -142,12 +176,13 @@ Presenter Pattern. Files: presenter.go (interface), custom_presenter.go (visual/
 
 ## Key Files
 Core: 1.`internal/core/ports/source.go` 2.`internal/core/domain/artifact.go` 3.`internal/core/usecases/pipeline_orchestrator.go` 4.`cmd/aethonx/main.go`
-CLI Abstractions: 5.`internal/sources/common/cli_source.go` 6.`internal/platform/registry/helpers.go`
-Sources: 7.`internal/sources/{crtsh,rdap,subfinder,httpx,waybackurls,shodan,golinkfinderevo}/`
-Data: 8.`internal/core/usecases/dedupe_service.go` 9.`internal/adapters/output/streaming.go` 10.`internal/core/usecases/merge_service.go`
-Platform: 11.`internal/platform/{workerpool,resilience,registry,validator,config,cveapi}/`
-UI: 12.`internal/platform/ui/{presenter,custom_presenter,raw_presenter,global_progress,symbols}.go`
-GF Templates: 13.`internal/platform/gf_templates/` (10 modern templates for golinkfinderevo pattern matching)
+Domain Context: 5.`internal/core/domain/discovery_context.go` 6.`internal/core/domain/security_context.go` 7.`internal/core/domain/classification.go`
+CLI Abstractions: 8.`internal/sources/common/cli_source.go` 9.`internal/platform/registry/helpers.go`
+Sources: 10.`internal/sources/{crtsh,rdap,subfinder,httpx,waybackurls,shodan,golinkfinderevo}/`
+Data: 11.`internal/core/usecases/dedupe_service.go` 12.`internal/adapters/output/streaming.go` 13.`internal/core/usecases/merge_service.go`
+Platform: 14.`internal/platform/{workerpool,resilience,registry,validator,config,cveapi}/`
+UI: 15.`internal/platform/ui/{presenter,custom_presenter,raw_presenter,global_progress,symbols}.go`
+GF Templates: 16.`internal/platform/gf_templates/` (10 modern templates for golinkfinderevo pattern matching)
 
 ## Testing
 Files: `*_test.go` (unit tests same package), `fixtures_test.go` (test fixtures), `mocks_test.go` (mocks). Preferred: table-driven tests. Always test with `-race`. Use `registry.Global().Clear()` in test setup.

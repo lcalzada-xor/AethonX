@@ -3,7 +3,6 @@
 package golinkfinderevo
 
 import (
-	"fmt"
 	"strings"
 
 	"aethonx/internal/core/domain"
@@ -56,15 +55,15 @@ func (gp *GFParser) ConvertToArtifacts(results GFResults, target domain.Target) 
 				"golinkfinderevo-gf",
 			)
 
-			// Add contextual tags
-			artifact.AddTag("gf_pattern:" + pattern)
-			artifact.AddTag("discovered_in:" + finding.Resource)
-			if finding.Line > 0 {
-				artifact.AddTag(fmt.Sprintf("line:%d", finding.Line))
-			}
+			// Set discovery context
+			artifact.SetDiscoveryContext(&domain.DiscoveryContext{
+				SourceResource: finding.Resource,
+				LineNumber:     finding.Line,
+				MatchPattern:   pattern,
+			})
 
-			// Category-specific tags
-			gp.addCategoryTags(artifact, pattern)
+			// Category-specific security context and classification
+			gp.addCategoryContexts(artifact, pattern)
 
 			// Calculate confidence based on pattern reliability
 			artifact.Confidence = gp.calculateConfidence(pattern, finding.Match)
@@ -209,15 +208,64 @@ func (gp *GFParser) inferArtifactType(pattern string, evidence string) domain.Ar
 	return domain.ArtifactTypeEndpoint
 }
 
-// looksLikeEmail performs basic email validation.
+// looksLikeEmail performs email validation with proper filtering for common false positives.
 func (gp *GFParser) looksLikeEmail(s string) bool {
-	// Basic check: has @ and at least one dot after @
+	// Reject retina display image filenames (@2x.png, @3x.jpg, etc.)
+	if strings.Contains(s, "@2x.") || strings.Contains(s, "@3x.") || strings.Contains(s, "@4x.") {
+		return false
+	}
+
+	// Reject if ends with common static file extensions
+	staticExts := []string{".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".bmp", ".tiff"}
+	sLower := strings.ToLower(s)
+	for _, ext := range staticExts {
+		if strings.HasSuffix(sLower, ext) {
+			return false
+		}
+	}
+
+	// Must have exactly one @ symbol
 	parts := strings.Split(s, "@")
 	if len(parts) != 2 {
 		return false
 	}
-	domain := parts[1]
-	return strings.Contains(domain, ".")
+
+	localPart := parts[0]
+	domainPart := parts[1]
+
+	// Minimum length validation
+	if len(localPart) < 1 || len(domainPart) < 3 {
+		return false
+	}
+
+	// Domain must contain at least one dot
+	if !strings.Contains(domainPart, ".") {
+		return false
+	}
+
+	// Domain cannot start or end with a dot
+	if strings.HasPrefix(domainPart, ".") || strings.HasSuffix(domainPart, ".") {
+		return false
+	}
+
+	// Reject patterns like "2x.png", "3x.jpg" (domain starting with digit+x.)
+	if len(domainPart) >= 3 {
+		firstChar := domainPart[0]
+		if firstChar >= '0' && firstChar <= '9' && len(domainPart) > 1 && domainPart[1] == 'x' && domainPart[2] == '.' {
+			return false
+		}
+	}
+
+	// Reject if domain part looks like a file extension pattern (e.g., "png", "jpg")
+	domainLower := strings.ToLower(domainPart)
+	for _, ext := range staticExts {
+		extWithoutDot := strings.TrimPrefix(ext, ".")
+		if domainLower == extWithoutDot || strings.HasPrefix(domainLower, extWithoutDot+".") {
+			return false
+		}
+	}
+
+	return true
 }
 
 // isStaticResourceURL checks if a URL points to a static resource.
@@ -239,83 +287,163 @@ func (gp *GFParser) isStaticResourceURL(urlStr string) bool {
 	return false
 }
 
-// addCategoryTags adds semantic tags based on pattern category.
-func (gp *GFParser) addCategoryTags(artifact *domain.Artifact, pattern string) {
+// addCategoryContexts adds structured security context and classification based on pattern category.
+func (gp *GFParser) addCategoryContexts(artifact *domain.Artifact, pattern string) {
 	patternLower := strings.ToLower(pattern)
 
-	// Security tags
+	// SQLi vulnerability
 	if strings.Contains(patternLower, "sqli") {
-		artifact.AddTag("vulnerability:sqli")
-		artifact.AddTag("severity:high")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityHigh).
+			WithVulnerabilityType(domain.VulnTypeSQLi))
+		return
 	}
+
+	// XSS vulnerability
 	if strings.Contains(patternLower, "xss") {
-		artifact.AddTag("vulnerability:xss")
-		artifact.AddTag("severity:medium")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityMedium).
+			WithVulnerabilityType(domain.VulnTypeXSS))
+		return
 	}
 
-	// Cloud provider tags
-	if strings.Contains(patternLower, "aws") {
-		artifact.AddTag("provider:aws")
-	}
-	if strings.Contains(patternLower, "gcp") || strings.Contains(patternLower, "google") {
-		artifact.AddTag("provider:gcp")
-	}
-	if strings.Contains(patternLower, "azure") {
-		artifact.AddTag("provider:azure")
-	}
-
-	// Token type tags
+	// JWT tokens
 	if patternLower == "jwt" {
-		artifact.AddTag("token_type:jwt")
-		artifact.AddTag("severity:high")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityHigh).
+			WithTokenType(domain.TokenTypeJWT).
+			WithVulnerabilityType(domain.VulnTypeToken))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeJWT))
+		return
 	}
+
+	// GitHub tokens
 	if strings.Contains(patternLower, "github") {
-		artifact.AddTag("token_type:github")
-		artifact.AddTag("severity:critical")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityCritical).
+			WithTokenType(domain.TokenTypeGitHub).
+			WithVulnerabilityType(domain.VulnTypeToken))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeAPIKey))
+		return
 	}
+
+	// Slack tokens
 	if strings.Contains(patternLower, "slack") {
-		artifact.AddTag("token_type:slack")
-		artifact.AddTag("severity:high")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityHigh).
+			WithTokenType(domain.TokenTypeSlack).
+			WithVulnerabilityType(domain.VulnTypeToken))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeAPIKey))
+		return
 	}
 
-	// Sensitive data tags
-	if strings.Contains(patternLower, "password") || strings.Contains(patternLower, "secret") {
-		artifact.AddTag("data_type:credential")
-		artifact.AddTag("severity:critical")
+	// AWS credentials/keys
+	if strings.Contains(patternLower, "aws") {
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityCritical).
+			WithCloudProvider(domain.CloudProviderAWS).
+			WithVulnerabilityType(domain.VulnTypeAPIKey))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeAPIKey))
+		return
 	}
 
-	// Internal IP tags
+	// GCP credentials/keys
+	if strings.Contains(patternLower, "gcp") || strings.Contains(patternLower, "google") {
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityCritical).
+			WithCloudProvider(domain.CloudProviderGCP).
+			WithVulnerabilityType(domain.VulnTypeAPIKey))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeAPIKey))
+		return
+	}
+
+	// Azure credentials/keys
+	if strings.Contains(patternLower, "azure") {
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityCritical).
+			WithCloudProvider(domain.CloudProviderAzure).
+			WithVulnerabilityType(domain.VulnTypeAPIKey))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeAPIKey))
+		return
+	}
+
+	// Passwords/secrets
+	if strings.Contains(patternLower, "password") || strings.Contains(patternLower, "secret") || strings.Contains(patternLower, "credential") {
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityCritical).
+			WithVulnerabilityType(domain.VulnTypeCredential).
+			WithSensitive(true))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeCredential))
+		return
+	}
+
+	// Internal IPs
 	if strings.Contains(patternLower, "internal") && strings.Contains(patternLower, "ip") {
-		artifact.AddTag("data_type:internal_ip")
-		artifact.AddTag("severity:high")
-		artifact.AddTag("exposure:internal_network")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityHigh).
+			WithVulnerabilityType(domain.VulnTypeInternalIP).
+			WithExposureType("internal_network"))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeInternalIP))
+		return
 	}
 
-	// Database connection tags
+	// Database connections
 	if strings.Contains(patternLower, "database") || strings.Contains(patternLower, "connection") {
-		artifact.AddTag("data_type:db_connection")
-		artifact.AddTag("severity:critical")
-		artifact.AddTag("exposure:connection_string")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityCritical).
+			WithVulnerabilityType(domain.VulnTypeDBConnection).
+			WithExposureType("connection_string"))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeDBConnection))
+		return
 	}
 
-	// OAuth token tags
+	// OAuth tokens
 	if strings.Contains(patternLower, "oauth") || strings.Contains(patternLower, "bearer") {
-		artifact.AddTag("data_type:oauth_token")
-		artifact.AddTag("severity:high")
-		artifact.AddTag("token_type:oauth2")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityHigh).
+			WithTokenType(domain.TokenTypeOAuth2).
+			WithVulnerabilityType(domain.VulnTypeToken))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeOAuthToken))
+		return
 	}
 
-	// Developer comment tags
+	// Developer comments
 	if strings.Contains(patternLower, "comment") || strings.Contains(patternLower, "developer") {
-		artifact.AddTag("data_type:developer_note")
-		artifact.AddTag("severity:low")
-		artifact.AddTag("info:code_comment")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityInfo))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeDeveloperNote).
+			WithCategory("code_comment"))
+		return
 	}
 
-	// Email tags
+	// Emails
 	if strings.Contains(patternLower, "email") {
-		artifact.AddTag("data_type:email")
-		artifact.AddTag("severity:low")
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityLow))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeEmail))
+		return
+	}
+
+	// API keys (generic)
+	if strings.Contains(patternLower, "api") && strings.Contains(patternLower, "key") {
+		artifact.SetSecurityContext(domain.NewSecurityContext().
+			WithSeverity(domain.SeverityCritical).
+			WithVulnerabilityType(domain.VulnTypeAPIKey))
+		artifact.SetClassification(domain.NewClassification().
+			WithDataType(domain.DataTypeAPIKey))
+		return
 	}
 }
 

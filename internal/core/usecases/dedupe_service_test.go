@@ -2,6 +2,7 @@
 package usecases
 
 import (
+	"fmt"
 	"testing"
 
 	"aethonx/internal/core/domain"
@@ -285,4 +286,141 @@ func createArtifactWithConfidence(artifactType domain.ArtifactType, value, sourc
 	a := domain.NewArtifact(artifactType, value, source)
 	a.Confidence = confidence
 	return a
+}
+
+func TestDeduplicateEndpointsWithSessionIDs(t *testing.T) {
+	// Create 25 duplicate endpoints with different jsessionid
+	artifacts := make([]*domain.Artifact, 25)
+	for i := 0; i < 25; i++ {
+		sessionID := fmt.Sprintf("%032X", i) // Generate unique hex session ID
+		value := fmt.Sprintf("/api/data;jsessionid=%s", sessionID)
+		artifacts[i] = domain.NewArtifact(domain.ArtifactTypeEndpoint, value, "golinkfinderevo")
+	}
+
+	// Deduplicate
+	deduper := NewDedupeService()
+	result := deduper.Deduplicate(artifacts)
+
+	// Should result in exactly 1 artifact
+	testutil.AssertEqual(t, len(result), 1, "should dedupe to 1 artifact")
+
+	// Should have normalized value
+	testutil.AssertEqual(t, result[0].Value, "/api/data", "should have normalized value")
+
+	// Should have the source
+	testutil.AssertEqual(t, len(result[0].Sources), 1, "should have 1 source")
+	testutil.AssertEqual(t, result[0].Sources[0], "golinkfinderevo", "source should be golinkfinderevo")
+
+	// Should be endpoint type
+	testutil.AssertEqual(t, result[0].Type, domain.ArtifactTypeEndpoint, "should be endpoint type")
+}
+
+func TestDeduplicateURLsWithSessionIDs(t *testing.T) {
+	// Create 10 duplicate URLs with different jsessionid
+	artifacts := make([]*domain.Artifact, 10)
+	for i := 0; i < 10; i++ {
+		sessionID := fmt.Sprintf("%032X", i)
+		value := fmt.Sprintf("http://example.com/page;jsessionid=%s", sessionID)
+		artifacts[i] = domain.NewArtifact(domain.ArtifactTypeURL, value, "waybackurls")
+	}
+
+	// Deduplicate
+	deduper := NewDedupeService()
+	result := deduper.Deduplicate(artifacts)
+
+	// Should result in exactly 1 artifact
+	testutil.AssertEqual(t, len(result), 1, "should dedupe to 1 artifact")
+
+	// Should have normalized value
+	testutil.AssertEqual(t, result[0].Value, "http://example.com/page", "should have normalized value")
+}
+
+func TestDeduplicateComplexRealWorldExample(t *testing.T) {
+	// Simulate real casadelaindia.org scan with multiple jsessionid variants
+	endpoints := []string{
+		"/indianet/cm/indianet/tkContent;jsessionid=066D67F19FEE176C1DFD2CE7C278213E",
+		"/indianet/cm/indianet/tkContent;jsessionid=0A461F5116F1E62BC7B1342CAFEE5C53",
+		"/indianet/cm/indianet/tkContent;jsessionid=17DC1ED27364FDB1677E9B1DF9D6037D",
+		"/indianet/cm/indianet/tkContent;jsessionid=3096061BBBD67F3B308CF39EE263273D",
+		"/indianet/cm/indianet/tkContent;jsessionid=3BEDCFEBF5E1472BC4F47C6828B4937A",
+	}
+
+	artifacts := make([]*domain.Artifact, len(endpoints))
+	for i, ep := range endpoints {
+		artifacts[i] = domain.NewArtifact(domain.ArtifactTypeEndpoint, ep, "golinkfinderevo")
+	}
+
+	// Deduplicate
+	deduper := NewDedupeService()
+	result := deduper.Deduplicate(artifacts)
+
+	// Should result in exactly 1 artifact
+	testutil.AssertEqual(t, len(result), 1, "should dedupe to 1 artifact")
+
+	// Should have normalized value
+	expected := "/indianet/cm/indianet/tkContent"
+	testutil.AssertEqual(t, result[0].Value, expected, "should have normalized value")
+}
+
+func TestDeduplicateMixedSessionTypes(t *testing.T) {
+	// Mix of different session ID types
+	artifacts := []*domain.Artifact{
+		domain.NewArtifact(domain.ArtifactTypeEndpoint, "/api;jsessionid=ABC123", "test"),
+		domain.NewArtifact(domain.ArtifactTypeEndpoint, "/api;JSESSIONID=DEF456", "test"),
+		domain.NewArtifact(domain.ArtifactTypeEndpoint, "/api;sessionid=GHI789", "test"),
+		domain.NewArtifact(domain.ArtifactTypeEndpoint, "/api;PHPSESSID=JKL012", "test"),
+		domain.NewArtifact(domain.ArtifactTypeEndpoint, "/api", "test"), // Clean one
+	}
+
+	// Deduplicate
+	deduper := NewDedupeService()
+	result := deduper.Deduplicate(artifacts)
+
+	// Should result in exactly 1 artifact (all normalize to /api)
+	testutil.AssertEqual(t, len(result), 1, "should dedupe all to 1 artifact")
+	testutil.AssertEqual(t, result[0].Value, "/api", "should have normalized value")
+}
+
+func TestDeduplicateQueryParameterSessions(t *testing.T) {
+	// URLs with session IDs in query parameters
+	artifacts := []*domain.Artifact{
+		domain.NewArtifact(domain.ArtifactTypeURL, "http://example.com/api?jsessionid=ABC&param=val", "test"),
+		domain.NewArtifact(domain.ArtifactTypeURL, "http://example.com/api?jsessionid=XYZ&param=val", "test"),
+		domain.NewArtifact(domain.ArtifactTypeURL, "http://example.com/api?sid=123&param=val", "test"),
+		domain.NewArtifact(domain.ArtifactTypeURL, "http://example.com/api?param=val", "test"), // Clean
+	}
+
+	// Deduplicate
+	deduper := NewDedupeService()
+	result := deduper.Deduplicate(artifacts)
+
+	// Should result in exactly 1 artifact
+	testutil.AssertEqual(t, len(result), 1, "should dedupe to 1 artifact")
+	testutil.AssertEqual(t, result[0].Value, "http://example.com/api?param=val", "should have normalized value")
+}
+
+func TestDeduplicatePreservesNonSessionEndpoints(t *testing.T) {
+	// Mix of endpoints with and without sessions, but different paths
+	artifacts := []*domain.Artifact{
+		domain.NewArtifact(domain.ArtifactTypeEndpoint, "/api/users;jsessionid=ABC", "test"),
+		domain.NewArtifact(domain.ArtifactTypeEndpoint, "/api/posts;jsessionid=DEF", "test"),
+		domain.NewArtifact(domain.ArtifactTypeEndpoint, "/api/comments", "test"),
+	}
+
+	// Deduplicate
+	deduper := NewDedupeService()
+	result := deduper.Deduplicate(artifacts)
+
+	// Should result in 3 artifacts (different paths)
+	testutil.AssertEqual(t, len(result), 3, "should have 3 unique endpoints")
+
+	// All should be normalized
+	values := make(map[string]bool)
+	for _, a := range result {
+		values[a.Value] = true
+	}
+
+	testutil.AssertTrue(t, values["/api/users"], "should have /api/users")
+	testutil.AssertTrue(t, values["/api/posts"], "should have /api/posts")
+	testutil.AssertTrue(t, values["/api/comments"], "should have /api/comments")
 }

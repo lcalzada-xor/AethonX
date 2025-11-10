@@ -1,7 +1,7 @@
 {
   "flags": "-HnriE",
   "patterns": [
-    "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "[a-zA-Z0-9._%+-]+@(?![234]x\\.(png|jpe?g|gif|svg|webp|ico|bmp|tiff))[a-zA-Z0-9.-]+\\.(?!png|jpe?g|gif|svg|webp|ico|bmp|tiff)[a-zA-Z]{2,}",
     "mailto:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
     "(email|mail|contact)[\"'\\s:=]+[\"']?[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
     "(support|admin|info|contact|sales|help)@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
