@@ -31,6 +31,25 @@
     "\\.p12[\"']?\\s*$",
     "\\.pfx[\"']?\\s*$",
     "server\\.key[\"']?\\s*$",
-    "privatekey\\.key[\"']?\\s*$"
+    "privatekey\\.key[\"']?\\s*$",
+    "\\.js\\.map[\"']?\\s*$",
+    "\\.css\\.map[\"']?\\s*$",
+    "\\.ts\\.map[\"']?\\s*$",
+    "//# sourceMappingURL=([^\\s]+\\.map)",
+    "sourceMap:\\s*[\"']([^\"'\\s]+\\.map)",
+    "webpack\\.config\\.(js|ts)[\"']?\\s*$",
+    "vite\\.config\\.(js|ts)[\"']?\\s*$",
+    "rollup\\.config\\.(js|ts)[\"']?\\s*$",
+    "tsconfig\\.json[\"']?\\s*$",
+    "\\.npmrc[\"']?\\s*$",
+    "\\.yarnrc[\"']?\\s*$",
+    "Dockerfile[\"']?\\s*$",
+    "docker-compose\\.(yml|yaml)[\"']?\\s*$",
+    "\\.gitlab-ci\\.yml[\"']?\\s*$",
+    "\\.travis\\.yml[\"']?\\s*$",
+    "Jenkinsfile[\"']?\\s*$",
+    "requirements\\.txt[\"']?\\s*$",
+    "pom\\.xml[\"']?\\s*$",
+    "build\\.gradle[\"']?\\s*$"
   ]
 }

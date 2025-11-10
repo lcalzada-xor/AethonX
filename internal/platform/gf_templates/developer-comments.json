@@ -1,0 +1,23 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "//\\s*TODO:?\\s*(.{5,150})",
+    "//\\s*FIXME:?\\s*(.{5,150})",
+    "//\\s*XXX:?\\s*(.{5,150})",
+    "//\\s*HACK:?\\s*(.{5,150})",
+    "//\\s*BUG:?\\s*(.{5,150})",
+    "//\\s*SECURITY:?\\s*(.{5,150})",
+    "//\\s*WARNING:?\\s*(.{5,150})",
+    "//\\s*DEPRECATED:?\\s*(.{5,150})",
+    "//\\s*TEMP:?\\s*(.{5,150})",
+    "//\\s*DEBUG:?\\s*(.{5,150})",
+    "/\\*[\\s\\S]*?(TODO|FIXME|XXX|HACK|BUG|SECURITY)[\\s\\S]{5,200}?\\*/",
+    "<!--[\\s\\S]*?(TODO|FIXME|XXX|HACK|BUG|SECURITY)[\\s\\S]{5,200}?-->",
+    "console\\.(log|debug|warn|error)\\([\"'].*?(password|token|key|secret|credential)[\"']",
+    "console\\.(log|debug|warn|error)\\([\"'].*?(admin|internal|private|test)[\"']",
+    "//.*?(remove|delete|fix).*?(before|production|deploy|release)",
+    "//.*?(hardcoded|hard-coded).*?(credential|password|key|token)",
+    "<!--.*?DEBUG.*?-->",
+    "<!--.*?REMOVE.*?-->"
+  ]
+}

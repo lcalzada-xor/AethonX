@@ -545,3 +545,75 @@ func (p *Parser) ParseSubdomainFromReverse(hostname, ip string, target domain.Ta
 
 	return artifact
 }
+
+// InferSeverityFromCVE infers severity level from well-known CVE identifiers.
+// Returns "critical", "high", "medium", "low", "info", or "unknown".
+func InferSeverityFromCVE(cve string) string {
+	if cve == "" {
+		return "unknown"
+	}
+
+	// Well-known critical CVEs
+	criticalCVEs := map[string]bool{
+		"CVE-2021-44228": true, // Log4Shell
+		"CVE-2021-45046": true, // Log4Shell variant
+		"CVE-2014-0160":  true, // Heartbleed
+		"CVE-2017-5638":  true, // Apache Struts
+		"CVE-2014-6271":  true, // Shellshock
+		"CVE-2017-0144":  true, // EternalBlue
+		"CVE-2019-0708":  true, // BlueKeep
+		"CVE-2020-1938":  true, // Ghostcat
+	}
+
+	if criticalCVEs[cve] {
+		return "critical"
+	}
+
+	// For unknown CVEs, we can't infer severity without external data
+	return "unknown"
+}
+
+// NormalizeSeverity normalizes severity strings to lowercase standard values.
+// Converts various formats to: "critical", "high", "medium", "low", "info", or "unknown".
+func NormalizeSeverity(severity string) string {
+	normalized := strings.ToLower(strings.TrimSpace(severity))
+
+	switch normalized {
+	case "critical", "crit":
+		return "critical"
+	case "high":
+		return "high"
+	case "medium", "med", "moderate":
+		return "medium"
+	case "low":
+		return "low"
+	case "info", "informational":
+		return "info"
+	case "":
+		return "unknown"
+	default:
+		return normalized
+	}
+}
+
+// CVSSScoreToSeverity converts a CVSS score (0.0-10.0) to a severity string.
+// Based on CVSS v3.0 severity ratings:
+// - 9.0-10.0: Critical
+// - 7.0-8.9: High
+// - 4.0-6.9: Medium
+// - 0.1-3.9: Low
+// - 0.0: Info
+func CVSSScoreToSeverity(score float64) string {
+	switch {
+	case score >= 9.0:
+		return "critical"
+	case score >= 7.0:
+		return "high"
+	case score >= 4.0:
+		return "medium"
+	case score > 0.0:
+		return "low"
+	default:
+		return "info"
+	}
+}

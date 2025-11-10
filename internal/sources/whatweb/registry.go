@@ -30,6 +30,8 @@ func init() {
 			OutputArtifacts: []domain.ArtifactType{
 				domain.ArtifactTypeTechnology,
 				domain.ArtifactTypeService,
+				domain.ArtifactTypeIP,
+				domain.ArtifactTypeEmail, // Email addresses
 			},
 			Priority:  16, // Stage 2 - after discovery (10), before crawl (20+)
 			StageHint: 2,  // Stage 2: Probing/Enrichment

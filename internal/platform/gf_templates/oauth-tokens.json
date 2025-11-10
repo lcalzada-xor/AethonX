@@ -1,0 +1,25 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "access_token[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "accessToken[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "oauth_token[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "oauthToken[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "refresh_token[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "refreshToken[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "client_secret[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "clientSecret[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "id_token[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "idToken[\"'\\s:=]+[\"']?[a-zA-Z0-9._-]{20,}",
+    "bearer [a-zA-Z0-9._-]{20,}",
+    "Bearer [a-zA-Z0-9._-]{20,}",
+    "Authorization[\"'\\s:]+[\"']?Bearer [a-zA-Z0-9._-]{20,}",
+    "ya29\\.[a-zA-Z0-9._-]{20,}",
+    "Atz\\|[a-zA-Z0-9._-]{20,}",
+    "1//[a-zA-Z0-9._-]{20,}",
+    "gho_[a-zA-Z0-9]{36}",
+    "ey[a-zA-Z0-9._-]{20,}\\.[a-zA-Z0-9._-]{20,}\\.[a-zA-Z0-9._-]{20,}",
+    "localStorage\\.setItem\\([\"'](token|access_token|oauth_token)[\"']",
+    "sessionStorage\\.setItem\\([\"'](token|access_token|oauth_token)[\"']"
+  ]
+}

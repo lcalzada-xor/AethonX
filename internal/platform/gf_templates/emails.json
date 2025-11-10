@@ -1,0 +1,13 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "mailto:[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "(email|mail|contact)[\"'\\s:=]+[\"']?[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "(support|admin|info|contact|sales|help)@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}",
+    "<a[^>]+href=[\"']mailto:([^\"']+)[\"']",
+    "data-email=[\"']([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})[\"']",
+    "property=[\"']og:email[\"'][^>]+content=[\"']([^\"']+)[\"']",
+    "name=[\"']email[\"'][^>]+value=[\"']([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,})[\"']"
+  ]
+}

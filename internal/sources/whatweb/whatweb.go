@@ -136,10 +136,17 @@ func (s *WhatWebSource) RunWithInput(ctx context.Context, target domain.Target, 
 	result, err := s.scanURLs(ctx, target, items)
 
 	duration := time.Since(startTime)
+
+	// Check if result is nil before accessing its fields
+	artifactCount := 0
+	if result != nil {
+		artifactCount = len(result.Artifacts)
+	}
+
 	s.GetLogger().Info("whatweb scan with input completed",
 		"target", target.Root,
 		"duration", duration.String(),
-		"artifacts", len(result.Artifacts),
+		"artifacts", artifactCount,
 	)
 
 	return result, err

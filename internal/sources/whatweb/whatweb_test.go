@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"aethonx/internal/core/domain"
+	"aethonx/internal/core/domain/metadata"
 	"aethonx/internal/core/ports"
 	"aethonx/internal/platform/logx"
 	"aethonx/internal/platform/registry"
@@ -66,6 +67,8 @@ func TestRegistry_WhatWebSource(t *testing.T) {
 	expectedOutputs := []domain.ArtifactType{
 		domain.ArtifactTypeTechnology,
 		domain.ArtifactTypeService,
+		domain.ArtifactTypeIP,
+		domain.ArtifactTypeEmail,
 	}
 
 	if len(meta.OutputArtifacts) != len(expectedOutputs) {
@@ -174,11 +177,19 @@ func TestWhatWebSource_ExtractInputItems(t *testing.T) {
 		Mode: domain.ScanModeActive,
 	}
 
-	// Create mock input with subdomains and URLs
+	// Create mock input with subdomains and URLs (with metadata, as they would come from httpx)
 	input := domain.NewScanResult(target)
 
-	// Add subdomain
-	subdomain := domain.NewArtifact(domain.ArtifactTypeSubdomain, "sub.example.com", "test")
+	// Add subdomain with DomainMetadata (as httpx would provide)
+	subdomainMeta := metadata.NewDomainMetadata()
+	subdomainMeta.HTTPStatus = 200
+	subdomainMeta.HasSSL = true
+	subdomain := domain.NewArtifactWithMetadata(
+		domain.ArtifactTypeSubdomain,
+		"sub.example.com",
+		"test",
+		subdomainMeta,
+	)
 	input.AddArtifact(subdomain)
 
 	// Add URL
@@ -186,7 +197,7 @@ func TestWhatWebSource_ExtractInputItems(t *testing.T) {
 	input.AddArtifact(url)
 
 	// Extract items
-	items := source.extractInputItems(input)
+	items := source.extractInputItems(input, target)
 
 	if len(items) == 0 {
 		t.Fatal("expected items to be extracted, got 0")
@@ -195,6 +206,7 @@ func TestWhatWebSource_ExtractInputItems(t *testing.T) {
 	// Verify URLs are present
 	hasSubdomain := false
 	hasURL := false
+	hasRoot := false
 
 	for _, item := range items {
 		if item == "https://sub.example.com" {
@@ -203,6 +215,13 @@ func TestWhatWebSource_ExtractInputItems(t *testing.T) {
 		if item == "https://example.com/page" {
 			hasURL = true
 		}
+		if item == "https://example.com" {
+			hasRoot = true
+		}
+	}
+
+	if !hasRoot {
+		t.Error("expected root domain URL to be included")
 	}
 
 	if !hasSubdomain {
@@ -279,6 +298,219 @@ func TestWhatWebSource_RunWithInput(t *testing.T) {
 	}
 
 	t.Logf("RunWithInput() completed with %d artifacts", len(result.Artifacts))
+}
+
+// TestParser_MetadataPlugins validates that metadata plugins are handled correctly.
+func TestParser_MetadataPlugins(t *testing.T) {
+	logger := logx.New()
+	parser := NewParser(logger, "whatweb")
+	target := domain.Target{Root: "example.com", Mode: domain.ScanModeActive}
+
+	tests := []struct {
+		name           string
+		pluginName     string
+		plugin         Plugin
+		expectedType   domain.ArtifactType
+		expectedValue  string
+		shouldCreate   bool
+	}{
+		{
+			name:       "IP plugin creates IP artifact",
+			pluginName: "IP",
+			plugin: Plugin{
+				String: []string{"192.168.1.1"},
+			},
+			expectedType:  domain.ArtifactTypeIP,
+			expectedValue: "192.168.1.1",
+			shouldCreate:  true,
+		},
+		{
+			name:       "Country plugin does not create artifact",
+			pluginName: "Country",
+			plugin: Plugin{
+				String: []string{"UNITED STATES"},
+				Data:   map[string]interface{}{"module": []string{"US"}},
+			},
+			shouldCreate: false,
+		},
+		{
+			name:       "HTTPServer plugin creates Technology artifact with real server name",
+			pluginName: "HTTPServer",
+			plugin: Plugin{
+				String: []string{"nginx/1.18.0"},
+			},
+			expectedType:  domain.ArtifactTypeTechnology,
+			expectedValue: "nginx",
+			shouldCreate:  true,
+		},
+		{
+			name:       "HTTPServer with Apache",
+			pluginName: "HTTPServer",
+			plugin: Plugin{
+				String: []string{"Apache/2.4.41 (Ubuntu)"},
+			},
+			expectedType:  domain.ArtifactTypeTechnology,
+			expectedValue: "Apache",
+			shouldCreate:  true,
+		},
+		{
+			name:       "RedirectLocation creates URL artifact",
+			pluginName: "RedirectLocation",
+			plugin: Plugin{
+				String: []string{"https://www.example.com"},
+			},
+			expectedType:  domain.ArtifactTypeURL,
+			expectedValue: "https://www.example.com",
+			shouldCreate:  true,
+		},
+		{
+			name:       "Email plugin creates Email artifact",
+			pluginName: "Email",
+			plugin: Plugin{
+				String: []string{"admin@example.com"},
+			},
+			expectedType:  domain.ArtifactTypeEmail,
+			expectedValue: "admin@example.com",
+			shouldCreate:  true,
+		},
+		{
+			name:       "X-Powered-By creates Technology artifact",
+			pluginName: "X-Powered-By",
+			plugin: Plugin{
+				String: []string{"PHP/7.4.3"},
+			},
+			expectedType:  domain.ArtifactTypeTechnology,
+			expectedValue: "PHP",
+			shouldCreate:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := WhatWebResponse{
+				Target:     "https://example.com",
+				HTTPStatus: 200,
+				Plugins: map[string]Plugin{
+					tt.pluginName: tt.plugin,
+				},
+			}
+
+			artifacts := parser.ParseMultipleResponses([]WhatWebResponse{resp}, target)
+
+			if tt.shouldCreate {
+				if len(artifacts) == 0 {
+					t.Fatalf("expected artifact to be created, got 0")
+				}
+
+				artifact := artifacts[0]
+				if artifact.Type != tt.expectedType {
+					t.Errorf("expected type %s, got %s", tt.expectedType, artifact.Type)
+				}
+
+				if artifact.Value != tt.expectedValue {
+					t.Errorf("expected value %s, got %s", tt.expectedValue, artifact.Value)
+				}
+			} else {
+				if len(artifacts) > 0 {
+					t.Errorf("expected no artifacts, got %d", len(artifacts))
+				}
+			}
+		})
+	}
+}
+
+// TestParser_RealTechnologyPlugins validates that real technology plugins still work.
+func TestParser_RealTechnologyPlugins(t *testing.T) {
+	logger := logx.New()
+	parser := NewParser(logger, "whatweb")
+	target := domain.Target{Root: "example.com", Mode: domain.ScanModeActive}
+
+	tests := []struct {
+		name         string
+		pluginName   string
+		plugin       Plugin
+		expectedTech string
+	}{
+		{
+			name:       "HTML5 technology",
+			pluginName: "HTML5",
+			plugin:     Plugin{},
+			expectedTech: "HTML5",
+		},
+		{
+			name:       "Akamai CDN",
+			pluginName: "Akamai Global Host",
+			plugin:     Plugin{},
+			expectedTech: "Akamai Global Host",
+		},
+		{
+			name:       "Strict Transport Security",
+			pluginName: "Strict-Transport-Security",
+			plugin: Plugin{
+				String: []string{"max-age=31536000"},
+			},
+			expectedTech: "Strict Transport Security",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := WhatWebResponse{
+				Target:     "https://example.com",
+				HTTPStatus: 200,
+				Plugins: map[string]Plugin{
+					tt.pluginName: tt.plugin,
+				},
+			}
+
+			artifacts := parser.ParseMultipleResponses([]WhatWebResponse{resp}, target)
+
+			if len(artifacts) == 0 {
+				t.Fatalf("expected technology artifact, got 0")
+			}
+
+			artifact := artifacts[0]
+			if artifact.Type != domain.ArtifactTypeTechnology {
+				t.Errorf("expected type Technology, got %s", artifact.Type)
+			}
+
+			if artifact.Value != tt.expectedTech {
+				t.Errorf("expected technology %s, got %s", tt.expectedTech, artifact.Value)
+			}
+		})
+	}
+}
+
+// TestParser_parseServerString validates server string parsing.
+func TestParser_parseServerString(t *testing.T) {
+	logger := logx.New()
+	parser := NewParser(logger, "whatweb")
+
+	tests := []struct {
+		input           string
+		expectedName    string
+		expectedVersion string
+	}{
+		{"nginx/1.18.0", "nginx", "1.18.0"},
+		{"Apache/2.4.41 (Ubuntu)", "Apache", "2.4.41"},
+		{"PHP/7.4.3", "PHP", "7.4.3"},
+		{"Microsoft-IIS/10.0", "Microsoft-IIS", "10.0"},
+		{"cloudflare", "cloudflare", ""},
+		{"", "", ""},
+		{"   ", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			name, version := parser.parseServerString(tt.input)
+			if name != tt.expectedName {
+				t.Errorf("expected name %q, got %q", tt.expectedName, name)
+			}
+			if version != tt.expectedVersion {
+				t.Errorf("expected version %q, got %q", tt.expectedVersion, version)
+			}
+		})
+	}
 }
 
 // getTestConfig returns a test configuration for whatweb.

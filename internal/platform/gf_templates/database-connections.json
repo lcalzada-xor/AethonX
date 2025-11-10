@@ -1,0 +1,27 @@
+{
+  "flags": "-HnriE",
+  "patterns": [
+    "mongodb://[^\"'\\s<>]+",
+    "mongodb\\+srv://[^\"'\\s<>]+",
+    "postgres://[^\"'\\s<>]+",
+    "postgresql://[^\"'\\s<>]+",
+    "mysql://[^\"'\\s<>]+",
+    "redis://[^\"'\\s<>]+",
+    "rediss://[^\"'\\s<>]+",
+    "jdbc:[a-z]+://[^\"'\\s<>]+",
+    "jdbc:[a-z]+:[a-z]+://[^\"'\\s<>]+",
+    "amqp://[^\"'\\s<>]+",
+    "amqps://[^\"'\\s<>]+",
+    "elasticsearch://[^\"'\\s<>]+",
+    "cassandra://[^\"'\\s<>]+",
+    "sqlite://.+\\.db",
+    "Server=[^;]+;Database=[^;]+;",
+    "Data Source=[^;]+;Initial Catalog=[^;]+",
+    "Host=[^;]+;Port=[0-9]+;Database=[^;]+",
+    "mongodb\\+srv://[a-zA-Z0-9._-]+:[^@]+@[^/]+",
+    "postgres://[a-zA-Z0-9._-]+:[^@]+@[^/]+",
+    "mysql://[a-zA-Z0-9._-]+:[^@]+@[^/]+",
+    "(DB_HOST|DATABASE_URL|MONGO_URI|REDIS_URL|POSTGRES_URL)[\"'\\s:=]+[\"']?[^\"'\\s<>]+",
+    "connection[_-]?string[\"'\\s:=]+[\"']?[^\"'\\s<>]+"
+  ]
+}

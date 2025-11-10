@@ -116,9 +116,23 @@ func (r *RetryableSource) Run(ctx context.Context, target domain.Target) (*domai
 
 		// Check context cancellation before retry
 		if ctx.Err() != nil {
-			r.logger.Warn("context cancelled, aborting retries")
+			r.logger.Warn("context cancelled, aborting retries",
+				"artifacts", func() int {
+					if result != nil {
+						return len(result.Artifacts)
+					}
+					return 0
+				}(),
+			)
 			if r.circuitBreaker != nil {
 				r.circuitBreaker.RecordFailure()
+			}
+			// Return partial results if available (fail-soft)
+			if result != nil && len(result.Artifacts) > 0 {
+				r.logger.Info("returning partial results from cancelled source",
+					"artifacts", len(result.Artifacts),
+				)
+				return result, fmt.Errorf("context cancelled after %d attempts: %w", attempt+1, ctx.Err())
 			}
 			return nil, fmt.Errorf("context cancelled after %d attempts: %w", attempt+1, ctx.Err())
 		}
@@ -134,9 +148,23 @@ func (r *RetryableSource) Run(ctx context.Context, target domain.Target) (*domai
 		case <-time.After(backoff):
 			// Continue to next attempt
 		case <-ctx.Done():
-			r.logger.Warn("context cancelled during backoff")
+			r.logger.Warn("context cancelled during backoff",
+				"artifacts", func() int {
+					if result != nil {
+						return len(result.Artifacts)
+					}
+					return 0
+				}(),
+			)
 			if r.circuitBreaker != nil {
 				r.circuitBreaker.RecordFailure()
+			}
+			// Return partial results if available (fail-soft)
+			if result != nil && len(result.Artifacts) > 0 {
+				r.logger.Info("returning partial results from cancelled source during backoff",
+					"artifacts", len(result.Artifacts),
+				)
+				return result, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
 			}
 			return nil, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
 		}
@@ -222,9 +250,23 @@ func (r *RetryableSource) RunWithInput(ctx context.Context, target domain.Target
 
 		// Check context cancellation before retry
 		if ctx.Err() != nil {
-			r.logger.Warn("context cancelled, aborting retries")
+			r.logger.Warn("context cancelled, aborting retries",
+				"artifacts", func() int {
+					if result != nil {
+						return len(result.Artifacts)
+					}
+					return 0
+				}(),
+			)
 			if r.circuitBreaker != nil {
 				r.circuitBreaker.RecordFailure()
+			}
+			// Return partial results if available (fail-soft)
+			if result != nil && len(result.Artifacts) > 0 {
+				r.logger.Info("returning partial results from cancelled source",
+					"artifacts", len(result.Artifacts),
+				)
+				return result, fmt.Errorf("context cancelled after %d attempts: %w", attempt+1, ctx.Err())
 			}
 			return nil, fmt.Errorf("context cancelled after %d attempts: %w", attempt+1, ctx.Err())
 		}
@@ -240,9 +282,23 @@ func (r *RetryableSource) RunWithInput(ctx context.Context, target domain.Target
 		case <-time.After(backoff):
 			// Continue to next attempt
 		case <-ctx.Done():
-			r.logger.Warn("context cancelled during backoff")
+			r.logger.Warn("context cancelled during backoff",
+				"artifacts", func() int {
+					if result != nil {
+						return len(result.Artifacts)
+					}
+					return 0
+				}(),
+			)
 			if r.circuitBreaker != nil {
 				r.circuitBreaker.RecordFailure()
+			}
+			// Return partial results if available (fail-soft)
+			if result != nil && len(result.Artifacts) > 0 {
+				r.logger.Info("returning partial results from cancelled source during backoff",
+					"artifacts", len(result.Artifacts),
+				)
+				return result, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
 			}
 			return nil, fmt.Errorf("context cancelled during backoff: %w", ctx.Err())
 		}

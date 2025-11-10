@@ -43,7 +43,7 @@ func (gp *GFParser) ConvertToArtifacts(results GFResults, target domain.Target) 
 
 	for pattern, findings := range results {
 		for _, finding := range findings {
-			artifactType := gp.inferArtifactType(pattern)
+			artifactType := gp.inferArtifactType(pattern, finding.Match)
 
 			// Skip if we can't determine a valid artifact type
 			if artifactType == "" {
@@ -81,11 +81,63 @@ func (gp *GFParser) ConvertToArtifacts(results GFResults, target domain.Target) 
 	return artifacts
 }
 
-// inferArtifactType maps gf pattern names to artifact types.
-func (gp *GFParser) inferArtifactType(pattern string) domain.ArtifactType {
+// inferArtifactType maps gf pattern names to artifact types with evidence validation.
+// It analyzes both the pattern name AND the actual matched evidence for accurate classification.
+func (gp *GFParser) inferArtifactType(pattern string, evidence string) domain.ArtifactType {
 	patternLower := strings.ToLower(pattern)
 
-	// Credentials and secrets
+	// Priority 1: Analyze evidence content first for high-confidence matches
+	// This prevents misclassification when the match is clearly a different type
+
+	// Email addresses in evidence
+	if strings.Contains(evidence, "@") && !strings.Contains(evidence, "://") {
+		// Contains @ but not :// (not a URL) → likely email
+		if gp.looksLikeEmail(evidence) {
+			return domain.ArtifactTypeEmail
+		}
+	}
+
+	// Complete URLs in evidence (especially for endpoint/url patterns)
+	if strings.HasPrefix(evidence, "http://") || strings.HasPrefix(evidence, "https://") {
+		// If it's a static resource URL → URL artifact
+		if gp.isStaticResourceURL(evidence) {
+			return domain.ArtifactTypeURL
+		}
+		// If it's an API URL → could be Endpoint or URL depending on pattern context
+		// Let pattern-based logic decide below
+	}
+
+	// Priority 2: Pattern-based classification with evidence validation
+
+	// Internal IPs (RFC1918 private IPs)
+	if strings.Contains(patternLower, "internal") && strings.Contains(patternLower, "ip") {
+		return domain.ArtifactTypeInternalIP
+	}
+
+	// Database connections
+	if strings.Contains(patternLower, "database") || strings.Contains(patternLower, "db") ||
+		strings.Contains(patternLower, "connection") {
+		return domain.ArtifactTypeDBConnection
+	}
+
+	// OAuth tokens (distinct from general credentials)
+	if strings.Contains(patternLower, "oauth") || strings.Contains(patternLower, "bearer") ||
+		(strings.Contains(patternLower, "token") && (strings.Contains(evidence, "access_token") || strings.Contains(evidence, "refresh_token"))) {
+		return domain.ArtifactTypeOAuthToken
+	}
+
+	// Developer notes/comments
+	if strings.Contains(patternLower, "comment") || strings.Contains(patternLower, "developer") ||
+		strings.Contains(patternLower, "note") || strings.Contains(patternLower, "todo") {
+		return domain.ArtifactTypeDeveloperNote
+	}
+
+	// Emails (pattern-based)
+	if strings.Contains(patternLower, "email") || strings.Contains(patternLower, "mail") {
+		return domain.ArtifactTypeEmail
+	}
+
+	// Credentials and secrets (general)
 	if strings.Contains(patternLower, "key") ||
 		strings.Contains(patternLower, "token") ||
 		strings.Contains(patternLower, "secret") ||
@@ -129,6 +181,12 @@ func (gp *GFParser) inferArtifactType(pattern string) domain.ArtifactType {
 		strings.Contains(patternLower, "api") ||
 		strings.Contains(patternLower, "rest") ||
 		strings.Contains(patternLower, "graphql") {
+		// Check evidence: complete URL vs path
+		if strings.HasPrefix(evidence, "http://") || strings.HasPrefix(evidence, "https://") {
+			// Complete URL → URL artifact (more useful for tracking external resources)
+			return domain.ArtifactTypeURL
+		}
+		// Relative path → Endpoint
 		return domain.ArtifactTypeEndpoint
 	}
 
@@ -141,9 +199,44 @@ func (gp *GFParser) inferArtifactType(pattern string) domain.ArtifactType {
 		return domain.ArtifactTypeCredential
 	}
 
-	// Default to endpoint for unrecognized patterns
+	// Default: analyze evidence to make best guess
+	if strings.HasPrefix(evidence, "http://") || strings.HasPrefix(evidence, "https://") {
+		return domain.ArtifactTypeURL
+	}
+
+	// Final fallback to endpoint for unrecognized patterns
 	gp.logger.Debug("unknown gf pattern, defaulting to endpoint", "pattern", pattern)
 	return domain.ArtifactTypeEndpoint
+}
+
+// looksLikeEmail performs basic email validation.
+func (gp *GFParser) looksLikeEmail(s string) bool {
+	// Basic check: has @ and at least one dot after @
+	parts := strings.Split(s, "@")
+	if len(parts) != 2 {
+		return false
+	}
+	domain := parts[1]
+	return strings.Contains(domain, ".")
+}
+
+// isStaticResourceURL checks if a URL points to a static resource.
+func (gp *GFParser) isStaticResourceURL(urlStr string) bool {
+	staticExts := []string{
+		".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg",
+		".ico", ".webp", ".woff", ".woff2", ".ttf", ".eot",
+		".mp4", ".mp3", ".pdf", ".zip",
+	}
+
+	urlLower := strings.ToLower(urlStr)
+
+	for _, ext := range staticExts {
+		if strings.HasSuffix(urlLower, ext) || strings.Contains(urlLower, ext+"?") {
+			return true
+		}
+	}
+
+	return false
 }
 
 // addCategoryTags adds semantic tags based on pattern category.
@@ -189,6 +282,40 @@ func (gp *GFParser) addCategoryTags(artifact *domain.Artifact, pattern string) {
 	if strings.Contains(patternLower, "password") || strings.Contains(patternLower, "secret") {
 		artifact.AddTag("data_type:credential")
 		artifact.AddTag("severity:critical")
+	}
+
+	// Internal IP tags
+	if strings.Contains(patternLower, "internal") && strings.Contains(patternLower, "ip") {
+		artifact.AddTag("data_type:internal_ip")
+		artifact.AddTag("severity:high")
+		artifact.AddTag("exposure:internal_network")
+	}
+
+	// Database connection tags
+	if strings.Contains(patternLower, "database") || strings.Contains(patternLower, "connection") {
+		artifact.AddTag("data_type:db_connection")
+		artifact.AddTag("severity:critical")
+		artifact.AddTag("exposure:connection_string")
+	}
+
+	// OAuth token tags
+	if strings.Contains(patternLower, "oauth") || strings.Contains(patternLower, "bearer") {
+		artifact.AddTag("data_type:oauth_token")
+		artifact.AddTag("severity:high")
+		artifact.AddTag("token_type:oauth2")
+	}
+
+	// Developer comment tags
+	if strings.Contains(patternLower, "comment") || strings.Contains(patternLower, "developer") {
+		artifact.AddTag("data_type:developer_note")
+		artifact.AddTag("severity:low")
+		artifact.AddTag("info:code_comment")
+	}
+
+	// Email tags
+	if strings.Contains(patternLower, "email") {
+		artifact.AddTag("data_type:email")
+		artifact.AddTag("severity:low")
 	}
 }
 
@@ -241,6 +368,53 @@ func (gp *GFParser) calculateConfidence(pattern, match string) float64 {
 	if strings.Contains(patternLower, "file") || strings.Contains(patternLower, "backup") {
 		if strings.Contains(matchLower, ".env") || strings.Contains(matchLower, "config") {
 			return 0.85
+		}
+		return 0.7
+	}
+
+	// Internal IPs (RFC1918)
+	if strings.Contains(patternLower, "internal") && strings.Contains(patternLower, "ip") {
+		// High confidence for standard private IP ranges
+		if strings.HasPrefix(match, "10.") || strings.HasPrefix(match, "192.168.") || strings.Contains(match, "172.") {
+			return 0.9
+		}
+		return 0.75
+	}
+
+	// Database connections
+	if strings.Contains(patternLower, "database") || strings.Contains(patternLower, "connection") {
+		// Very high confidence for protocol-prefixed connection strings
+		if strings.Contains(matchLower, "://") && (strings.Contains(matchLower, "mongodb") ||
+			strings.Contains(matchLower, "postgres") || strings.Contains(matchLower, "mysql") ||
+			strings.Contains(matchLower, "redis")) {
+			return 0.95
+		}
+		return 0.8
+	}
+
+	// OAuth tokens
+	if strings.Contains(patternLower, "oauth") || strings.Contains(patternLower, "bearer") {
+		// High confidence for well-formatted tokens
+		if len(match) >= 20 && gp.hasComplexity(match) {
+			return 0.88
+		}
+		return 0.75
+	}
+
+	// Developer comments
+	if strings.Contains(patternLower, "comment") || strings.Contains(patternLower, "developer") {
+		// Medium-low confidence (many false positives possible)
+		if strings.Contains(matchLower, "todo") || strings.Contains(matchLower, "fixme") {
+			return 0.7
+		}
+		return 0.6
+	}
+
+	// Email addresses
+	if strings.Contains(patternLower, "email") {
+		// High confidence for valid email format
+		if gp.looksLikeEmail(match) {
+			return 0.92
 		}
 		return 0.7
 	}

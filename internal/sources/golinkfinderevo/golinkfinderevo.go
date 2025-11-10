@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -199,13 +200,22 @@ func (g *GoLinkfinderEvoSource) RunWithInput(
 		return result, nil
 	}
 
-	// Debug: log artifact types received
+	// Debug: log artifact types received and sample URLs with metadata
 	artifactTypes := make(map[domain.ArtifactType]int)
 	urlArtifactCount := 0
+	sampleURLs := make([]string, 0, 5)
 	for _, a := range input.Artifacts {
 		artifactTypes[a.Type]++
 		if a.Type == domain.ArtifactTypeURL {
 			urlArtifactCount++
+			if len(sampleURLs) < 5 {
+				metaType := "nil"
+				hasTags := len(a.Tags) > 0
+				if a.TypedMetadata != nil {
+					metaType = fmt.Sprintf("%T", a.TypedMetadata)
+				}
+				sampleURLs = append(sampleURLs, fmt.Sprintf("%s (meta:%s, tags:%v)", a.Value, metaType, hasTags))
+			}
 		}
 	}
 
@@ -216,6 +226,12 @@ func (g *GoLinkfinderEvoSource) RunWithInput(
 		"url_artifacts", urlArtifactCount,
 		"artifact_types", artifactTypes,
 	)
+
+	if len(sampleURLs) > 0 {
+		g.GetLogger().Debug("sample URL artifacts received",
+			"samples", sampleURLs,
+		)
+	}
 
 	// Filter input URLs: only alive HTTP URLs with JS/HTML content
 	filteredURLs := g.filterURLsForCrawling(input.Artifacts)
@@ -384,12 +400,62 @@ func (g *GoLinkfinderEvoSource) filterURLsForCrawling(artifacts []*domain.Artifa
 		)
 	}
 
-	// Log first few rejected URLs for debugging
+	// Log first few rejected URLs for debugging with actual samples
 	if noMetadataCount > 0 || wrongMetadataTypeCount > 0 || badStatusCount > 0 {
-		g.GetLogger().Debug("URL filtering details",
+		// Re-scan to collect sample rejected URLs
+		sampleRejected := make(map[string][]string)
+		for _, a := range artifacts {
+			if a.Type != domain.ArtifactTypeURL && a.Type != domain.ArtifactTypeJavaScript {
+				continue
+			}
+			if len(sampleRejected) >= 10 { // Limit samples
+				break
+			}
+
+			category := g.categorizeURL(a)
+			if category == URLCategoryOther {
+				if len(sampleRejected["category_other"]) < 3 {
+					contentType := g.extractContentType(a.Tags)
+					sampleRejected["category_other"] = append(sampleRejected["category_other"],
+						fmt.Sprintf("%s (ct:%s)", a.Value, contentType))
+				}
+				continue
+			}
+
+			if a.Type == domain.ArtifactTypeJavaScript {
+				continue // JS artifacts bypass metadata check
+			}
+
+			if a.TypedMetadata == nil {
+				if len(sampleRejected["no_metadata"]) < 3 {
+					sampleRejected["no_metadata"] = append(sampleRejected["no_metadata"], a.Value)
+				}
+				continue
+			}
+
+			domainMeta, ok := a.TypedMetadata.(*metadata.DomainMetadata)
+			if !ok {
+				if len(sampleRejected["wrong_metadata_type"]) < 3 {
+					sampleRejected["wrong_metadata_type"] = append(sampleRejected["wrong_metadata_type"],
+						fmt.Sprintf("%s (type:%T)", a.Value, a.TypedMetadata))
+				}
+				continue
+			}
+
+			if domainMeta.HTTPStatus < 200 || domainMeta.HTTPStatus >= 400 {
+				if len(sampleRejected["bad_status"]) < 3 {
+					sampleRejected["bad_status"] = append(sampleRejected["bad_status"],
+						fmt.Sprintf("%s (status:%d)", a.Value, domainMeta.HTTPStatus))
+				}
+			}
+		}
+
+		g.GetLogger().Warn("URL filtering rejected many URLs",
 			"no_metadata_count", noMetadataCount,
 			"wrong_metadata_type_count", wrongMetadataTypeCount,
 			"bad_status_count", badStatusCount,
+			"category_other_count", categoryOtherCount,
+			"sample_rejected", sampleRejected,
 		)
 	}
 
@@ -599,9 +665,11 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 	artifacts := make([]*domain.Artifact, 0)
 
 	endpointCount := 0
+	urlCount := 0
 	paramCount := 0
+	subdomainCount := 0
 
-	// Convert resources to endpoint artifacts
+	// Convert resources to artifacts with intelligent classification
 	for _, resource := range output.Resources {
 		g.GetLogger().Debug("processing resource",
 			"resource_url", resource.Resource,
@@ -614,8 +682,11 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 				continue
 			}
 
+			// Classify artifact type intelligently (URL vs Endpoint)
+			artifactType := g.classifyArtifact(fullURL, ep.Link, target)
+
 			artifact := domain.NewArtifact(
-				domain.ArtifactTypeEndpoint,
+				artifactType,
 				fullURL,
 				g.Name(),
 			)
@@ -625,15 +696,33 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 			if ep.Context != "" {
 				artifact.AddTag("context:" + ep.Context)
 			}
-			artifact.Confidence = g.parser.calculateConfidence(ep.Link)
+
+			// Add resource type tags for static resources
+			if g.isStaticResource(fullURL) {
+				artifact.AddTag("resource_type:static")
+				artifact.Confidence = 0.5 // Lower confidence for static resources
+			} else {
+				artifact.Confidence = g.parser.calculateConfidence(ep.Link)
+			}
 
 			artifacts = append(artifacts, artifact)
-			endpointCount++
 
-			// Extract parameters from endpoint
+			// Count by type
+			if artifactType == domain.ArtifactTypeURL {
+				urlCount++
+			} else {
+				endpointCount++
+			}
+
+			// Extract parameters from endpoint/URL
 			params := g.parser.ExtractParametersFromEndpoint(fullURL, target)
 			artifacts = append(artifacts, params...)
 			paramCount += len(params)
+
+			// Extract subdomains from external URLs
+			subdomains := g.extractSubdomainsFromURL(fullURL, target)
+			artifacts = append(artifacts, subdomains...)
+			subdomainCount += len(subdomains)
 		}
 	}
 
@@ -648,6 +737,8 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 	g.GetLogger().Info("converted output to artifacts",
 		"resources", len(output.Resources),
 		"endpoints", endpointCount,
+		"urls", urlCount,
+		"subdomains", subdomainCount,
 		"parameters", paramCount,
 		"gf_findings", output.GFFindings.Total,
 		"gf_artifacts", gfArtifactCount,
@@ -655,6 +746,175 @@ func (g *GoLinkfinderEvoSource) convertOutputToArtifacts(
 	)
 
 	return artifacts
+}
+
+// classifyArtifact intelligently classifies a discovered link as URL or Endpoint.
+// URLs: Complete absolute URLs (especially external domains or static resources)
+// Endpoints: Relative paths or same-domain API routes
+func (g *GoLinkfinderEvoSource) classifyArtifact(fullURL string, originalLink string, target domain.Target) domain.ArtifactType {
+	// 1. Check if it's an absolute URL
+	if !strings.HasPrefix(fullURL, "http://") && !strings.HasPrefix(fullURL, "https://") {
+		// Relative path → Endpoint
+		return domain.ArtifactTypeEndpoint
+	}
+
+	// 2. Parse URL to extract domain
+	parsedURL, err := url.Parse(fullURL)
+	if err != nil {
+		// Invalid URL, default to Endpoint
+		return domain.ArtifactTypeEndpoint
+	}
+
+	hostname := parsedURL.Hostname()
+
+	// 3. Check if it's an external domain (not target or subdomain of target)
+	if !g.isSameDomain(hostname, target.Root) {
+		// External domain → URL (e.g., CDNs, third-party APIs)
+		return domain.ArtifactTypeURL
+	}
+
+	// 4. Same domain - check if it's a static resource
+	if g.isStaticResource(fullURL) {
+		// Static resource (JS, CSS, images) → URL
+		return domain.ArtifactTypeURL
+	}
+
+	// 5. Same domain - check if it's an API path
+	if g.isAPIPath(fullURL) {
+		// API endpoint → Endpoint
+		return domain.ArtifactTypeEndpoint
+	}
+
+	// 6. Default for same-domain absolute URLs: URL
+	// (Complete URLs are more useful as URL artifacts for tracking)
+	return domain.ArtifactTypeURL
+}
+
+// isSameDomain checks if hostname belongs to the target domain.
+func (g *GoLinkfinderEvoSource) isSameDomain(hostname string, targetRoot string) bool {
+	if hostname == targetRoot {
+		return true
+	}
+	// Check if it's a subdomain of target (e.g., api.example.com for target example.com)
+	return strings.HasSuffix(hostname, "."+targetRoot)
+}
+
+// isStaticResource checks if URL points to a static resource.
+func (g *GoLinkfinderEvoSource) isStaticResource(urlStr string) bool {
+	staticExts := []string{
+		".js", ".mjs", ".jsx", // JavaScript (but might also be endpoints)
+		".css", ".scss", ".sass", ".less", // Styles
+		".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp", ".tiff", // Images
+		".woff", ".woff2", ".ttf", ".eot", ".otf", // Fonts
+		".mp4", ".avi", ".mov", ".webm", ".mkv", ".flv", // Videos
+		".mp3", ".wav", ".ogg", ".flac", ".aac", // Audio
+		".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", // Documents
+		".zip", ".tar", ".gz", ".rar", ".7z", ".bz2", // Archives
+	}
+
+	urlLower := strings.ToLower(urlStr)
+
+	// Check file extensions
+	for _, ext := range staticExts {
+		// Match extension at end of URL or before query params
+		if strings.HasSuffix(urlLower, ext) || strings.Contains(urlLower, ext+"?") {
+			return true
+		}
+	}
+
+	// Check for common static resource paths
+	staticPaths := []string{
+		"/static/", "/assets/", "/dist/", "/build/",
+		"/images/", "/img/", "/css/", "/js/", "/fonts/",
+		"/media/", "/public/", "/resources/",
+	}
+
+	for _, path := range staticPaths {
+		if strings.Contains(urlLower, path) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isAPIPath checks if URL contains API-related patterns.
+func (g *GoLinkfinderEvoSource) isAPIPath(urlStr string) bool {
+	apiPatterns := []string{
+		"/api/", "/api-", "/apis/",
+		"/v1/", "/v2/", "/v3/", "/v4/",
+		"/graphql", "/gql/",
+		"/rest/", "/restful/",
+		"/oauth", "/oauth2",
+		"/rpc/", "/jsonrpc",
+		"/grpc/",
+	}
+
+	urlLower := strings.ToLower(urlStr)
+
+	for _, pattern := range apiPatterns {
+		if strings.Contains(urlLower, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// extractSubdomainsFromURL extracts subdomains from discovered URLs.
+// Only extracts external domains (not the target domain itself).
+func (g *GoLinkfinderEvoSource) extractSubdomainsFromURL(fullURL string, target domain.Target) []*domain.Artifact {
+	artifacts := make([]*domain.Artifact, 0)
+
+	// Parse URL
+	parsedURL, err := url.Parse(fullURL)
+	if err != nil || parsedURL.Hostname() == "" {
+		return artifacts
+	}
+
+	hostname := parsedURL.Hostname()
+
+	// Skip if it's the target root itself
+	if hostname == target.Root {
+		return artifacts
+	}
+
+	// Skip if it's a subdomain of the target (already discovered by other sources)
+	if strings.HasSuffix(hostname, "."+target.Root) {
+		return artifacts
+	}
+
+	// Skip localhost and IP addresses
+	if hostname == "localhost" || g.isIPAddress(hostname) {
+		return artifacts
+	}
+
+	// Extract external subdomain
+	artifact := domain.NewArtifact(
+		domain.ArtifactTypeSubdomain,
+		hostname,
+		g.Name(),
+	)
+
+	artifact.AddTag("discovered_in_url:" + fullURL)
+	artifact.AddTag("external_domain")
+	artifact.Confidence = 0.8
+
+	artifacts = append(artifacts, artifact)
+
+	return artifacts
+}
+
+// isIPAddress checks if a string is an IP address.
+func (g *GoLinkfinderEvoSource) isIPAddress(s string) bool {
+	// Simple check: contains only digits and dots/colons
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || c == '.' || c == ':') {
+			return false
+		}
+	}
+	// Must contain at least one dot or colon
+	return strings.Contains(s, ".") || strings.Contains(s, ":")
 }
 
 // convertGFFindingsToArtifacts converts GF findings to domain artifacts.
@@ -668,7 +928,7 @@ func (g *GoLinkfinderEvoSource) convertGFFindingsToArtifacts(
 	for _, finding := range gfFindings.Findings {
 		// Each finding can match multiple rules
 		for _, ruleName := range finding.Rules {
-			artifactType := g.gfParser.inferArtifactType(ruleName)
+			artifactType := g.gfParser.inferArtifactType(ruleName, finding.Evidence)
 
 			artifact := domain.NewArtifact(
 				artifactType,

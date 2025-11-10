@@ -197,6 +197,16 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 	result := domain.NewScanResult(target)
 	result.Metadata.TotalSources = len(compatibleSources)
 
+	// Generar seed URLs desde el target del usuario (bootstrap)
+	seedArtifacts := p.generateSeedURLs(target)
+	if len(seedArtifacts) > 0 {
+		result.Artifacts = append(result.Artifacts, seedArtifacts...)
+		p.logger.Info("generated seed URLs from target",
+			"target", target.Root,
+			"seed_urls", len(seedArtifacts),
+		)
+	}
+
 	// Notificar inicio
 	p.notifyEvent(ctx, ports.NewEvent(
 		ports.EventTypeScanStarted,
@@ -209,6 +219,17 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 
 	// Ejecutar stages secuencialmente
 	for i, stage := range stages {
+		// Check if global context was cancelled (double Ctrl-C or SIGTERM)
+		// If so, exit immediately without processing remaining stages
+		if ctx.Err() != nil {
+			p.logger.Info("global context cancelled, stopping pipeline execution",
+				"remaining_stages", len(stages)-i,
+				"reason", ctx.Err(),
+			)
+			p.presenter.Warning("Scan interrupted by user. Saving partial results...")
+			break
+		}
+
 		stageStartTime := time.Now()
 		p.logger.Info("executing stage",
 			"stage_id", stage.ID,
@@ -228,31 +249,15 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 			Sources:     sourceNames,
 		})
 
-		// Crear contexto con timeout independiente para este stage
-		// Cada stage tiene su propio timeout que NO depende del contexto padre
-		// Si el contexto padre está cancelado (timeout global), creamos uno nuevo
+		// Create stage context with timeout from parent
 		var stageCtx context.Context
 		var stageCancel context.CancelFunc
 
-		// Verificar si el contexto padre está cancelado
-		if ctx.Err() != nil {
-			p.logger.Warn("parent context cancelled, creating fresh context for stage",
-				"stage_id", stage.ID,
-				"stage_name", stage.Name,
-			)
-			// Contexto padre cancelado, crear uno completamente nuevo
-			if p.uiConfig.TimeoutS > 0 {
-				stageCtx, stageCancel = context.WithTimeout(context.Background(), time.Duration(p.uiConfig.TimeoutS)*time.Second)
-			} else {
-				stageCtx, stageCancel = context.WithCancel(context.Background())
-			}
+		// Create child context from parent with optional timeout
+		if p.uiConfig.TimeoutS > 0 {
+			stageCtx, stageCancel = context.WithTimeout(ctx, time.Duration(p.uiConfig.TimeoutS)*time.Second)
 		} else {
-			// Contexto padre activo, crear hijo con timeout
-			if p.uiConfig.TimeoutS > 0 {
-				stageCtx, stageCancel = context.WithTimeout(ctx, time.Duration(p.uiConfig.TimeoutS)*time.Second)
-			} else {
-				stageCtx, stageCancel = context.WithCancel(ctx)
-			}
+			stageCtx, stageCancel = context.WithCancel(ctx)
 		}
 
 		// Goroutine para escuchar SIGINT durante la ejecución del stage
@@ -1078,4 +1083,58 @@ func (p *PipelineOrchestrator) notifyEvent(ctx context.Context, event ports.Even
 			}
 		}(observer)
 	}
+}
+
+// generateSeedURLs genera URLs base desde el target del usuario.
+// Estas URLs seed se consideran "alive" (status 200) ya que el usuario las proporcionó.
+// Esto garantiza que sources como golinkfinderevo siempre tengan al menos la URL raíz.
+func (p *PipelineOrchestrator) generateSeedURLs(target domain.Target) []*domain.Artifact {
+	var artifacts []*domain.Artifact
+	timestamp := time.Now().Format(time.RFC3339)
+
+	// Generar HTTPS URL (prioritaria)
+	httpsURL := fmt.Sprintf("https://%s/", target.Root)
+	httpsMeta := &metadata.DomainMetadata{
+		HTTPStatus:  200,
+		IsAlive:     true,
+		ProbeStatus: "alive",
+		LastProbed:  timestamp,
+		ProbeSource: "bootstrap",
+		HasSSL:      true,
+	}
+
+	httpsArtifact := domain.NewArtifactWithMetadata(
+		domain.ArtifactTypeURL,
+		httpsURL,
+		"bootstrap",
+		httpsMeta,
+	)
+	artifacts = append(artifacts, httpsArtifact)
+
+	// Generar HTTP URL (fallback)
+	httpURL := fmt.Sprintf("http://%s/", target.Root)
+	httpMeta := &metadata.DomainMetadata{
+		HTTPStatus:  200,
+		IsAlive:     true,
+		ProbeStatus: "alive",
+		LastProbed:  timestamp,
+		ProbeSource: "bootstrap",
+		HasSSL:      false,
+	}
+
+	httpArtifact := domain.NewArtifactWithMetadata(
+		domain.ArtifactTypeURL,
+		httpURL,
+		"bootstrap",
+		httpMeta,
+	)
+	artifacts = append(artifacts, httpArtifact)
+
+	p.logger.Debug("generated seed URLs",
+		"target", target.Root,
+		"https", httpsURL,
+		"http", httpURL,
+	)
+
+	return artifacts
 }

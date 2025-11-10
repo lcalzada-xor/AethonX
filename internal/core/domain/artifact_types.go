@@ -38,6 +38,12 @@ const (
 
 	// ArtifactTypeMXRecord representa un Mail Exchange record
 	ArtifactTypeMXRecord ArtifactType = "mx_record"
+
+	// ArtifactTypeInternalIP representa IPs privadas expuestas (RFC1918)
+	ArtifactTypeInternalIP ArtifactType = "internal_ip"
+
+	// ArtifactTypeDBConnection representa cadenas de conexión a bases de datos
+	ArtifactTypeDBConnection ArtifactType = "db_connection"
 )
 
 // Tipos de artefactos - Aplicaciones Web
@@ -128,6 +134,12 @@ const (
 
 	// ArtifactTypeMetadata representa metadatos extraídos
 	ArtifactTypeMetadata ArtifactType = "metadata"
+
+	// ArtifactTypeOAuthToken representa tokens OAuth2/OIDC
+	ArtifactTypeOAuthToken ArtifactType = "oauth_token"
+
+	// ArtifactTypeDeveloperNote representa comentarios de desarrolladores (TODO, FIXME, XXX)
+	ArtifactTypeDeveloperNote ArtifactType = "developer_note"
 )
 
 // Tipos de artefactos - Información de Contacto
@@ -150,13 +162,15 @@ func (t ArtifactType) IsValid() bool {
 	switch t {
 	case ArtifactTypeDomain, ArtifactTypeSubdomain, ArtifactTypeIP, ArtifactTypeIPv6,
 		ArtifactTypeCIDR, ArtifactTypeASN, ArtifactTypePort, ArtifactTypeService, ArtifactTypeDNSRecord,
-		ArtifactTypeNameserver, ArtifactTypeMXRecord, ArtifactTypeURL, ArtifactTypeEndpoint, ArtifactTypeAPI,
+		ArtifactTypeNameserver, ArtifactTypeMXRecord, ArtifactTypeInternalIP, ArtifactTypeDBConnection,
+		ArtifactTypeURL, ArtifactTypeEndpoint, ArtifactTypeAPI,
 		ArtifactTypeTechnology, ArtifactTypeHTTPHeader, ArtifactTypeCookie, ArtifactTypeForm,
 		ArtifactTypeParameter, ArtifactTypeJavaScript, ArtifactTypeRedirect, ArtifactTypeWAF,
 		ArtifactTypeCertificate, ArtifactTypeVulnerability, ArtifactTypeSecurityHeader, ArtifactTypeTLSConfig,
 		ArtifactTypeSSHKey, ArtifactTypeCloudResource, ArtifactTypeCDNEndpoint, ArtifactTypeContainer,
 		ArtifactTypeStorageBucket, ArtifactTypeCredential, ArtifactTypeSensitiveFile, ArtifactTypeBackupFile,
-		ArtifactTypeRepository, ArtifactTypeWebshell, ArtifactTypeMetadata, ArtifactTypeEmail, ArtifactTypePhone,
+		ArtifactTypeRepository, ArtifactTypeWebshell, ArtifactTypeMetadata, ArtifactTypeOAuthToken,
+		ArtifactTypeDeveloperNote, ArtifactTypeEmail, ArtifactTypePhone,
 		ArtifactTypeSocialMedia, ArtifactTypeWhoisContact:
 		return true
 	default:
@@ -169,7 +183,7 @@ func (t ArtifactType) Category() string {
 	switch t {
 	case ArtifactTypeDomain, ArtifactTypeSubdomain, ArtifactTypeIP, ArtifactTypeIPv6,
 		ArtifactTypeCIDR, ArtifactTypeASN, ArtifactTypePort, ArtifactTypeService, ArtifactTypeDNSRecord,
-		ArtifactTypeNameserver, ArtifactTypeMXRecord:
+		ArtifactTypeNameserver, ArtifactTypeMXRecord, ArtifactTypeInternalIP, ArtifactTypeDBConnection:
 		return "infrastructure"
 
 	case ArtifactTypeURL, ArtifactTypeEndpoint, ArtifactTypeAPI, ArtifactTypeTechnology, ArtifactTypeHTTPHeader,
@@ -185,7 +199,7 @@ func (t ArtifactType) Category() string {
 		return "cloud"
 
 	case ArtifactTypeCredential, ArtifactTypeSensitiveFile, ArtifactTypeBackupFile, ArtifactTypeRepository,
-		ArtifactTypeWebshell, ArtifactTypeMetadata:
+		ArtifactTypeWebshell, ArtifactTypeMetadata, ArtifactTypeOAuthToken, ArtifactTypeDeveloperNote:
 		return "data"
 
 	case ArtifactTypeEmail, ArtifactTypePhone, ArtifactTypeSocialMedia, ArtifactTypeWhoisContact:
