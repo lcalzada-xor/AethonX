@@ -338,7 +338,34 @@ func mergeTypedMetadata(current, incoming metadata.ArtifactMetadata) metadata.Ar
 		return current
 	}
 
-	// Different types or not DomainMetadata: prefer non-nil incoming
+	// Type assertion to IPMetadata (enrichment case)
+	currentIP, currentIsIP := current.(*metadata.IPMetadata)
+	incomingIP, incomingIsIP := incoming.(*metadata.IPMetadata)
+
+	// Both are IPMetadata: prefer the one with more information
+	if currentIsIP && incomingIsIP {
+		// Check which one has richer data using IsValid()
+		currentValid := currentIP.IsValid()
+		incomingValid := incomingIP.IsValid()
+
+		// If only one is valid, prefer it
+		if incomingValid && !currentValid {
+			return incoming
+		}
+		if currentValid && !incomingValid {
+			return current
+		}
+
+		// Both valid or both empty: prefer incoming (enrichment sources like ipapi come later)
+		if incomingValid {
+			return incoming
+		}
+
+		// Both empty: keep current
+		return current
+	}
+
+	// Different types or not DomainMetadata/IPMetadata: prefer non-nil incoming
 	if incoming != nil {
 		return incoming
 	}
