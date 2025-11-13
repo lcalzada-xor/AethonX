@@ -97,8 +97,17 @@ func (h *HTTPXSource) Run(ctx context.Context, target domain.Target) (*domain.Sc
 		"rate_limit", h.rateLimit,
 	)
 
-	// Build command arguments
-	args := h.buildCommandArgs(target)
+	// Calculate effective timeout: use the most restrictive between:
+	// 1. HTTPx default timeout (120s)
+	// 2. Context deadline (if present)
+	effectiveTimeout := h.calculateEffectiveTimeout(ctx)
+	h.GetLogger().Debug("calculated effective timeout",
+		"default_timeout", h.GetTimeout(),
+		"effective_timeout", effectiveTimeout,
+	)
+
+	// Build command arguments with effective timeout
+	args := h.buildCommandArgsWithTimeout(target, effectiveTimeout)
 
 	// Create handler using JSONLineHandler
 	handler := common.NewJSONLineHandler[HTTPXResponse](h.GetLogger(), target)
@@ -211,8 +220,60 @@ func (h *HTTPXSource) HealthCheck(ctx context.Context) error {
 	return h.DefaultHealthCheck(ctx)
 }
 
-// buildCommandArgs constructs the httpx command arguments.
+// calculateEffectiveTimeout calculates the most restrictive timeout between:
+// - HTTPx default timeout
+// - Context deadline (time remaining until context cancellation)
+// This prevents double timeout conflicts where httpx's internal timeout
+// exceeds the context deadline, causing abrupt process termination.
+func (h *HTTPXSource) calculateEffectiveTimeout(ctx context.Context) time.Duration {
+	defaultTimeout := h.GetTimeout()
+
+	// Check if context has a deadline
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		// No context deadline, use httpx default
+		return defaultTimeout
+	}
+
+	// Calculate time remaining until context deadline
+	remaining := time.Until(deadline)
+
+	// Reserve buffer for graceful shutdown and enforce minimum timeout
+	const gracefulBuffer = 5 * time.Second
+	const minTimeout = 1 * time.Second
+
+	// Check if we have enough time for buffer + minimum timeout
+	if remaining <= gracefulBuffer+minTimeout {
+		// Very little time left, use minimum viable timeout
+		h.GetLogger().Debug("context deadline too close, using minimum timeout",
+			"context_remaining", remaining,
+			"min_timeout", minTimeout,
+		)
+		remaining = minTimeout
+	} else {
+		// Subtract buffer to allow graceful shutdown
+		remaining -= gracefulBuffer
+	}
+
+	// Return the most restrictive (minimum) timeout
+	if remaining < defaultTimeout {
+		h.GetLogger().Debug("using context-based timeout (more restrictive than default)",
+			"context_remaining", remaining,
+			"default", defaultTimeout,
+		)
+		return remaining
+	}
+
+	return defaultTimeout
+}
+
+// buildCommandArgs constructs the httpx command arguments (deprecated, use buildCommandArgsWithTimeout).
 func (h *HTTPXSource) buildCommandArgs(target domain.Target) []string {
+	return h.buildCommandArgsWithTimeout(target, h.GetTimeout())
+}
+
+// buildCommandArgsWithTimeout constructs the httpx command arguments with explicit timeout.
+func (h *HTTPXSource) buildCommandArgsWithTimeout(target domain.Target, timeout time.Duration) []string {
 	profileCfg := GetProfile(h.profile)
 
 	args := []string{
@@ -225,11 +286,11 @@ func (h *HTTPXSource) buildCommandArgs(target domain.Target) []string {
 	// Add profile-specific flags
 	args = append(args, profileCfg.Flags...)
 
-	// Add performance flags
+	// Add performance flags with effective timeout
 	args = append(args,
 		"-t", strconv.Itoa(h.threads),
 		"-rl", strconv.Itoa(h.rateLimit),
-		"-timeout", strconv.Itoa(int(h.GetTimeout().Seconds())),
+		"-timeout", strconv.Itoa(int(timeout.Seconds())),
 		"-retries", "2",
 		"-maxr", "5", // Max redirects
 	)
@@ -246,7 +307,7 @@ func (h *HTTPXSource) buildCommandArgs(target domain.Target) []string {
 
 	h.GetLogger().Debug("built httpx command",
 		"args", args,
-		"timeout", h.GetTimeout().String(),
+		"timeout", timeout.String(),
 	)
 
 	return args
@@ -288,8 +349,9 @@ func (h *HTTPXSource) RunWithInput(ctx context.Context, target domain.Target, in
 		if err != nil {
 			h.GetLogger().Warn("verification profile failed", "error", err.Error())
 			result.AddWarning("httpx", fmt.Sprintf("verification failed: %v", err))
-		} else {
-			// Merge results
+		}
+		// Merge results even with error (partial results)
+		if verificationResults != nil {
 			for _, artifact := range verificationResults.Artifacts {
 				result.AddArtifact(artifact)
 			}
@@ -302,8 +364,9 @@ func (h *HTTPXSource) RunWithInput(ctx context.Context, target domain.Target, in
 		if err != nil {
 			h.GetLogger().Warn("full profile failed", "error", err.Error())
 			result.AddWarning("httpx", fmt.Sprintf("full profile failed: %v", err))
-		} else {
-			// Merge results
+		}
+		// Merge results even with error (partial results)
+		if fullResults != nil {
 			for _, artifact := range fullResults.Artifacts {
 				result.AddArtifact(artifact)
 			}
@@ -428,15 +491,19 @@ func (h *HTTPXSource) runWithProfile(ctx context.Context, target domain.Target, 
 		h.SetTimeout(originalTimeout)
 	}()
 
+	// Calculate effective timeout for this profile
+	effectiveTimeout := h.calculateEffectiveTimeout(ctx)
+
 	h.GetLogger().Info("running httpx with profile",
 		"profile", profile,
 		"targets", len(targets),
 		"threads", h.threads,
 		"rate_limit", h.rateLimit,
+		"effective_timeout", effectiveTimeout,
 	)
 
-	// Build command arguments for stdin mode
-	args := h.buildCommandArgsWithStdin()
+	// Build command arguments for stdin mode with effective timeout
+	args := h.buildCommandArgsWithStdinAndTimeout(effectiveTimeout)
 
 	// Create handler using JSONLineHandler (type-safe, thread-safe)
 	handler := common.NewJSONLineHandler[HTTPXResponse](h.GetLogger(), target)
@@ -508,8 +575,13 @@ func (h *HTTPXSource) runWithProfile(ctx context.Context, target domain.Target, 
 	return result, nil
 }
 
-// buildCommandArgsWithStdin constructs httpx command arguments to read targets from stdin.
+// buildCommandArgsWithStdin constructs httpx command arguments to read targets from stdin (deprecated, use buildCommandArgsWithStdinAndTimeout).
 func (h *HTTPXSource) buildCommandArgsWithStdin() []string {
+	return h.buildCommandArgsWithStdinAndTimeout(h.GetTimeout())
+}
+
+// buildCommandArgsWithStdinAndTimeout constructs httpx command arguments to read targets from stdin with explicit timeout.
+func (h *HTTPXSource) buildCommandArgsWithStdinAndTimeout(timeout time.Duration) []string {
 	profileCfg := GetProfile(h.profile)
 
 	args := []string{
@@ -521,11 +593,11 @@ func (h *HTTPXSource) buildCommandArgsWithStdin() []string {
 	// Add profile-specific flags
 	args = append(args, profileCfg.Flags...)
 
-	// Add performance flags
+	// Add performance flags with effective timeout
 	args = append(args,
 		"-t", strconv.Itoa(h.threads),
 		"-rl", strconv.Itoa(h.rateLimit),
-		"-timeout", strconv.Itoa(int(h.GetTimeout().Seconds())),
+		"-timeout", strconv.Itoa(int(timeout.Seconds())),
 		"-retries", "2",
 		"-maxr", "5", // Max redirects
 	)
@@ -542,7 +614,7 @@ func (h *HTTPXSource) buildCommandArgsWithStdin() []string {
 
 	h.GetLogger().Debug("built httpx command with stdin",
 		"args", args,
-		"httpx_request_timeout", h.GetTimeout().String(),
+		"httpx_request_timeout", timeout.String(),
 	)
 
 	return args

@@ -23,12 +23,14 @@ import (
 	"aethonx/internal/platform/vulners"
 
 	// Import sources for auto-registration via init()
+	_ "aethonx/internal/sources/abuseipdb"
 	_ "aethonx/internal/sources/crtsh"
 	_ "aethonx/internal/sources/dnsx"
 	_ "aethonx/internal/sources/golinkfinderevo"
 	_ "aethonx/internal/sources/httpx"
 	_ "aethonx/internal/sources/ipapi"
 	_ "aethonx/internal/sources/rdap"
+	_ "aethonx/internal/sources/retirejs"
 	_ "aethonx/internal/sources/shodan"
 	_ "aethonx/internal/sources/subfinder"
 	_ "aethonx/internal/sources/waybackurls"
@@ -247,10 +249,11 @@ func main() {
 		},
 		Presenter: presenter,
 		UIConfig: usecases.UIConfig{
-			Mode:        ui.UIMode(cfg.Output.UIMode),
-			ShowMetrics: cfg.Output.ShowMetrics,
-			ShowPhases:  cfg.Output.ShowPhases,
-			TimeoutS:    cfg.Core.TimeoutS,
+			Mode:          ui.UIMode(cfg.Output.UIMode),
+			ShowMetrics:   cfg.Output.ShowMetrics,
+			ShowPhases:    cfg.Output.ShowPhases,
+			TimeoutS:      cfg.Core.TimeoutS,
+			StageTimeoutS: cfg.Core.StageTimeoutS,
 		},
 		VulnerabilityEnrichmentService: vulnEnrichmentSvc,
 		VulnerabilityEnrichmentEnabled: cfg.Enrichment.Enabled,

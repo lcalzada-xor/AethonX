@@ -30,7 +30,7 @@ const (
 type AbuseIPDBClient struct {
 	httpClient  *httpclient.Client
 	cache       cache.Cache
-	rateLimiter rate.Limiter
+	rateLimiter *rate.Limiter
 	logger      logx.Logger
 	apiKey      string // Required for AbuseIPDB API
 }

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"aethonx/internal/core/domain"
@@ -59,6 +60,10 @@ type PipelineOrchestrator struct {
 
 	// sigintChannel recibe señales SIGINT para cancelación por stage
 	sigintChannel chan struct{}
+
+	// abortScan se establece en true cuando se recibe SIGINT para abortar el scan completo
+	abortScan bool
+	abortMu   sync.Mutex
 }
 
 // PipelineOrchestratorOptions configura el pipeline orchestrator.
@@ -83,10 +88,11 @@ type PipelineOrchestratorOptions struct {
 
 // UIConfig contiene configuración de UI
 type UIConfig struct {
-	Mode        ui.UIMode
-	ShowMetrics bool
-	ShowPhases  bool
-	TimeoutS    int
+	Mode             ui.UIMode
+	ShowMetrics      bool
+	ShowPhases       bool
+	TimeoutS         int // Global timeout (for UI display)
+	StageTimeoutS    int // Per-stage timeout (0 = no per-stage limit)
 }
 
 // NewPipelineOrchestrator crea una nueva instancia del pipeline orchestrator.
@@ -258,15 +264,25 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 			Sources:     sourceNames,
 		})
 
-		// Create stage context with timeout from parent
+		// Create stage context with optional per-stage timeout
 		var stageCtx context.Context
 		var stageCancel context.CancelFunc
 
-		// Create child context from parent with optional timeout
-		if p.uiConfig.TimeoutS > 0 {
-			stageCtx, stageCancel = context.WithTimeout(ctx, time.Duration(p.uiConfig.TimeoutS)*time.Second)
+		// Per-stage timeout is independent from global timeout
+		// If StageTimeoutS > 0, apply timeout for this stage only
+		// If StageTimeoutS = 0, inherit parent context (which may have global timeout)
+		if p.uiConfig.StageTimeoutS > 0 {
+			stageCtx, stageCancel = context.WithTimeout(ctx, time.Duration(p.uiConfig.StageTimeoutS)*time.Second)
+			p.logger.Debug("stage context with timeout",
+				"stage_id", stage.ID,
+				"timeout_s", p.uiConfig.StageTimeoutS,
+			)
 		} else {
+			// No per-stage timeout, only global timeout applies (if configured)
 			stageCtx, stageCancel = context.WithCancel(ctx)
+			p.logger.Debug("stage context without per-stage timeout (global timeout applies if configured)",
+				"stage_id", stage.ID,
+			)
 		}
 
 		// Goroutine para escuchar SIGINT durante la ejecución del stage
@@ -279,12 +295,16 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 						// Canal cerrado (timeout global o shutdown), NO es Ctrl-C del usuario
 						return
 					}
-					// SIGINT recibido, cancelar stage
+					// SIGINT recibido, cancelar stage y marcar abort
 					p.logger.Info("stage cancelled by SIGINT",
 						"stage_id", stage.ID,
 						"stage_name", stage.Name,
 					)
-					p.presenter.Warning(fmt.Sprintf("Stage %d cancelled by user (Ctrl-C), continuing to next stage...", i+1))
+					p.abortMu.Lock()
+					p.abortScan = true
+					p.abortMu.Unlock()
+
+					p.presenter.Warning("Scan interrupted by user. Saving partial results...")
 					stageCancel()
 				case <-sigintDone:
 					// Stage terminó normalmente
@@ -298,7 +318,18 @@ func (p *PipelineOrchestrator) Run(ctx context.Context, target domain.Target) (*
 		// Señalar que el stage terminó
 		close(sigintDone)
 
+		// Check if scan should abort due to SIGINT (BEFORE stageCancel to avoid race)
+		p.abortMu.Lock()
+		shouldAbort := p.abortScan
+		p.abortMu.Unlock()
+
 		stageCancel() // Limpiar contexto del stage
+
+		if shouldAbort {
+			p.logger.Info("aborting remaining stages due to user cancellation")
+			// Skip consolidation/enrichment, return partial results immediately
+			return result, nil
+		}
 
 		if err != nil {
 			// Fail-soft: log error pero continuar con siguientes stages
@@ -492,7 +523,7 @@ func (p *PipelineOrchestrator) executeStage(ctx context.Context, stage Stage, in
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// Ejecutar source
+			// Ejecutar source (ctx aquí es el stageCtx pasado desde Run)
 			execResult := p.executeSourceInStage(ctx, src, inputArtifacts)
 			results <- execResult
 		}(source)
@@ -810,10 +841,17 @@ func (p *PipelineOrchestrator) buildSourceSummary(
 		}
 	}
 
-	// Caso 2: Sin resultados
+	// Caso 2: Result es nil (puede ocurrir con errores fatales)
+	if result == nil {
+		return &ui.SourceSummary{
+			Summary: "no results",
+		}
+	}
+
+	// Caso 3: Sin resultados pero result existe
 	if artifactCount == 0 {
 		// Verificar si hay warnings para mostrar contexto
-		if result != nil && len(result.Warnings) > 0 {
+		if len(result.Warnings) > 0 {
 			return &ui.SourceSummary{
 				Summary: result.Warnings[0].Message,
 			}

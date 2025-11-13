@@ -228,6 +228,16 @@ func DefaultConfig() Config {
 					Priority:  18,  // Stage 2 - enrichment after httpx/dnsx (15), before golinkfinder (20)
 					Custom:    make(map[string]interface{}),
 				},
+				"abuseipdb": {
+					Enabled:   false, // Disabled by default (requires API key)
+					Timeout:   10 * time.Second, // IP reputation checks are fast
+					Retries:   2,
+					RateLimit: 0, // Rate limiting handled internally by client (1000 req/day free tier ~0.01 req/s)
+					Priority:  19,  // Stage 2 - enrichment after ipapi (18), before golinkfinder (20)
+					Custom: map[string]interface{}{
+						"api_key": "", // REQUIRED: Get free API key at https://www.abuseipdb.com/api
+					},
+				},
 				"retirejs": {
 					Enabled:   true,
 					Timeout:   180 * time.Second, // retire.js can take time scanning large JS files
@@ -475,6 +485,18 @@ func loadFromEnv(cfg *Config) {
 			}
 		}
 
+		// AbuseIPDB-specific custom config
+		if name == "abuseipdb" {
+			// Support both formats: AETHONX_SOURCES_ABUSEIPDB_API_KEY and AETHONX_SRC_ABUSEIPDB_API_KEY
+			apiKey := getenv(prefix+"API_KEY", "")
+			if apiKey == "" {
+				apiKey = getenv("AETHONX_SRC_ABUSEIPDB_API_KEY", "")
+			}
+			if apiKey != "" {
+				sourceCfg.Custom["api_key"] = apiKey
+			}
+		}
+
 		// WhatWeb-specific custom config
 		if name == "whatweb" {
 			if v := getenv(prefix+"EXEC_PATH", ""); v != "" {
@@ -577,6 +599,18 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 			"Use Shodan CLI instead of API (default: false)")
 		pflag.Float64Var(&shodanRateLimit, "src.shodan.rate_limit", shodanRateLimit,
 			"Shodan API rate limit in requests/second (default: 1.0 for free tier)")
+	}
+
+	// AbuseIPDB flags
+	var abuseipdbAPIKey string
+
+	if abuseipdbCfg, ok := cfg.Source.Sources["abuseipdb"]; ok {
+		if v, ok := abuseipdbCfg.Custom["api_key"].(string); ok {
+			abuseipdbAPIKey = v
+		}
+
+		pflag.StringVar(&abuseipdbAPIKey, "src.abuseipdb.api_key", abuseipdbAPIKey,
+			"AbuseIPDB API key (required, get free key at https://www.abuseipdb.com/api)")
 	}
 
 	// GoLinkfinderEVO flags
@@ -808,6 +842,12 @@ func loadFromFlags(cfg *Config, version, commit, date string) {
 		shodanCfg.Custom["use_cli"] = shodanUseCLI
 		shodanCfg.Custom["rate_limit"] = shodanRateLimit
 		cfg.Source.Sources["shodan"] = shodanCfg
+	}
+
+	// Apply AbuseIPDB-specific flags back to config
+	if abuseipdbCfg, ok := cfg.Source.Sources["abuseipdb"]; ok {
+		abuseipdbCfg.Custom["api_key"] = abuseipdbAPIKey
+		cfg.Source.Sources["abuseipdb"] = abuseipdbCfg
 	}
 
 	// Apply GoLinkfinderEVO-specific flags back to config

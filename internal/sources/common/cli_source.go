@@ -41,11 +41,12 @@ type BaseCLISource struct {
 	execPath   string        // Path to CLI binary
 	timeout    time.Duration // Timeout for subprocess
 	progressCh chan ports.ProgressUpdate
-	chClosed   bool          // Track if progressCh is closed
+	chClosed   bool // Track if progressCh is closed
 
 	// Process management
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	mu         sync.Mutex
+	cmd        *exec.Cmd
+	waitCalled bool // Track if Wait() has been called to prevent double-wait
 }
 
 // BaseCLIConfig contains configuration for BaseCLISource.
@@ -172,6 +173,11 @@ func (b *BaseCLISource) ExecuteCLI(
 	// Wait for process to complete
 	waitErr := cmd.Wait()
 
+	// Mark that Wait() has been called to prevent double-wait in Close()
+	b.mu.Lock()
+	b.waitCalled = true
+	b.mu.Unlock()
+
 	// Wait for stderr goroutine to finish reading all output
 	stderrWg.Wait()
 
@@ -270,7 +276,10 @@ func (b *BaseCLISource) Close() error {
 		b.chClosed = true
 	}
 
-	// Kill process if still running
+	// Terminate process if still running with graceful shutdown pattern:
+	// 1. Send SIGTERM (allows process to flush buffers, cleanup)
+	// 2. Wait 5 seconds for graceful exit
+	// 3. Send SIGKILL if process is still running (force termination)
 	// Note: We hold the mutex during the entire operation to prevent races
 	if b.cmd != nil && b.cmd.Process != nil {
 		proc := b.cmd.Process       // Copy reference to avoid race
@@ -278,11 +287,53 @@ func (b *BaseCLISource) Close() error {
 
 		// Check if process is still running
 		if state == nil || !state.Exited() {
-			// Try SIGTERM first (graceful shutdown)
+			b.logger.Debug("attempting graceful shutdown with SIGTERM",
+				"pid", proc.Pid,
+			)
+
+			// Step 1: Send SIGTERM (graceful shutdown signal)
 			if err := proc.Signal(os.Interrupt); err != nil {
 				// Check if process already finished (not a real error)
 				if err != os.ErrProcessDone {
-					b.logger.Warn("SIGTERM failed, forcing kill", "error", err.Error())
+					b.logger.Warn("SIGTERM failed, forcing SIGKILL", "error", err.Error())
+					if killErr := proc.Kill(); killErr != nil && killErr != os.ErrProcessDone {
+						b.logger.Warn("failed to kill process", "error", killErr.Error())
+					}
+				}
+			} else {
+				// Step 2: Wait up to 5 seconds for graceful exit
+				gracefulWaitDone := make(chan struct{})
+				go func() {
+					defer func() {
+						// Ensure channel is closed even if panic occurs
+						select {
+						case <-gracefulWaitDone:
+						default:
+							close(gracefulWaitDone)
+						}
+					}()
+
+					// Only call Wait() if it hasn't been called yet
+					if !b.waitCalled {
+						if waitErr := b.cmd.Wait(); waitErr != nil {
+							b.logger.Debug("wait returned error during graceful shutdown", "error", waitErr)
+						}
+						b.waitCalled = true
+					}
+				}()
+
+				select {
+				case <-gracefulWaitDone:
+					// Process exited gracefully
+					b.logger.Debug("process exited gracefully after SIGTERM",
+						"pid", proc.Pid,
+					)
+				case <-time.After(5 * time.Second):
+					// Step 3: Timeout exceeded, force kill with SIGKILL
+					b.logger.Warn("process did not exit after SIGTERM, forcing SIGKILL",
+						"pid", proc.Pid,
+						"grace_period", "5s",
+					)
 					if killErr := proc.Kill(); killErr != nil && killErr != os.ErrProcessDone {
 						b.logger.Warn("failed to kill process", "error", killErr.Error())
 					}
@@ -291,6 +342,7 @@ func (b *BaseCLISource) Close() error {
 		}
 
 		b.cmd = nil
+		b.waitCalled = false // Reset for next execution
 	}
 
 	b.logger.Debug("CLI source closed")
@@ -516,6 +568,11 @@ func (b *BaseCLISource) ExecuteCLIWithStdin(
 
 	// Wait for process to complete
 	waitErr := cmd.Wait()
+
+	// Mark that Wait() has been called to prevent double-wait in Close()
+	b.mu.Lock()
+	b.waitCalled = true
+	b.mu.Unlock()
 
 	// Wait for stderr goroutine to finish reading all output
 	stderrWg.Wait()

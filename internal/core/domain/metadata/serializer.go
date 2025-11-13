@@ -30,6 +30,7 @@ var TypeRegistry = map[string]func() ArtifactMetadata{
 	"contact":       func() ArtifactMetadata { return &ContactMetadata{} },
 	"vulnerability": func() ArtifactMetadata { return &VulnerabilityMetadata{} },
 	"cloud":         func() ArtifactMetadata { return &CloudMetadata{} },
+	"javascript":    func() ArtifactMetadata { return &JavaScriptMetadata{} },
 }
 
 // MarshalMetadata serializa ArtifactMetadata a MetadataEnvelope.
@@ -112,6 +113,8 @@ func GetMetadataType(meta ArtifactMetadata) string {
 		return "vulnerability"
 	case *CloudMetadata:
 		return "cloud"
+	case *JavaScriptMetadata:
+		return "javascript"
 	default:
 		return ""
 	}

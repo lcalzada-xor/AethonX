@@ -166,14 +166,33 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 		stderrMu.Unlock()
 	}()
 
-	// Process stdout using handler
-	if err := w.ProcessOutput(stdout, handler); err != nil {
-		w.GetLogger().Warn("output processing error", "error", err.Error())
-	}
+	// Process stdout using handler in goroutine to allow cancellation
+	outputDone := make(chan error, 1)
+	go func() {
+		err := w.ProcessOutput(stdout, handler)
+		if err != nil {
+			w.GetLogger().Warn("output processing error", "error", err.Error())
+		}
 
-	// Finalize handler (applies filtering and creates artifacts)
-	if err := handler.Finalize(); err != nil {
-		w.GetLogger().Warn("handler finalization error", "error", err.Error())
+		// Finalize handler (applies filtering and creates artifacts)
+		if finalizeErr := handler.Finalize(); finalizeErr != nil {
+			w.GetLogger().Warn("handler finalization error", "error", finalizeErr.Error())
+		}
+		outputDone <- err
+	}()
+
+	// Wait for output processing or context cancellation
+	select {
+	case <-outputDone:
+		// Output processing completed
+		w.GetLogger().Debug("output processing completed")
+	case <-ctx.Done():
+		// Context cancelled - close pipes to force process termination
+		w.GetLogger().Debug("context cancelled during output processing")
+		stdout.Close()
+		stderr.Close()
+		// Wait for output goroutine to finish
+		<-outputDone
 	}
 
 	// Wait for stderr goroutine to finish before checking process exit
@@ -189,17 +208,51 @@ func (w *WaybackurlsSource) Run(ctx context.Context, target domain.Target) (*dom
 		result.AddWarning("waybackurls", fmt.Sprintf("stderr output: %s", stderrOutput))
 	}
 
-	// Wait for process to complete
-	waitErr := cmd.Wait()
+	// Wait for process to complete with context cancellation monitoring
+	// This ensures that if context is cancelled, we kill the process immediately
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+		// Process finished normally
+	case <-ctx.Done():
+		// Context cancelled - kill the process
+		w.GetLogger().Debug("context cancelled, killing waybackurls process")
+		if cmd.Process != nil {
+			if killErr := cmd.Process.Kill(); killErr != nil {
+				w.GetLogger().Warn("failed to kill waybackurls process", "error", killErr.Error())
+			}
+		}
+		// Wait for the process to exit after kill
+		waitErr = <-waitDone
+	}
 	artifactCount := len(result.Artifacts)
 
 	if waitErr != nil {
+		// Check if error is due to context cancellation (timeout/Ctrl-C)
+		isContextError := ctx.Err() != nil
+
 		// Log error pero SIEMPRE retornar resultados parciales
-		w.GetLogger().Warn("waybackurls exited with error",
-			"error", waitErr.Error(),
-			"artifacts", artifactCount,
-		)
-		result.AddWarning("waybackurls", fmt.Sprintf("process exited with error: %v", waitErr))
+		if isContextError {
+			w.GetLogger().Info("waybackurls terminated due to timeout/cancellation",
+				"artifacts", artifactCount,
+				"context_error", ctx.Err().Error(),
+			)
+			// Only add warning if we have no results
+			if artifactCount == 0 {
+				result.AddWarning("waybackurls", fmt.Sprintf("scan timeout reached with no results collected"))
+			}
+		} else {
+			w.GetLogger().Warn("waybackurls exited with error",
+				"error", waitErr.Error(),
+				"artifacts", artifactCount,
+			)
+			result.AddWarning("waybackurls", fmt.Sprintf("process exited with error: %v", waitErr))
+		}
 
 		// Si hay resultados parciales, retornarlos con error (orchestrator los consolidará)
 		if artifactCount > 0 {

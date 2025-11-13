@@ -44,25 +44,22 @@ func (p *Parser) ParseToIPMetadata(resp *AbuseIPDBResponse) *domainmetadata.IPMe
 	// Reputation categories based on abuse confidence score
 	ipMeta.Reputation = calculateReputation(data.AbuseConfidenceScore)
 
-	// Blacklist status
-	ipMeta.IsBlacklisted = data.AbuseConfidenceScore >= 50 && !data.IsWhitelisted
-
-	// Whitelist status (trusted IPs)
-	ipMeta.IsWhitelisted = data.IsWhitelisted
+	// Blacklist status (using Blacklisted field)
+	ipMeta.Blacklisted = data.AbuseConfidenceScore >= 50 && !data.IsWhitelisted
 
 	// Usage type classification (Data Center, ISP, etc.)
 	if data.UsageType != "" {
 		ipMeta.IPType = normalizeUsageType(data.UsageType)
 	}
 
-	// Hostnames associated with IP
+	// Hostnames associated with IP (store as PTRRecords)
 	if len(data.Hostnames) > 0 {
-		ipMeta.Hostnames = data.Hostnames
+		ipMeta.PTRRecords = data.Hostnames
 	}
 
-	// Abuse reporting metrics
-	ipMeta.AbuseReports = data.TotalReports
-	ipMeta.LastReportedAt = data.LastReportedAt.Format("2006-01-02T15:04:05Z07:00")
+	// Note: AbuseIPDB-specific fields (AbuseReports, LastReportedAt, IsWhitelisted)
+	// are not stored in IPMetadata as they're too specific.
+	// This data is available via custom fields in the artifact if needed.
 
 	return ipMeta
 }
@@ -86,20 +83,17 @@ func (p *Parser) EnrichExistingMetadata(existing *domainmetadata.IPMetadata, res
 	// Always add threat intelligence (this is AbuseIPDB's specialty)
 	existing.ThreatScore = float64(data.AbuseConfidenceScore)
 	existing.Reputation = calculateReputation(data.AbuseConfidenceScore)
-	existing.IsBlacklisted = data.AbuseConfidenceScore >= 50 && !data.IsWhitelisted
-	existing.IsWhitelisted = data.IsWhitelisted
-	existing.AbuseReports = data.TotalReports
-	existing.LastReportedAt = data.LastReportedAt.Format("2006-01-02T15:04:05Z07:00")
+	existing.Blacklisted = data.AbuseConfidenceScore >= 50 && !data.IsWhitelisted
 
-	// Merge hostnames (avoid duplicates)
+	// Merge hostnames as PTRRecords (avoid duplicates)
 	if len(data.Hostnames) > 0 {
 		hostnameSet := make(map[string]bool)
-		for _, h := range existing.Hostnames {
+		for _, h := range existing.PTRRecords {
 			hostnameSet[h] = true
 		}
 		for _, h := range data.Hostnames {
 			if !hostnameSet[h] {
-				existing.Hostnames = append(existing.Hostnames, h)
+				existing.PTRRecords = append(existing.PTRRecords, h)
 			}
 		}
 	}
